@@ -1,0 +1,88 @@
+{
+  "slug": "hash-functions",
+  "generatedAt": "2026-05-15T19:31:27.768Z",
+  "audio": "/audio/hash-functions/full.wav",
+  "duration": 84.292,
+  "chapters": [
+    {
+      "id": "intro",
+      "title": "Welcome",
+      "startTime": 0,
+      "endTime": 8.886
+    },
+    {
+      "id": "definition",
+      "title": "The core idea",
+      "startTime": 8.886,
+      "endTime": 40.51
+    },
+    {
+      "id": "uses",
+      "title": "Where you've seen hashes",
+      "startTime": 40.51,
+      "endTime": 84.292
+    }
+  ],
+  "marks": [
+    {
+      "name": "title",
+      "time": 0,
+      "chapter": "intro"
+    },
+    {
+      "name": "lede",
+      "time": 2.91,
+      "chapter": "intro"
+    },
+    {
+      "name": "definition-heading",
+      "time": 8.886,
+      "chapter": "definition"
+    },
+    {
+      "name": "definition-body",
+      "time": 10.7,
+      "chapter": "definition"
+    },
+    {
+      "name": "diagram",
+      "time": 17.64,
+      "chapter": "definition"
+    },
+    {
+      "name": "property-deterministic",
+      "time": 23.387,
+      "chapter": "definition"
+    },
+    {
+      "name": "property-avalanche",
+      "time": 32.159,
+      "chapter": "definition"
+    },
+    {
+      "name": "uses-heading",
+      "time": 40.51,
+      "chapter": "uses"
+    },
+    {
+      "name": "use-passwords",
+      "time": 47.539,
+      "chapter": "uses"
+    },
+    {
+      "name": "use-integrity",
+      "time": 57.662,
+      "chapter": "uses"
+    },
+    {
+      "name": "use-blockchain",
+      "time": 68.066,
+      "chapter": "uses"
+    },
+    {
+      "name": "closing",
+      "time": 77.27,
+      "chapter": "uses"
+    }
+  ]
+}

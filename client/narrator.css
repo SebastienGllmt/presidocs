@@ -1,0 +1,108 @@
+:root {
+  --narration-bg: rgba(255, 213, 79, 0.18);
+  --narration-border: rgba(241, 145, 21, 0.55);
+  --narration-shadow: rgba(241, 145, 21, 0.22);
+  --page-fg: #1f2328;
+  --page-fg-muted: #57606a;
+  --page-bg: #fafbfc;
+  --accent: #0969da;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--page-bg);
+  color: var(--page-fg);
+  font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+
+article {
+  max-width: 720px;
+  /* Bottom padding leaves room for the fixed Shikwasa player. */
+  margin: 64px auto 0;
+  padding: 0 24px 200px;
+}
+
+article h1 { font-size: 2rem; margin: 0 0 12px; }
+article h2 { margin: 2em 0 0.5em; }
+article h3 { margin: 1.5em 0 0.4em; }
+article .lede { font-size: 1.15rem; color: var(--page-fg-muted); }
+article code { background: #f3f4f6; padding: 1px 5px; border-radius: 4px; }
+
+figure {
+  margin: 1.5em 0;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #e1e4e8;
+  border-radius: 8px;
+}
+
+figure svg { display: block; width: 100%; height: auto; color: #57606a; }
+figcaption { text-align: center; color: var(--page-fg-muted); font-size: 0.9rem; margin-top: 8px; }
+
+.use-card {
+  margin: 1em 0;
+  padding: 14px 18px;
+  background: #fff;
+  border: 1px solid #e1e4e8;
+  border-radius: 8px;
+}
+
+.use-card h3 { margin: 0 0 6px; }
+
+.closing { margin-top: 2em; font-style: italic; color: var(--page-fg-muted); }
+
+/* The star of the show: highlighted element during narration. */
+.narration-active {
+  background: var(--narration-bg);
+  box-shadow:
+    0 0 0 2px var(--narration-border),
+    0 4px 14px var(--narration-shadow);
+  border-radius: 6px;
+  transition:
+    background 220ms ease,
+    box-shadow 220ms ease;
+  /* Keep the highlighted block well above the fixed player when auto-scrolled. */
+  scroll-margin: 25vh;
+  scroll-margin-bottom: 220px;
+}
+
+.use-card.narration-active {
+  background: linear-gradient(0deg, var(--narration-bg), var(--narration-bg)), #fff;
+}
+
+/* When narration is running, dim everything that ISN'T on the path
+   to the active element. :has() lets us preserve the ancestor chain. */
+article.narrating > * {
+  transition: opacity 220ms ease;
+}
+article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
+  opacity: 0.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .narration-active { transition: none; }
+  article.narrating > * { transition: none; }
+}
+
+/* Shikwasa player customization — pin the host element so the fixed player
+   doesn't share space with the article. Shikwasa itself positions its UI;
+   this just hides the empty placeholder. */
+.narrate-player { /* Shikwasa mounts here; container itself stays empty. */ }
+.narrate-player-error {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 16px 24px;
+  background: #fff3cd;
+  border-top: 1px solid #e0c97a;
+  color: #6a4f00;
+  text-align: center;
+  font-size: 14px;
+}
+
+/* Match Shikwasa's accent color to the rest of the page. */
+.shk { --color-primary: var(--accent); }

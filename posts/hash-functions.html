@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>What is a hash function?</title>
+<link rel="stylesheet" href="../client/narrator.css" />
+<script type="module" src="../client/narrator.ts"></script>
+
+<script type="application/ssml+xml" data-chunk-id="intro" data-chunk-title="Welcome">
+<speak version="1.0" xml:lang="en-US" xmlns="http://www.w3.org/2001/10/synthesis">
+  <mark name="title"/>
+  Hi everyone, and welcome to today's mini-talk.
+  <break time="300ms"/>
+  <mark name="lede"/>
+  In the next few minutes I want to demystify one of computing's most
+  useful little tools: the hash function.
+</speak>
+</script>
+
+<script type="application/ssml+xml" data-chunk-id="definition" data-chunk-title="The core idea">
+<speak version="1.0" xml:lang="en-US" xmlns="http://www.w3.org/2001/10/synthesis">
+  <mark name="definition-heading"/>
+  So let's start with the core idea.
+  <mark name="definition-body"/>
+  A hash function takes any input <break time="200ms"/>
+  a word, a file, an entire movie <break time="200ms"/>
+  and turns it into a fixed size fingerprint.
+  <mark name="diagram"/>
+  Take a look at the diagram. No matter what goes in on the left,
+  the output is always the same length.
+  <mark name="property-deterministic"/>
+  Now, two properties to remember. First: the function is deterministic.
+  The same input always produces the same output, every single time.
+  <mark name="property-avalanche"/>
+  Second: change one tiny bit of the input, and the entire output
+  changes in a wild and unpredictable way. We call this the avalanche effect.
+</speak>
+</script>
+
+<script type="application/ssml+xml" data-chunk-id="uses" data-chunk-title="Where you've seen hashes">
+<speak version="1.0" xml:lang="en-US" xmlns="http://www.w3.org/2001/10/synthesis">
+  <mark name="uses-heading"/>
+  Okay, but why do we care? Here are three places you've already used
+  hashes today, probably without realizing it.
+  <mark name="use-passwords"/>
+  Passwords. When you log into a site, the site doesn't store your
+  password. It stores a hash of it. That way, even if the database
+  leaks, your password stays secret.
+  <mark name="use-integrity"/>
+  File integrity. Ever downloaded a big file with a checksum next to it?
+  That checksum is a hash. If your downloaded file's hash matches,
+  you know it wasn't corrupted in transit.
+  <mark name="use-blockchain"/>
+  And of course, blockchains. Every block is named by its hash,
+  and each block contains the hash of the previous one. That's
+  literally the chain in "blockchain."
+  <mark name="closing"/>
+  That's the whole idea. A small, deterministic, ultra-sensitive
+  fingerprint for any piece of data. Thanks for listening!
+</speak>
+</script>
+</head>
+<body>
+  <article data-narration-src="/audio/hash-functions/manifest.json"
+           data-narration-title="What is a hash function?"
+           data-narration-artist="read-demo">
+    <h1 id="title">What is a hash function?</h1>
+    <p id="lede" class="lede">
+      A five-minute primer on one of computing's most useful primitives.
+    </p>
+
+    <section>
+      <h2 id="definition-heading">The core idea</h2>
+      <p id="definition-body">
+        A hash function is a one-way mapping from any input
+        &mdash; a word, a file, an entire movie &mdash;
+        to a fixed-size <em>fingerprint</em>.
+      </p>
+
+      <figure id="diagram">
+        <svg viewBox="0 0 520 220" role="img" aria-label="Diagram: inputs of varying sizes map to fixed-length outputs.">
+          <defs>
+            <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+            </marker>
+          </defs>
+          <g font-family="system-ui, sans-serif" font-size="13">
+            <rect x="20" y="25"  width="120" height="28" rx="4" fill="#eef" stroke="#88a"/>
+            <text x="80" y="44" text-anchor="middle">"hello"</text>
+
+            <rect x="20" y="80"  width="160" height="28" rx="4" fill="#eef" stroke="#88a"/>
+            <text x="100" y="99" text-anchor="middle">"hello world"</text>
+
+            <rect x="20" y="135" width="200" height="28" rx="4" fill="#eef" stroke="#88a"/>
+            <text x="120" y="154" text-anchor="middle">a 2 GB movie file</text>
+
+            <rect x="220" y="80" width="80" height="60" rx="6" fill="#fed" stroke="#a83"/>
+            <text x="260" y="115" text-anchor="middle">hash()</text>
+
+            <line x1="140" y1="39"  x2="220" y2="100" stroke="currentColor" marker-end="url(#arr)"/>
+            <line x1="180" y1="94"  x2="220" y2="110" stroke="currentColor" marker-end="url(#arr)"/>
+            <line x1="220" y1="149" x2="220" y2="120" stroke="currentColor" marker-end="url(#arr)"/>
+
+            <line x1="300" y1="110" x2="360" y2="110" stroke="currentColor" marker-end="url(#arr)"/>
+
+            <rect x="360" y="50"  width="140" height="28" rx="4" fill="#efe" stroke="#8a8"/>
+            <text x="430" y="69" text-anchor="middle" font-family="ui-monospace, monospace" font-size="11">2cf24dba5fb0a30e</text>
+            <rect x="360" y="95"  width="140" height="28" rx="4" fill="#efe" stroke="#8a8"/>
+            <text x="430" y="114" text-anchor="middle" font-family="ui-monospace, monospace" font-size="11">b94d27b9934d3e08</text>
+            <rect x="360" y="140" width="140" height="28" rx="4" fill="#efe" stroke="#8a8"/>
+            <text x="430" y="159" text-anchor="middle" font-family="ui-monospace, monospace" font-size="11">ef797c8118f02dfb</text>
+          </g>
+        </svg>
+        <figcaption>Any input, any size &rarr; a fixed-length output.</figcaption>
+      </figure>
+
+      <h3 id="property-deterministic">Property 1 &mdash; Deterministic</h3>
+      <p>
+        The same input always produces the same output. Hash the string
+        <code>"hello"</code> today, hash it again next year, and you'll
+        get the exact same fingerprint.
+      </p>
+
+      <h3 id="property-avalanche">Property 2 &mdash; Avalanche</h3>
+      <p>
+        Change a single bit of the input and the output looks completely
+        different. There is no smooth gradient between similar inputs.
+      </p>
+    </section>
+
+    <section>
+      <h2 id="uses-heading">Where you've already met hashes</h2>
+
+      <div class="use-card" id="use-passwords">
+        <h3>Passwords</h3>
+        <p>
+          Sites don't store passwords directly &mdash; they store hashes.
+          A leaked database is much harder to abuse when the attacker
+          only has fingerprints.
+        </p>
+      </div>
+
+      <div class="use-card" id="use-integrity">
+        <h3>File integrity</h3>
+        <p>
+          Downloading a Linux ISO? The site publishes a checksum.
+          Hash your local copy and compare &mdash; if it matches, the
+          file arrived intact.
+        </p>
+      </div>
+
+      <div class="use-card" id="use-blockchain">
+        <h3>Blockchains</h3>
+        <p>
+          Each block is named by its hash, and references the previous
+          block's hash. Tampering with any block invalidates every
+          block that follows.
+        </p>
+      </div>
+
+      <p id="closing" class="closing">
+        That's hashing in a nutshell. Thanks for listening &mdash;
+        and happy hashing!
+      </p>
+    </section>
+  </article>
+
+  <div id="narrate-player" class="narrate-player"></div>
+</body>
+</html>
