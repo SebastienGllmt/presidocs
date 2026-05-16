@@ -35,8 +35,8 @@ Hard constraints that shape every decision below:
   so authoring tools only have to edit one file.
 - Inline SSML lives in `<script type="application/ssml+xml" data-chunk-id="..." data-chunk-title="...">`
   blocks. Browsers treat the contents as raw text (the type is unknown), so
-  no rendering happens; the generator reads them via regex.
-- Each script is one **chunk**, which becomes one chapter in the player.
+  no rendering happens; these are only read at build-time by the generators to generate static artifcats (ex: chapter information, voice files, html-friendly rendering of the narration, etc.). In other words, they could be stripped from the final HTML.
+- Each `<script>` is one **chunk**, which becomes one chapter in the player.
   Chunks are the unit of cache-friendly regeneration (re-generate one chunk,
   one audio file changes).
 - Mark-to-element mapping is plain: `<mark name="lede"/>` highlights
@@ -52,10 +52,12 @@ Hard constraints that shape every decision below:
   sample-accurate mark times without forced alignment.
 - `<break>` is mapped to a comma; other SSML tags are stripped before
   passing to `say` (it ignores SSML markup). When swapping for an
-  SSML-aware TTS, replace `sayToWav` and the splitter can stay.
-- WAV concatenation is done in Bun — no `ffmpeg`/`sox`/`lame` dependency.
-  The full audio for a post is `intro.wav + definition.wav + ...` spliced
-  into `full.wav` by byte-copying PCM data and rewriting the RIFF header.
+  SSML-aware TTS, replace the pipeline's `synthesize` and the splitter
+  can stay.
+- WAV is the **working format** throughout the pipeline — every operation
+  (synthesis, silence, duration, concat, trim) reads or returns WAV bytes.
+  Picked because `say` writes WAV natively, lossless concat is just
+  byte-splicing PCM, and sample-accurate trim needs raw PCM access.
 - Leading-silence trim per chunk (RMS window detector, threshold 2000,
   consecutive-window check). This is **defensive**, not load-bearing:
   - `say` pads each segment with ~40ms of dead silence before the first
@@ -67,39 +69,89 @@ Hard constraints that shape every decision below:
     dips, then stabilizes. A single threshold-crossing stops in the dip.
   - Threshold 2000 preserves leading soft consonants. Don't push past
     ~3000 without verifying you're not cutting first syllables.
-- Per-chunk WAVs are still written alongside `full.wav`. Future versioning
-  / partial-regen work can use them; current player only loads `full.wav`.
+- Per-chunk files are written alongside `full.<ext>`. Future versioning /
+  partial-regen work can use them; current player only loads `full`.
+
+### Delivery format (MP3 @ 64 kbps mono)
+
+The generator decouples the **working format** (WAV, lossless, in-memory)
+from the **delivery format** (what the browser actually downloads) via the
+`AudioPipeline` interface at the top of `scripts/generate.ts`.
+
+- Delivery is **MP3 @ 64 kbps mono** — ~5–8× smaller than the raw WAV.
+  64 kbps is comfortable for narration;
+- **`ffmpeg` is required** (`brew install ffmpeg`). The generator
+  preflight-checks every binary in `pipeline.requiredBinaries` and fails
+  fast with a clear message if any are missing — much friendlier than a
+  cryptic failure 30 segments in.
+- Encoding happens **once per output file at the end**, not segment-by-
+  segment. Each ffmpeg call takes a finished WAV via stdin and emits MP3
+  on stdout, so no intermediate temp files. Doing it once avoids
+  cumulative MP3 re-encode loss and keeps encoder padding (~26ms head /
+  ~36ms tail) to a single occurrence per delivered file.
+- The 26ms MP3 head padding is below human discrimination thresholds for
+  speech-onset timing; we don't compensate for it in mark times. If a
+  future codec has larger or more variable padding (e.g. AAC ADTS),
+  measure it in `encode()` and bake the offset into the trim step.
+
+### The `AudioPipeline` interface
+
+We keep the pipeline behind an interface even though there's only one backend today (MP3). The interface is the contract a future codec (Opus, AAC, FLAC) has to satisfy — every operation must be implemented, not silently dropped. That's what makes the codec swap safe.
+
+Operations on the working-format buffer (WAV today):
+
+- `synthesize(text)` — speech → working bytes (`say` writes a WAV to a
+  tmp file, we read it back).
+- `silence(seconds)` — generate a padding clip of the given duration
+  (used by `--mock`).
+- `duration(buf)` — exact seconds, parsed from the WAV header.
+- `concat(bufs[])` — lossless splice by re-emitting the header and
+  byte-copying PCM data.
+- `leadingSilenceSamples(buf)` — RMS-window detector returning a sample
+  count, converted to seconds via `samplesPerSecond`.
+- `trim(buf, samples)` — drop leading PCM samples and rewrite the header.
+
+Delivery-side metadata + final encode:
+
+- `encode(buf)` — working → delivery bytes. For MP3 this is a single
+  ffmpeg invocation via stdin/stdout.
+- `deliveryExt` / `deliveryMime` — `.mp3` / `audio/mpeg`.
+- `requiredBinaries` — `["say", "ffmpeg"]`, checked by preflight.
 
 ### When swapping `say` for a real SSML TTS
 
-- Replace `sayToWav` in `scripts/generate.ts`. Everything else stays.
+- Replace `pipeline.synthesize` in `scripts/generate.ts`. Everything else
+  stays.
 - If the new TTS exposes per-mark timing callbacks (ElevenLabs, Google
   Cloud TTS), skip the per-segment generation pattern entirely: synthesize
   the whole chunk in one call and read the engine's mark timestamps.
 - Re-verify the silence trim. Different engines have different pre-roll;
   threshold 2000 RMS may need adjustment, or trim may become unnecessary.
 - `say`'s output is mono int16 @ 22050 Hz; the WAV helpers assume that
-  format. If the new TTS returns MP3/AAC, decode to PCM or rewrite the
-  concat path.
+  format. If the new TTS returns MP3/AAC, either decode to PCM upstream
+  or write a non-WAV pipeline that satisfies the same interface.
 
 
-## Manifest format (`audio/<slug>/manifest.json`)
+## Manifest format (`generated/<slug>/manifest.json`)
 
 ```json
 {
-  "audio": "/audio/<slug>/full.wav",
+  "audio": "/generated/<slug>/full.mp3",
   "duration": 84.21,
   "chapters": [
     { "id": "intro", "title": "Welcome", "startTime": 0, "endTime": 8.85 }
   ],
   "marks": [
-    { "name": "title", "time": 0, "chapter": "intro" }
+    { "name": "title", "time": 0, "chapter": "intro",
+      "text": "Hi everyone, and welcome to today's mini-talk." }
   ]
 }
 ```
 
-- Times are **absolute seconds** in `full.wav`. The player never needs to
-  know about chunks.
+- Times are **absolute seconds** in the master track. The player never
+  needs to know about chunks.
+- `audio` is a path under `/generated/<slug>/`; Content-Type is inferred
+  from the file extension by `Bun.file` at serve time.
 - Marks shift backwards by each chunk's trim amount so they still align
   with speech after the leading silence is removed.
 

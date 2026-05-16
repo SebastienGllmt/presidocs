@@ -6,10 +6,12 @@
   "scripts": {
     "dev": "bun --hot index.ts",
     "start": "bun index.ts",
-    "generate": "bun scripts/generate.ts"
+    "generate": "bun scripts/generate.ts",
+    "clean": "bun scripts/clean.ts"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "fast-xml-parser": "^5.7.3"
   },
   "peerDependencies": {
     "typescript": "^5"

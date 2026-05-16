@@ -26,7 +26,7 @@ const server = Bun.serve({
   routes: {
     "/": index,
     "/posts/hash-functions": hashFunctions,
-    "/audio/*": serveFromDir("audio"),
+    "/generated/*": serveFromDir("generated"),
   },
   development: { hmr: true, console: true },
   fetch() {
