@@ -5,7 +5,9 @@
   --page-fg: #1f2328;
   --page-fg-muted: #57606a;
   --page-bg: #fafbfc;
-  --accent: #0969da;
+  /* Light blue (GitHub's blue.2) that reads cleanly on the dark dock — the
+     darker #0969da was getting lost on rgba(22,27,34,0.85). */
+  --accent: #58a6ff;
 }
 
 * { box-sizing: border-box; }
@@ -87,22 +89,370 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   article.narrating > * { transition: none; }
 }
 
-/* Shikwasa player customization — pin the host element so the fixed player
-   doesn't share space with the article. Shikwasa itself positions its UI;
-   this just hides the empty placeholder. */
-.narrate-player { /* Shikwasa mounts here; container itself stays empty. */ }
-.narrate-player-error {
+/* ============================================================================
+   Floating dock: holds the chapter strip + a heavily-restyled Shikwasa player.
+   We position the dock ourselves (Shikwasa is mounted with type: 'static').
+   ============================================================================ */
+
+.narrate-dock {
   position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  z-index: 100;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(720px, calc(100% - 24px));
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  transition: transform 240ms ease, opacity 240ms ease;
+}
+
+/* Hidden state: slide the dock down past the viewport's bottom edge.
+   Audio keeps playing — only the UI is dismissed. */
+.narrate-dock[data-hidden="true"] {
+  transform: translate(-50%, calc(100% + 24px));
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Highlighting toggle injected into Shikwasa's controls row. Inherits
+   .shk-btn base styles; we only override the icon color to reflect the
+   on/off state so it's clear at a glance which mode it's in. */
+.narrate-highlight-btn[aria-pressed="true"] svg { color: var(--accent); }
+.narrate-highlight-btn[aria-pressed="false"] svg { color: rgba(255, 255, 255, 0.35); }
+.narrate-highlight-btn[aria-pressed="false"]:hover svg { color: rgba(255, 255, 255, 0.7); }
+
+/* Always-visible "Listen" pill that toggles dock visibility. */
+.narrate-toggle {
+  position: fixed;
+  z-index: 100;
+  right: 18px;
+  bottom: 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgba(22, 27, 34, 0.85);
+  -webkit-backdrop-filter: saturate(180%) blur(14px);
+  backdrop-filter: saturate(180%) blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.55);
+  transition: border-color 120ms ease, transform 120ms ease, background-color 120ms ease;
+}
+
+.narrate-toggle:hover {
+  border-color: rgba(255, 255, 255, 0.25);
+  transform: translateY(-2px);
+}
+
+/* When the dock is open, the toggle is in its "active" state — subtle
+   accent tint to signal that pressing it now dismisses rather than
+   summons. */
+.narrate-toggle[aria-expanded="true"] {
+  border-color: rgba(88, 166, 255, 0.4);
+}
+
+.narrate-toggle svg { color: var(--accent); }
+
+/* --- Chapter pill strip ----------------------------------------------------- */
+
+.chapter-strip {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+
+.chapter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.85);
+  -webkit-backdrop-filter: saturate(180%) blur(14px);
+  backdrop-filter: saturate(180%) blur(14px);
+  border: 1px solid rgba(15, 25, 40, 0.08);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--page-fg-muted);
+  cursor: pointer;
+  transition:
+    background-color 160ms ease,
+    color 160ms ease,
+    border-color 160ms ease,
+    transform 120ms ease;
+}
+
+.chapter-pill:hover {
+  color: var(--page-fg);
+  border-color: rgba(15, 25, 40, 0.18);
+  transform: translateY(-1px);
+}
+
+.chapter-pill:active { transform: translateY(0); }
+
+.chapter-pill[data-active] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  box-shadow: 0 4px 12px -4px rgba(88, 166, 255, 0.45);
+}
+
+.chapter-pill .ch-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(15, 25, 40, 0.06);
+  font-size: 0.7rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--page-fg);
+}
+
+.chapter-pill[data-active] .ch-num {
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}
+
+.chapter-pill .ch-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 38vw;
+}
+
+/* --- Shikwasa player restyle ----------------------------------------------- */
+
+.narrate-player-error {
   padding: 16px 24px;
   background: #fff3cd;
-  border-top: 1px solid #e0c97a;
+  border: 1px solid #e0c97a;
+  border-radius: 12px;
   color: #6a4f00;
   text-align: center;
   font-size: 14px;
 }
 
-/* Match Shikwasa's accent color to the rest of the page. */
-.shk { --color-primary: var(--accent); }
+/* The player container itself stays empty — Shikwasa mounts inside. */
+#narrate-player .shk { --color-primary: var(--accent); }
+
+/* Drop Shikwasa's hard-edged box for a glass dock card.
+   Compact: the bar sits at the top edge, the time floats centered in the
+   middle of the player (no longer a separate top band), and the button row
+   fills the remaining height. The dock is fixed-bottom anchored so its
+   bottom edge stays locked to the viewport — content moves "down" in the
+   viewport only by reducing paddingBottom. */
+#narrate-player .shk-player {
+  height: auto;
+  padding: 10px 14px 8px;
+  margin-top: 0;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.85);
+  -webkit-backdrop-filter: saturate(180%) blur(14px);
+  backdrop-filter: saturate(180%) blur(14px);
+  border: 1px solid rgba(15, 25, 40, 0.06);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.7) inset,
+    0 12px 28px -10px rgba(15, 25, 40, 0.18),
+    0 4px 12px -6px rgba(15, 25, 40, 0.10);
+}
+
+/* Lift the time text up toward the bar and tighten its line box so it
+   doesn't bleed into the button row below. */
+#narrate-player .shk-display {
+  /* Floats centered both horizontally and vertically inside .shk-main.
+     Shikwasa positions this absolutely by default (`right: 8px; top: -6px`);
+     we override to dead-center it so it occupies the empty horizontal gap
+     between the title (left) and the button row (right) on the SAME visual
+     line — no dedicated top band needed, which is what lets the dock be
+     compact. */
+  top: 50%;
+  left: 50%;
+  right: auto;
+  transform: translate(-50%, -50%);
+  line-height: 1;
+}
+
+/* Inset the progress bar so it doesn't overhang the player's rounded corners.
+   Default Shikwasa uses left:0; right:0; we bring it inside the radius. */
+#narrate-player .shk-bar_wrap {
+  left: 14px;
+  right: 14px;
+}
+
+/* No cover art is ever provided — get rid of the empty box. */
+#narrate-player .shk-cover { display: none; }
+
+/* Built-in chapter button + popover are replaced by our pill strip.
+   The "more" button (...) revealed the extras panel — with chapters gone and
+   only volume left, system/browser volume is plenty; hide both. */
+#narrate-player .shk-btn_chapter,
+#narrate-player .shk-chapter,
+#narrate-player .shk-btn_more,
+#narrate-player .shk-controls_extra { display: none !important; }
+
+/* With the time display now centered inside .shk-main instead of floating
+   above it, we no longer need to inflate .shk-main with min-height or push
+   the buttons to the bottom with flex-end. Buttons sit naturally at their
+   own height, vertically centered alongside the title and time. */
+#narrate-player .shk-main {
+  max-width: 100%;
+  padding: 0;
+  align-items: center;
+  gap: 12px;
+}
+
+#narrate-player .shk-text { flex: 1 1 auto; min-width: 0; overflow: hidden; }
+
+#narrate-player .shk-title,
+#narrate-player .shk-title_wrap[data-overflow] .shk-title_inner:after {
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--page-fg);
+}
+
+#narrate-player .shk-artist {
+  font-size: 0.74rem;
+  font-weight: 500;
+  color: var(--page-fg-muted);
+}
+
+#narrate-player .shk-controls { width: auto; }
+
+#narrate-player .shk-btn {
+  padding: 8px;
+  border-radius: 999px;
+  transition: background-color 120ms ease;
+}
+
+#narrate-player .shk-btn:hover:not(:disabled) {
+  background: rgba(15, 25, 40, 0.06);
+}
+
+#narrate-player .shk-btn svg { height: 20px; width: 20px; }
+#narrate-player .shk-btn_toggle svg { height: 26px; width: 26px; }
+
+#narrate-player .shk-btn_speed {
+  height: 30px;
+  width: 30px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: rgba(15, 25, 40, 0.05);
+}
+
+#narrate-player .shk-btn_speed:hover:not(:disabled) {
+  background: rgba(15, 25, 40, 0.10);
+}
+
+/* Progress bar: thinner default, accent-colored fill, sleek handle. */
+#narrate-player .shk-bar_wrap { padding: 8px 0 14px; }
+
+#narrate-player .shk-bar {
+  height: 4px;
+  border-radius: 4px;
+  background: rgba(15, 25, 40, 0.10);
+  transition: height 150ms ease;
+}
+
+#narrate-player .shk-bar_wrap:hover .shk-bar { height: 6px; }
+
+#narrate-player .shk-bar_played {
+  background: var(--accent);
+  border-radius: 4px;
+}
+
+/* Handle: small accent dot centered on the bar, with a subtle ring halo
+   instead of a chunky white border. translateY(-50%) overrides Shikwasa's
+   default transform: scale(.0001) (which keeps the handle hidden) and stays
+   perfectly centered even when the bar grows from 4px to 6px on hover. */
+#narrate-player .shk-bar-handle {
+  height: 12px;
+  width: 12px;
+  /* right: -(width/2) keeps the dot's center on the now-position. */
+  right: -6px;
+  top: 50%;
+  border: 0;
+  background: var(--accent);
+  box-shadow:
+    0 0 0 3px rgba(88, 166, 255, 0.16),
+    0 1px 2px rgba(15, 25, 40, 0.22);
+  transform: translateY(-50%);
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+
+#narrate-player .shk-bar_wrap:hover .shk-bar-handle:not(:disabled),
+#narrate-player .shk-bar-handle.focus-visible {
+  border-color: transparent;
+  transform: translateY(-50%) scale(1.15);
+  box-shadow:
+    0 0 0 4px rgba(88, 166, 255, 0.22),
+    0 2px 6px rgba(15, 25, 40, 0.28);
+}
+
+#narrate-player .shk-time {
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  color: var(--page-fg-muted);
+}
+
+/* --- Mobile tweaks --------------------------------------------------------- */
+
+@media (max-width: 640px) {
+  .narrate-dock { bottom: 8px; }
+  .chapter-pill .ch-title { max-width: 28vw; }
+  #narrate-player .shk-player { padding: 8px 12px 10px; border-radius: 12px; }
+  /* Shikwasa's own mobile rules stack title/controls vertically — let them. */
+}
+
+/* --- Dock palette (always dark) --------------------------------------------
+   The article around the dock is light-only by design; the dock is forced
+   dark to contrast against it and match Shikwasa's `theme: "dark"` setting
+   in narrator.ts. These rules are unconditional rather than gated on
+   prefers-color-scheme so the look doesn't flip when the OS is in light
+   mode. */
+
+.chapter-pill {
+  background: rgba(22, 27, 34, 0.85);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.72);
+}
+.chapter-pill:hover { color: #fff; border-color: rgba(255, 255, 255, 0.2); }
+.chapter-pill .ch-num { background: rgba(255, 255, 255, 0.10); color: #fff; }
+
+#narrate-player .shk-player {
+  background: rgba(22, 27, 34, 0.85);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 12px 28px -10px rgba(0, 0, 0, 0.6),
+    0 4px 12px -6px rgba(0, 0, 0, 0.45);
+}
+#narrate-player .shk-title { color: #f0f6fc; }
+#narrate-player .shk-artist { color: rgba(240, 246, 252, 0.6); }
+#narrate-player .shk-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
+#narrate-player .shk-btn_speed {
+  background: rgba(255, 255, 255, 0.06);
+  color: #f0f6fc;
+}
+#narrate-player .shk-bar { background: rgba(255, 255, 255, 0.10); }
+#narrate-player .shk-bar-handle { border-color: #161b22; }
+#narrate-player .shk-time { color: rgba(240, 246, 252, 0.6); }
+
+@media (prefers-reduced-motion: reduce) {
+  .chapter-pill { transition: none; }
+  .chapter-pill:hover { transform: none; }
+}

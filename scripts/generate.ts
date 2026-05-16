@@ -206,6 +206,65 @@ function concatWavs(inputs: Uint8Array[]): Uint8Array {
   return out;
 }
 
+// `say` opens each segment with dead silence followed by a 50–150ms ramp
+// up into the first phoneme. Without trimming, seeking to a chapter
+// boundary lands in that silence and the listener hears nothing for a beat
+// before the first word. We trim leading samples until energy crosses a
+// threshold for two consecutive 20ms windows — the consecutive check
+// avoids stopping inside a non-monotonic attack (e.g. the "S" in "So"
+// briefly spikes above threshold, dips, then climbs).
+//
+// Threshold ~2000 (with mid-speech around 5000–7000) catches the first
+// audible syllable without clipping its leading consonant. Aggressive
+// thresholds (4000+) cut soft fricatives like the "S" of "So" entirely;
+// gentler ones (1000-) leave noticeable silence before the first sound.
+function findLeadingSilenceSamples(wavBuf: Uint8Array): number {
+  const { data } = findChunkRanges(wavBuf);
+  const numSamples = data.size / 2;
+  const dv = new DataView(wavBuf.buffer, wavBuf.byteOffset + data.offset, data.size);
+  const windowSize = Math.floor(sampleRate * 0.02); // 20ms
+  const rmsThreshold = 2000;
+
+  let prevAbove = false;
+  for (let w = 0; w + windowSize <= numSamples; w += windowSize) {
+    let sumSq = 0;
+    for (let i = 0; i < windowSize; i++) {
+      const s = dv.getInt16((w + i) * 2, true);
+      sumSq += s * s;
+    }
+    const above = Math.sqrt(sumSq / windowSize) > rmsThreshold;
+    if (above && prevAbove) return w - windowSize;
+    prevAbove = above;
+  }
+  return 0;
+}
+
+// Drop `samples` leading PCM samples and rewrite the WAV header to match.
+function trimLeadingSamples(wavBuf: Uint8Array, samples: number): Uint8Array {
+  if (samples <= 0) return wavBuf;
+  const { data } = findChunkRanges(wavBuf);
+  const bytesPerSample = (bitsPerSample / 8) * channels;
+  const trimBytes = samples * bytesPerSample;
+  const newDataSize = data.size - trimBytes;
+  const out = new Uint8Array(44 + newDataSize);
+  const view = new DataView(out.buffer);
+  out.set([0x52, 0x49, 0x46, 0x46], 0);
+  view.setUint32(4, 36 + newDataSize, true);
+  out.set([0x57, 0x41, 0x56, 0x45], 8);
+  out.set([0x66, 0x6d, 0x74, 0x20], 12);
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, channels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * bytesPerSample, true);
+  view.setUint16(32, bytesPerSample, true);
+  view.setUint16(34, bitsPerSample, true);
+  out.set([0x64, 0x61, 0x74, 0x61], 36);
+  view.setUint32(40, newDataSize, true);
+  out.set(wavBuf.subarray(data.offset + trimBytes, data.offset + data.size), 44);
+  return out;
+}
+
 async function sayToWav(text: string, outPath: string) {
   // Force a consistent PCM format so segments concatenate cleanly.
   const dataFormat = `LEI16@${sampleRate}`;
@@ -257,23 +316,37 @@ for (const chunk of chunks) {
   }
 
   const combined = concatWavs(segmentBufs);
-  const outFile = join(outDir, `${chunk.id}.wav`);
-  await Bun.write(outFile, combined);
 
-  // Compute mark times relative to the chunk's start.
+  // Trim the leading silence so chapter seeks land on speech, not silence.
+  // Everything inside the chunk shifts earlier by the trimmed duration;
+  // mark 0 stays pinned to t=0 of the trimmed chunk (it now points to the
+  // first phoneme rather than the silence that preceded it).
+  const trimSamples = mock ? 0 : findLeadingSilenceSamples(combined);
+  const trimSeconds = trimSamples / sampleRate;
+  const trimmed = trimSamples > 0 ? trimLeadingSamples(combined, trimSamples) : combined;
+  if (trimSeconds > 0) {
+    console.log(`    trimmed ${(trimSeconds * 1000).toFixed(0)}ms of leading silence`);
+  }
+
+  const outFile = join(outDir, `${chunk.id}.wav`);
+  await Bun.write(outFile, trimmed);
+
+  // Compute mark times relative to the trimmed chunk's start.
   const localMarks: { name: string; time: number }[] = [];
   let t = 0;
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
-    if (seg.markName) localMarks.push({ name: seg.markName, time: t });
+    if (seg.markName) {
+      localMarks.push({ name: seg.markName, time: Math.max(0, t - trimSeconds) });
+    }
     t += segmentDurations[i];
   }
 
   artifacts.push({
     id: chunk.id,
     title: chunk.title,
-    buffer: combined,
-    duration: t,
+    buffer: trimmed,
+    duration: t - trimSeconds,
     localMarks,
   });
 
