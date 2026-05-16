@@ -12,7 +12,15 @@
 import "shikwasa/dist/style.css";
 import { Player, Chapter } from "shikwasa";
 
-type ManifestMark = { name: string; time: number; chapter: string };
+type ManifestMark = {
+  name: string;
+  time: number;
+  chapter: string;
+  // The spoken text that follows this mark, up to the next mark. Used to
+  // populate the script drawer; segment elements get id="spoken-<name>"
+  // so they can be deep-linked and (eventually) commented on.
+  text?: string;
+};
 type ManifestChapter = { id: string; title: string; startTime: number; endTime: number };
 type Manifest = {
   audio: string;
@@ -20,6 +28,19 @@ type Manifest = {
   chapters: ManifestChapter[];
   marks: ManifestMark[];
 };
+
+// Stable ID prefix for spoken segments inside the drawer. Kept separate from
+// the article's element ids (which marks already reference by name) so
+// `#title` lands on the article and `#spoken-title` lands on the drawer.
+const SPOKEN_ID_PREFIX = "spoken-";
+const spokenSegmentId = (markName: string) => SPOKEN_ID_PREFIX + markName;
+
+function formatClockTime(seconds: number) {
+  const total = Math.max(0, Math.round(seconds));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
 
 // Register the chapter plugin once for the lifetime of the page.
 Player.use(Chapter);
@@ -35,6 +56,11 @@ class Narrator {
   private toggleBtn: HTMLButtonElement | null = null;
   private highlightEnabled = true;
   private highlightBtn: HTMLButtonElement | null = null;
+  // Spoken-script drawer + per-mark segment elements.
+  private drawerEl: HTMLElement | null = null;
+  private drawerTabBtn: HTMLButtonElement | null = null;
+  private segmentEls = new Map<string, HTMLElement>();
+  private drawerOpen = false;
 
   constructor(
     private manifestUrl: string,
@@ -90,6 +116,9 @@ class Narrator {
     this.setupVisibilityToggle();
     this.setupHighlightToggle();
     this.setupKeyboardShortcuts();
+    this.buildDrawer(manifest);
+    this.applyHashIfMatching();
+    window.addEventListener("hashchange", () => this.applyHashIfMatching());
 
     this.player.on("play", () => this.onPlay());
     this.player.on("pause", () => this.onPause());
@@ -361,6 +390,7 @@ class Narrator {
         `#${CSS.escape(this.activeId)}`,
       );
       prev?.classList.remove("narration-active");
+      this.segmentEls.get(this.activeId)?.classList.remove("narration-active");
     }
     if (id) {
       const el = this.narrationRoot.querySelector(`#${CSS.escape(id)}`);
@@ -376,8 +406,186 @@ class Narrator {
       } else {
         console.warn(`Narration mark "${id}" has no matching element`);
       }
+      // The drawer segment mirrors the highlight regardless of
+      // `highlightEnabled` — that flag is about the article's reading-clean
+      // mode, not about the drawer (whose entire purpose is to surface the
+      // spoken script). Scroll inside the drawer only when it's open; the
+      // drawer body's overflow-y keeps the page itself from scrolling.
+      const seg = this.segmentEls.get(id);
+      if (seg) {
+        seg.classList.add("narration-active");
+        if (this.drawerOpen) {
+          seg.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      }
     }
     this.activeId = id;
+  }
+
+  // Build the slide-in drawer that lists the full spoken script grouped by
+  // chapter. Each segment is an <article id="spoken-<markName>"> so external
+  // anchors and future comment threads can target it by stable ID.
+  private buildDrawer(manifest: Manifest) {
+    const drawer = document.createElement("aside");
+    drawer.id = "narrate-drawer";
+    drawer.className = "narrate-drawer";
+    drawer.setAttribute("aria-label", "Spoken script");
+    drawer.dataset.open = "false";
+
+    // Tab handle attached to the drawer's left edge. Travels with the drawer
+    // — when closed it juts into the viewport from the right; when open it
+    // sits at the drawer's left edge inside the page.
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.className = "narrate-drawer-tab";
+    tab.setAttribute("aria-controls", "narrate-drawer");
+    tab.setAttribute("aria-expanded", "false");
+    tab.setAttribute("aria-label", "Open spoken script");
+    tab.innerHTML =
+      '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
+      '<path d="M5 4h10l4 4v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm10 0v5h4M8 12h8M8 16h6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+      '<span class="tab-label">Script</span>';
+    tab.addEventListener("click", () => this.setDrawerOpen(!this.drawerOpen));
+    drawer.appendChild(tab);
+    this.drawerTabBtn = tab;
+
+    // Header with title + close affordance.
+    const header = document.createElement("header");
+    header.className = "narrate-drawer-header";
+    const h2 = document.createElement("h2");
+    h2.textContent = "Spoken script";
+    header.appendChild(h2);
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "narrate-drawer-close";
+    closeBtn.setAttribute("aria-label", "Close spoken script");
+    closeBtn.innerHTML =
+      '<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">' +
+      '<path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+    closeBtn.addEventListener("click", () => this.setDrawerOpen(false));
+    header.appendChild(closeBtn);
+    drawer.appendChild(header);
+
+    // Body: one section per chapter, each section is a list of segments.
+    const body = document.createElement("div");
+    body.className = "narrate-drawer-body";
+
+    const byChapter = new Map<string, ManifestMark[]>();
+    for (const mark of manifest.marks) {
+      if (!byChapter.has(mark.chapter)) byChapter.set(mark.chapter, []);
+      byChapter.get(mark.chapter)!.push(mark);
+    }
+
+    for (const chapter of manifest.chapters) {
+      const marks = byChapter.get(chapter.id) ?? [];
+      if (marks.length === 0) continue;
+      const section = document.createElement("section");
+      section.className = "spoken-chapter";
+      section.dataset.chapter = chapter.id;
+
+      const heading = document.createElement("h3");
+      heading.textContent = chapter.title;
+      section.appendChild(heading);
+
+      const ol = document.createElement("ol");
+      ol.className = "spoken-segments";
+      for (const mark of marks) {
+        ol.appendChild(this.renderSegment(mark));
+      }
+      section.appendChild(ol);
+      body.appendChild(section);
+    }
+    drawer.appendChild(body);
+
+    document.body.appendChild(drawer);
+    this.drawerEl = drawer;
+  }
+
+  private renderSegment(mark: ManifestMark): HTMLLIElement {
+    const li = document.createElement("li");
+    // <article> is appropriate — each segment is a self-contained piece of
+    // content that may later carry its own discussion thread.
+    const seg = document.createElement("article");
+    seg.id = spokenSegmentId(mark.name);
+    seg.className = "spoken-segment";
+    seg.dataset.mark = mark.name;
+    seg.dataset.chapter = mark.chapter;
+    seg.dataset.time = String(mark.time);
+    // `tabindex` so :focus-visible works when arrived at by URL fragment.
+    seg.tabIndex = -1;
+
+    const play = document.createElement("button");
+    play.type = "button";
+    play.className = "spoken-play";
+    play.setAttribute(
+      "aria-label",
+      `Play from ${formatClockTime(mark.time)} — ${mark.name}`,
+    );
+    play.innerHTML =
+      '<svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 1l6 4-6 4z" fill="currentColor"/></svg>' +
+      `<time datetime="PT${mark.time}S">${formatClockTime(mark.time)}</time>`;
+    play.addEventListener("click", () => {
+      // Seek into the start of this segment (the small offset matches the
+      // chapter-jump nudge — keeps the chapter plugin's range check happy
+      // when a mark sits exactly on a chapter boundary).
+      this.seekToSeconds(mark.time + 0.01);
+      this.player?.play();
+    });
+    seg.appendChild(play);
+
+    const text = document.createElement("p");
+    text.className = "spoken-text";
+    text.textContent = mark.text ?? "";
+    seg.appendChild(text);
+
+    li.appendChild(seg);
+    this.segmentEls.set(mark.name, seg);
+    return li;
+  }
+
+  private setDrawerOpen(open: boolean) {
+    if (!this.drawerEl || !this.drawerTabBtn) return;
+    if (this.drawerOpen === open) return;
+    this.drawerOpen = open;
+    this.drawerEl.dataset.open = String(open);
+    this.drawerTabBtn.setAttribute("aria-expanded", String(open));
+    this.drawerTabBtn.setAttribute(
+      "aria-label",
+      open ? "Close spoken script" : "Open spoken script",
+    );
+    document.body.classList.toggle("drawer-open", open);
+    // When opening with an active mark already, jump the drawer to it so the
+    // user doesn't have to hunt.
+    if (open && this.activeId) {
+      const seg = this.segmentEls.get(this.activeId);
+      // Defer past the open-transition's first frame so layout has settled
+      // and `scrollIntoView` finds non-zero dimensions.
+      requestAnimationFrame(() => {
+        seg?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    }
+  }
+
+  // If the page was loaded (or navigated to) with a URL fragment that points
+  // at a spoken segment, open the drawer and bring that segment into view.
+  // Plain `#elementId` fragments still scroll the article as the browser does
+  // by default — we only intervene for our prefixed ids.
+  private applyHashIfMatching() {
+    const hash = window.location.hash;
+    if (!hash || hash.length < 2) return;
+    const id = decodeURIComponent(hash.slice(1));
+    if (!id.startsWith(SPOKEN_ID_PREFIX)) return;
+    const markName = id.slice(SPOKEN_ID_PREFIX.length);
+    const seg = this.segmentEls.get(markName);
+    if (!seg) return;
+    this.setDrawerOpen(true);
+    // Highlight briefly so it's easy to spot when arrived from a link.
+    seg.classList.add("anchor-flash");
+    setTimeout(() => seg.classList.remove("anchor-flash"), 1500);
+    requestAnimationFrame(() => {
+      seg.scrollIntoView({ behavior: "smooth", block: "center" });
+      seg.focus({ preventScroll: true });
+    });
   }
 }
 
