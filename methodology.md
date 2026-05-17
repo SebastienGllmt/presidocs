@@ -1,366 +1,147 @@
 # Methodology
 
-This document summarizes the goal, methodology for reaching the goal esp. in relation to technical decisions, progress towards the goal
+This document summarizes the goal, methodology for reaching the goal esp. in relation to technical decisions, progress towards the goal of this project
 
 ## What we're building
 
-A way to build explanatory technical blog posts that double as a talk via associated audio.
+A way to build explanatory technical blog posts that doubles as a talk via associated audio.
 
-To ensure ease of AI authoring, each post is a self-contained HTML file that carries both the rendered article and a separate spoken script. A
-"Listen" button plays a narration of the post; as it plays, the page
-highlights and auto-scrolls to whichever element is being discussed.
+To ensure ease of AI authoring, each post is a self-contained HTML file that contains all relevant information inline (text, graphics, spoken script, etc.). Generator tools then parse this file to power things like a "Listen" button that plays a narration of the post.
 
-The spoken track is deliberately **not** a read-aloud of the article —
-it's a parallel narrative that can paraphrase, reorder, skip over, or
-revisit visual elements the way a presenter does.
+The spoken track is deliberately **not** a read-aloud of the article - it's a parallel narrative that can paraphrase, reorder, skip over, or revisit visual elements the way a presenter does.
 
-Hard constraints that shape every decision below:
-
+Key design decisions that shape the architecture:
 - **One file per post.** Article + spoken script live in the same HTML
   so authoring tools (humans or LLMs) edit one document, not a
-  bundle. No sidecar `.vtt` / `.srt` / `.smil` files.
-- **Audio is generated offline**, then served as static assets.
-  A `bun run generate` step turns the inline spoken script into MP3-
-  shaped artifacts (currently WAV) plus a JSON timing manifest. The
-  runtime player never calls a TTS API.
-- **Chunked for cache-friendly regeneration.** Edit one section's
-  script, regenerate only that chunk's audio.
-- **Non-linear narration is a first-class case.** Presenters reference
-  earlier slides; our highlight/scroll logic has to handle going
-  backwards as gracefully as forwards.
+  bundle. No other content input is allowed (note: multiple files are allowed to be served, but they have to be generated from the single input)
+- **Audio is generated offline**, then served as static assets. A `bun run generate` step turns the inline spoken script into MP3-shaped artifacts plus a JSON timing manifest. The runtime player never calls a TTS API.
+- **Chunked for cache-friendly regeneration.** Edit one section's script, regenerate only that chunk's audio to facilitate quick iteration of documents.
+- **Non-linear narration is a first-class case.** Presenters reference earlier slides; our highlight/scroll logic has to handle going backwards as gracefully as forwards.
+- **No light/dark toggle**: we will never support a dark-mode/light-mode switch, because we need to ensure generated visuals for charts, etc. appear correctly (too hard to do this for both modes)
 
-## Authoring format
+## SSML usage
 
-- Each blog post is a single HTML file. Content and narration live together
-  so authoring tools only have to edit one file.
-- Narration lives in `<script type="text/narration" data-chunk-id="..." data-chunk-title="...">`
-  blocks. Browsers treat the contents as raw text (the type is unknown), so
-  no rendering happens; these are only read at build-time by the generators
-  to produce static artifacts (chapter information, voice files,
-  html-friendly rendering of the narration, etc.). In other words, they
-  could be stripped from the final HTML.
-- Each `<script>` is one **chunk**, which becomes one chapter in the player.
-  Chunks are the unit of cache-friendly regeneration (re-generate one chunk,
-  one audio file changes).
-- Inside a chunk: plain text plus `<mark name="..."/>` boundaries. The text
-  between two marks (or from a mark to the chunk's end) is the spoken script
-  for that segment. No `<speak>` wrapper, no SSML namespace, no other tags —
-  this is **not** an SSML document (see "Specs we lean on").
-- Mark-to-element mapping is plain: `<mark name="lede"/>` highlights
-  `id="lede"` in the article. No CSS selectors, no aliases — keep it dumb.
-- Pauses: write them as commas/periods in the prose. We don't ship a
-  dedicated pause marker — natural punctuation gives better TTS pacing
-  than explicit cues, and the format stays plain-text-with-marks.
-- Per-term pronunciation (when the TTS mispronounces a technical word)
-  lives **inline** as `<script type="application/pls+xml">...PLS XML...</script>`,
-  same single-file principle as the narration chunks. The generator
-  extracts it at build time (same HTMLRewriter pass) and hands it to
-  the TTS provider as a `PlsLexicon`. One lexicon per post, not a
-  shared project-wide file — see "Considered, not used" for why.
-  See `specs/PronunciationLexicon-spec.html`. Note: not all TTS systems (ex: `say`) support PLS (in which case the PLS file is not used).
+Although [SSML] has historically been used to represent spoken text concepts, it has been losing traction given newer LLM-based models tend to focus on natural language hints over SSML-like DSLs.
 
-## Generation pipeline (`scripts/generate.ts`)
+While spoken text scripts often encode notes about delivery (ex: dramatic pauses, emotional cues), we generally do not need these for technical blogs. However, we *do* still often need two concepts from SSML
 
-- macOS `say` for TTS. Chosen because it's a system command — no API key,
-  no external service, no extra `npm install`. Forces `LEI16@22050` mono so
-  every segment WAV has identical PCM format (essential for concatenation).
-- Each chunk is split at `<mark>` boundaries; **one `say` invocation per
-  segment** so we can measure each segment's exact duration. This gives
-  sample-accurate mark times without forced alignment.
-- The chunk parser is intentionally flat: walk the chunk looking for
-  `<mark name>` (a segment boundary) or text (the current segment's
-  content). No nested-tag handling, no XML namespace, no document root.
-- WAV is the **working format** throughout the pipeline — every operation
-  (synthesis, silence, duration, concat, trim) reads or returns WAV bytes.
-  Picked because `say` writes WAV natively, lossless concat is just
-  byte-splicing PCM, and sample-accurate trim needs raw PCM access.
-- Leading-silence trim per chunk (RMS window detector, threshold 2000,
-  consecutive-window check). This is **defensive**, not load-bearing:
-  - `say` pads each segment with ~40ms of dead silence before the first
-    phoneme. Cloud TTS engines (Google Cloud TTS, Azure) do the same.
-  - Without trim, `chapter.startTime` would point at the start of silence
-    rather than the start of speech.
-  - Consecutive-window check is required because `say`'s consonants (esp.
-    fricatives like "S") have non-monotonic attacks — energy spikes,
-    dips, then stabilizes. A single threshold-crossing stops in the dip.
-  - Threshold 2000 preserves leading soft consonants. Don't push past
-    ~3000 without verifying you're not cutting first syllables.
-- Per-chunk files are written alongside `full.<ext>`. Future versioning /
-  partial-regen work can use them; current player only loads `full`.
+### Representing word pronunciation
 
-### Delivery format (MP3 @ 64 kbps mono)
+Our use-case still requires pronunciation hints (which are not supported by every model) for technical words.
 
-The generator decouples the **working format** (WAV, lossless, in-memory)
-from the **delivery format** (what the browser actually downloads) via the
-`AudioPipeline` interface at the top of `scripts/generate.ts`.
+Therefore, to we allow specifying pronunciations using the [PLS] in two ways:
+1. For commonly-used technical term, we allow a global `common-terms.pls` that is shared by all blog posts
+2. For post-specific technical terms, we allow a `<script type="application/pls+xml">` to be inlined into the document
 
-- Delivery is **MP3 @ 64 kbps mono** — ~5–8× smaller than the raw WAV.
-  64 kbps is comfortable for narration;
-- **`ffmpeg` is required** (`brew install ffmpeg`). The generator
-  preflight-checks every binary in `pipeline.requiredBinaries` and fails
-  fast with a clear message if any are missing — much friendlier than a
-  cryptic failure 30 segments in.
-- Encoding happens **once per output file at the end**, not segment-by-
-  segment. Each ffmpeg call takes a finished WAV via stdin and emits MP3
-  on stdout, so no intermediate temp files. Doing it once avoids
-  cumulative MP3 re-encode loss and keeps encoder padding (~26ms head /
-  ~36ms tail) to a single occurrence per delivered file.
-- The 26ms MP3 head padding is below human discrimination thresholds for
-  speech-onset timing; we don't compensate for it in mark times. If a
-  future codec has larger or more variable padding (e.g. AAC ADTS),
-  measure it in `encode()` and bake the offset into the trim step.
+### Connecting spoken text to blog content
 
-### The `TtsProvider` and `AudioPipeline` interfaces
+We want our spoken text to be able to highlight different parts of the HTML document that it is referring to. Essentially, listening to the audio should eventually take you down the entire blog (auto-scroll)
 
-The generator splits TTS from audio handling into two orthogonal
-interfaces. `TtsProvider` turns text into speech bytes; `AudioPipeline`
-takes those bytes through concat / trim / final-mile encode. The two are
-composed at the bootstrap — swapping engines doesn't touch the pipeline
-and vice versa. We expect at least three providers over time: `say`
-(macOS, today), a Linux dev equivalent (Piper / espeak-ng), and a
-production cloud engine (TBD).
+To facilitate this, blog content can be marked with `id`s in the HTML (ex: `<p id="foo">`), and spoken text can refer to these IDs using SSML `<mark>` tags (ex: `<mark name="foo"/>`. See [spec][SSML-mark] for more).
 
-#### `TtsProvider`
+These `<mark>` tags in the audio are also used as the natural chunking points of the audio as well (both for audio generation purposes, but also to allow per-mark navigation of the spoken audio)
 
-- One concrete adapter per engine. Today: `createSayProvider` in
-  `scripts/generate.ts`. New providers register a factory in the
-  `ttsProviders` map; the bootstrap selects by `--tts=NAME`.
-- Each adapter declares an `outputFormat` (sample rate / channels /
-  bits-per-sample). The bootstrap asserts it matches
-  `pipeline.workingFormat` before any synthesis runs — catching a
-  format mismatch up-front rather than after 30 segments.
-- The shared `TtsProviderConfig` carries `voice`, `rate`, target
-  `format`, and an optional `PlsLexicon`. The lexicon is extracted
-  from the post's inline `<script type="application/pls+xml">` block
-  in the same HTMLRewriter pass as the narration chunks, then passed
-  to every provider. Providers that don't honor PLS warn and ignore.
-- `requiredBinaries` is per-provider (e.g. `["say"]` for the macOS
-  adapter, `[]` for a pure-HTTP cloud adapter) and is unioned with
-  the pipeline's binaries at preflight.
+### Chapters
 
-#### `AudioPipeline`
+All SSML and spoken content in general lives inside `<script type="text/narration" data-chunk-id="unique-id" data-chunk-title="Visible Title">` blocks.
 
-We keep the pipeline behind an interface even though there's only one backend today (MP3). The interface is the contract a future codec (Opus, AAC, FLAC) has to satisfy — every operation must be implemented, not silently dropped. That's what makes the codec swap safe.
+Usage of script blocks allows us to ensure that this text does not actually appear on the page (and instead, SSML/narration blocks are fed into generation tools to process)
 
-Operations on the working-format buffer (WAV today):
+We call this `text/narration` blocks instead of SSML blocks as we only allow the `<mark>` SSML notation, and so calling it a `SSML` block in general may confuse AI (it may write general SSML notation, which we don't support. For example, no `<speak>` tag)
 
-- `workingFormat` — the `AudioFormat` (sampleRate / channels /
-  bitsPerSample) every operation expects on its input/output. TTS
-  providers must emit audio in this format.
-- `silence(seconds)` — generate a padding clip of the given duration
-  (used by `--mock`).
-- `duration(buf)` — exact seconds, parsed from the WAV header.
-- `concat(bufs[])` — lossless splice by re-emitting the header and
-  byte-copying PCM data.
-- `leadingSilenceSamples(buf)` — RMS-window detector returning a sample
-  count, converted to seconds via `workingFormat.sampleRate`.
-- `trim(buf, samples)` — drop leading PCM samples and rewrite the header.
+These blocks each define a "chapter" for usage in audio narration (which allows skipping between chapters)
 
-Delivery-side metadata + final encode:
+### Generation pipeline
 
-- `encode(buf)` — working → delivery bytes. For MP3 this is a single
-  ffmpeg invocation via stdin/stdout.
-- `deliveryExt` / `deliveryMime` — `.mp3` / `audio/mpeg`.
-- `requiredBinaries` — `["ffmpeg"]`, unioned with the TTS provider's
-  binaries at preflight.
+The pipeline for generating audio needs to take into account that different models have different requirements:
+1. The input format (some models support [SSML], some [PLS], some custom systems and some have no pronunciation hint support at all)
+2. The performance (some models are fast which are great for debugging, some are slow but higher quality. Additionally, some like `say` only work on Mac)
+3. The output format for the chunk (ex: `mp3`, `wav`)
 
-### When adding a new TTS provider
+Therefore, we split these concerns into two steps:
+1. `TtsProvider`: synthesizes narrations into audio files (handles different models needing different inputs)
+2. `AudioPipeline`: takes audio files, and does any processing on them (ex: concat, change encoding) to be ready to serve (note: handles different models having different output formats, yet wanting one consistent audio format to serve to users). It supports
+- `silence`: insert silence as needed (ex: between marks if needed)
+- `duration`: gets the duration of the audio file
+- `concat`: combine audio chunks (note: ideally lossless to avoid re-encoding causing audio loss)
+- `leadingSilenceSamples`: how long the leading silence is in the audio (some audio-generating tools start with a lot of leading silence, making concatenation sound awkward)
+- `trim`: trim the start of an audio file (usually used to remove leading silence)
+- `encode`: encode to the final audio format served to the user
 
-- Implement the `TtsProvider` interface in `scripts/generate.ts` (or a
-  new module) and register the factory in the `ttsProviders` map. No
-  other call sites change.
-- If the new engine exposes per-mark timing callbacks (Google Cloud TTS,
-  ElevenLabs character-level timestamps), the provider can synthesize
-  the whole chunk in one call and return its own segmentation; the
-  current per-segment pattern is for engines that don't (`say`).
-  Translate our `<mark name>` boundaries to whatever tag syntax the
-  engine wants — SSML `<mark>` for SSML-aware engines, the engine's
-  own bracket syntax (e.g. ElevenLabs v3's `[...]` tags) otherwise.
-- For technical-term pronunciation, the lexicon is already plumbed
-  through `TtsProviderConfig.lexicon`. The provider just needs to
-  consume it (parse the PLS XML, or hand the bytes to the engine's
-  pronunciation-dictionary API).
-- Re-verify the silence trim. Different engines have different pre-roll;
-  threshold 2000 RMS may need adjustment, or trim may become unnecessary.
-- The provider's `outputFormat` must match `pipeline.workingFormat`
-  (mono int16 @ 22050 Hz today). If the engine returns MP3/AAC, decode
-  to PCM inside `synthesize`, or define a non-WAV pipeline that
-  satisfies the same interface.
+The final audio format we serve to users is `mp3` (64 kbps mono, benefiting from its small size, and the fact that audio quality loss is not meaningful on spoken audio). We use `ffmpeg` for audio operations to generate the final file, and try and avoid re-encoding many times to avoid accumulated quality loss.
 
+## Audio Player
 
-## Manifest format (`generated/<slug>/manifest.json`)
+The audio player is managed by [shikwasa](https://shikwasa.js.org/), and exposes the following features:
+- Shows chapters for the audio (skip to chapters with numpad)
+- Pause/start with button (or by pressing spacebar anytime - even if the player is unselected/hidden)
+- Control speed (up to 2x)
+- Skip/Rewind 10s (also doable with arrow keys)
+- Hide/show highlighting in the article 
+    - also turns off auto-scroll to facilitate taking screenshots, but snaps back when re-enabled
+    - highlighting is hidden, but still logically processed (even if now shown) as this is much simlper and snappier than trying to recalculate what highlights should be shown at any given point the user re-enables highlighting
+- Show a progress bar & timer for position in the audio
+- Toggle player entirely (to hide it and focus on just the article)
 
-```json
-{
-  "audio": "/generated/<slug>/full.mp3",
-  "duration": 84.21,
-  "chapters": [
-    { "id": "intro", "title": "Welcome", "startTime": 0, "endTime": 8.85 }
-  ],
-  "marks": [
-    { "name": "title", "time": 0, "chapter": "intro",
-      "text": "Hi everyone, and welcome to today's mini-talk." }
-  ]
-}
-```
-
-- Times are **absolute seconds** in the master track. The player never
-  needs to know about chunks.
-- `audio` is a path under `/generated/<slug>/`; Content-Type is inferred
-  from the file extension by `Bun.file` at serve time.
-- Marks shift backwards by each chunk's trim amount so they still align
-  with speech after the leading silence is removed.
+*Note*:
+- `Shikwasa`s `seek(time)` calls `parseInt(time)` internally (truncating fractions), so we bypass it with our own `seekToSeconds`
+- `Shikwasa` has built-in chapter detection, but to avoid the edge-case of briefly showing the wrong chapter when seeking to exactly the chapter boundary, we add `+ 0.01` to the chapter start time when seeking so that it reliably considers us *inside* the new chapter range
+- `theme: "dark"` is forced
 
 ## Player & sync (`client/narrator.ts`)
 
-- **Shikwasa** for the player chrome. Provides scrub, speed, ±15s skip,
-  and a Chapter plugin. Lighter than building from scratch.
-- `theme: "dark"` is forced (the dark style gives us the contrast we need, and our page only supports one color mode).
-- The player's own chapter popover (`.shk-chapter`), "more" button
-  (`.shk-btn_more`), extras panel (`.shk-controls_extra`), and empty
-  cover slot (`.shk-cover`) are CSS-hidden. We render a custom chapter
-  pill strip instead.
+We need to keep the highlighted content in sync with the player controls (ex: skipping forward/backwards)
+
+Key architectural things to make this work properly:
 - Active-mark tracking uses **`requestAnimationFrame`** reading
-  `player.currentTime`, not the audio element's `timeupdate` event
-  (`timeupdate` fires ~4Hz, too coarse for sentence-level marks).
-- Active mark = "latest mark whose `time` ≤ `currentTime`". Recomputed
-  each tick from the current time rather than advanced as an index — this
-  gives correct behavior on backward seeks for free.
-- Auto-scroll only fires while playing **and** highlighting is enabled.
-  Scrolling under a paused user is hostile, and scrolling while
-  highlighting is disabled would defeat the point of the screenshot mode
-  described below.
-- **Highlighting toggle** — an eye-icon button that turns the narration highlighting on/off
-  (`highlightEnabled` flag).
-  - **Why it exists:** the article is the primary artifact and the player
-    is an enhancement. Screenshots, exports, "show me what the page looks
-    like" demos, or simply preferring a clean reading view all want the
-    article in its as-authored state even while audio is playing.
-  - **Why internal mark tracking continues when off:** so re-enabling
-    snaps the highlight straight onto the current mark instead of
-    waiting for the next one to fire. Only the DOM mutations are gated;
-    the rAF tick still runs and `activeId` still advances.
-  - **Why auto-scroll is also gated:** scrolling while the page is
-    supposed to look static would defeat the point of the mode.
-- The dock is dismissible via a single always-visible "Listen" pill
-  fixed in the bottom-right corner. Audio intentionally **keeps
-  playing** when hidden — users may dismiss the UI to read undistracted
-  but still want narration. Pause via Space.
-- Page-global keyboard shortcuts (in `setupKeyboardShortcuts()`):
-  - **Space** toggles play/pause **always**, including when a button or
-    link has focus. This deliberately overrides the default
-    Space-activates-focused-button behavior so a focused chapter pill or
-    the visibility toggle doesn't hijack playback control — matches
-    Apple Podcasts / Spotify / YouTube semantics. Buttons can still be
-    activated with Enter. Suppressed only when typing in an
-    input/textarea/contenteditable.
-  - **← / →** rewind / fast-forward 10s (matches the dock's own
-    backward/forward buttons). Goes through `seekToSeconds()` for the
-    same reason chapter seeks do — Shikwasa's `seekBySpan()` would round
-    via its `parseInt` seek bug.
-  - **1–9** jump to chapter N (1-indexed). No-op if chapter N doesn't
-    exist. Chapter seeks route through `jumpToChapter()` → `seekToSeconds()`
-    so they bypass Shikwasa's `parseInt` seek bug just like clicking a
-    chapter pill does.
-  - Modifier-held combinations (⌘/Ctrl/Alt + key) are ignored so browser
-    shortcuts (find, refresh, etc.) aren't broken.
+  `player.currentTime`, and not the audio element's `timeupdate` event (`timeupdate` fires ~4x/sec, too coarse for sentence-level marks).
+- Active mark = "latest mark whose `time` ≤ `currentTime`" (recomputed each tick so backward seeks are efficient).
 
-## Specs we lean on
+## Manifest format (`generated/<slug>/manifest.json`)
 
-Most of the building blocks here were already standardized. Notes on what's
-load-bearing, what's inspiration, and what we considered and rejected.
+- Times are **absolute seconds** in the master track (the player never needs to know about chunks)
+- `audio` is a path under `/generated/<slug>/`; Content-Type is inferred
+- The time of different marks is calculated taking into account trimming out silent audio (to avoid slowly going out of sync)
 
-### Directly used
 
-- **SSML 1.0 — `<mark>` only** (`specs/SSML-spec.html`) — we borrow
-  exactly one primitive from SSML: `<mark name="..."/>` as the segment
-  boundary marker (the spec's own synchronization point). We reuse
-  `name` directly as the target element id, no aliasing. The chunk's
-  inner content is otherwise plain text — no `<speak>` root, no
-  namespace, no prosody/voice/sub vocabulary. See "Considered, not
-  used" for why we dropped full SSML.
+## Relation to other specifications
 
-### Conceptual basis (not on-the-wire)
+### Possibly usable later
 
-- **EPUB 3 Media Overlays** (`specs/EPUB3-spec.html`) — the closest
-  existing standard to what we're doing. Media Overlays pair text
-  fragments with audio clips via SMIL `<par>` containers
-  (`<text src="...#id"/>` next to an `<audio clipBegin clipEnd/>`).
-  Our manifest is the same data model in JSON: each mark is one
-  `<par>` (element id + time-in-audio). If we ever need EPUB export,
-  the conversion is mechanical.
-- **SMIL 3** (`specs/SMIL3-spec.html`) — the host language behind
-  Media Overlays. We don't ship SMIL XML, but the data model
-  (parallel time containers indexing into one audio track) is exactly
-  what the player walks each rAF tick.
-- **W3C Sync Media for Publications (Lite)**
-  (`specs/SyncMediaLite-spec.html`) — the Publishing WG's newer,
-  HTML-first alternative to Media Overlays. Same shape as our
-  manifest: a cue list keyed by element id, with `startTime` /
-  `endTime` into a single audio track. The manifest is roughly one
-  rename away from being a Sync Media Lite document. If/when this
-  spec stabilizes we should adopt its field names verbatim.
+- **EPUB 3 Media Overlays** ([spec][EPUB]): Media Overlays pair text fragments with audio clips via SMIL
+- **SMIL 3** ([spec][SMIL3]): the host language behind Media Overlays
+- **W3C Sync Media for Publications (Lite)** ([spec][SyncMedia]): HTML-first alternative to Media Overlays
 
 ### Considered, not used
 
-- **WebVTT** (`specs/WebVTT-spec.html`) — first instinct for "audio
-  synced to content", and `<track kind=chapters>` is an obvious
-  match for our chapter strip. Rejected because (a) WebVTT must live
-  in a separate sidecar file, breaking the single-HTML authoring
-  goal, and (b) cue payloads are CSS-styled text, not element
-  references — encoding "highlight `#title`" would require ad-hoc
-  conventions inside cue text. Chapters specifically could still be
-  exported as WebVTT `kind=chapters` for hosts that want it.
-- **Media Fragments URI** (`specs/MediaFragmentUrl-spec.html`) — the
-  `#t=12,18` URL fragment syntax. Not used today, but
-  `marks[].time` and `chapters[].startTime` / `endTime` are exactly
-  what share-links like `/posts/hash-functions#t=12.4` would consume.
-  Cheap to add when wanted; no schema changes required.
-- **Spoken HTML** (`specs/spoken-html-spec.html`) — proposes
-  annotating HTML elements directly with attributes like `data-ssml=`
-  to drive narration. Right idea (single file, narration co-located
-  with content) but the wrong knob: it forces the spoken script to
-  mirror the visual one, defeating the "feels like a talk, not a
-  read-aloud" goal. Our `<script>`-block-with-marks pattern keeps the
-  same single-file property while letting the spoken script diverge.
-- **Web Annotation Data Model**
-  (`specs/WebAnnotationDataModel-spec.html`) — a mark **is** an
-  annotation (target = element via `FragmentSelector`, body = the
-  narration segment + its audio range). We don't use the JSON-LD form
-  because nothing in the pipeline benefits from RDF semantics yet,
-  but if marks ever need richer metadata (speaker attribution,
-  translations, alt-text fallback) this is the data model to grow
-  into rather than inventing one.
-- **SSML 1.0 (full vocabulary)** (`specs/SSML-spec.html`) — we don't support SSML as TTS is moving off SSML (ex: ElevenLabs v3 replaced it with human-language tags like `[whisper]` / `[shout]`). As a technical blog, we don't really need any SSML feature other than marks and the specifying pronunciation. To achieve this,
-    (a) we keep `<mark name>` support (only SSML tag we allow) for segment boundaries
-    (b) we instead use PLS to specify pronunciations insteaed of full SSML
-- **Pronunciation Lexicon Specification 1.0**
-  (`specs/PronunciationLexicon-spec.html`) — the W3C lexicon format
-  for per-term pronunciation overrides. Authored inline in each post
-  as `<script type="application/pls+xml">...</script>` and extracted
-  at build time. Note that some engines do not support PLS, and so
-  the lexicon is a no-op in those cases (e.g. `say` on macOS).
-- **Shared / project-wide PLS file** — rejected. Would reintroduce
-  the sidecar pattern the "one file per post" constraint forbids, and
-  every AI session editing a post would need to remember to also
-  update it. Per-post inline PLS instead. To handle frequent cross-post duplication
-  of common terms, place it in `common-terms.pls` which is merged in.
+- **WebVTT** ([spec][WebVTT]): primarily used to overlay captions on top of video tracks (or audio tracks) via `<track>` elements, but we don't use any overlay like this.
+- **Media Fragments URI** ([spec][MediaFragments]): allows time-based URL fragment syntax (ex: `#t=12,18`), but we don't need any of these.
+- **Spoken HTML** ([spec][SpokenHtml]) allows inlining SSML notation directly in HTML elements with attributes. However, our audio content is too different from the blog context for this to be useful (and instead use script tags)
+- **Web Annotation Data Model** ([spec][AnnotationModel]): defines usage of JSON-LD to encode relations between objects. Although `mark`s are relations between the spoken track and the HTML content, it's a simple enough relation that we don't need a complex annotation system.
 
-## Known bugs & workarounds
+---
 
-- **Shikwasa `seek(time)` calls `parseInt(time)`** (line 953 of
-  `shikwasa.es.js` v2.2.1), truncating fractional seconds to whole-second
-  integers. `seek(8.826)` actually seeks to `8.0`.
-  - Workaround: `seekToSeconds()` in `narrator.ts` writes
-    `player.audio.currentTime` directly, bypassing the broken wrapper.
-  - **Same bug affects Shikwasa's own scrubber UI** — dragging the
-    progress handle also rounds to integer seconds. Not yet worked around.
-    Worth filing upstream (`parseInt` → `parseFloat`).
-- The `+ 0.01` in `seekToSeconds(chapter.startTime + 0.01)` is unrelated
-  to the above. It nudges the seek 10ms past the boundary so Shikwasa's
-  chapter plugin reliably considers us *inside* the new chapter range
-  (its boundary check is `t >= startTime && t < endTime`).
+[EPUB]: https://www.w3.org/TR/epub/
+[SMIL3]: https://www.w3.org/TR/SMIL3/
+[SyncMedia]: https://w3c.github.io/sync-media-pub/sync-media-lite
+[WebVTT]: https://www.w3.org/TR/webvtt1/
+[MediaFragments]: https://www.w3.org/TR/media-frags/
+[SpokenHtml]: https://www.w3.org/TR/spoken-html/
+[AnnotationModel]: https://www.w3.org/TR/annotation-model/
+[PLS]: https://www.w3.org/TR/pronunciation-lexicon/
+[SSML]: https://www.w3.org/TR/speech-synthesis11/
+[SSML-mark]: https://www.w3.org/TR/speech-synthesis11/#S3.3.2
 
-## CSS layout, in case it surprises you later
+<!-- For LLMs: local copies of the specs above.
+[EPUB]: ./specs/EPUB3-spec.html
+[SMIL3]: ./specs/SMIL3-spec.html
+[SyncMedia]: ./specs/SyncMediaLite-spec.html
+[WebVTT]: ./specs/WebVTT-spec.html
+[MediaFragments]: ./specs/MediaFragmentUrl-spec.html
+[SpokenHtml]: ./specs/spoken-html-spec.html
+[AnnotationModel]: ./specs/WebAnnotationDataModel-spec.html
+[PLS]: ./specs/PronunciationLexicon-spec.html
+[SSML]: ./specs/SSML-spec.html
+[SSML-mark]: ./specs/SSML-spec.html (section 3.3.2)
+-->
 
-- we will never support a dark-mode/light-mode switch, because we need to ensure generated visuals for charts, etc. appear correctly (too hard to do this for both modes)
