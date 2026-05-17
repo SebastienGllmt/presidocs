@@ -7,24 +7,31 @@
 <link rel="stylesheet" href="../client/narrator.css" />
 <script type="module" src="../client/narrator.ts"></script>
 
-<script type="application/ssml+xml" data-chunk-id="intro" data-chunk-title="Welcome">
-<speak version="1.0" xml:lang="en-US" xmlns="http://www.w3.org/2001/10/synthesis">
+<script type="application/pls+xml">
+<lexicon version="1.0" xmlns="http://www.w3.org/2005/01/pronunciation-lexicon" xml:lang="en-US">
+  <lexeme>
+    <grapheme>RIPEMD-160</grapheme>
+    <grapheme>RIPEMD160</grapheme>
+    <grapheme>ripemd-160</grapheme>
+    <grapheme>ripemd160</grapheme>
+    <alias>RIPE-M-D-1-60</alias>
+  </lexeme>
+</lexicon>
+</script>
+
+<script type="text/narration" data-chunk-id="intro" data-chunk-title="Welcome">
   <mark name="title"/>
   Hi everyone, and welcome to today's mini-talk.
-  <break time="300ms"/>
   <mark name="lede"/>
   In the next few minutes I want to demystify one of computing's most
   useful little tools: the hash function.
-</speak>
 </script>
 
-<script type="application/ssml+xml" data-chunk-id="definition" data-chunk-title="The core idea">
-<speak version="1.0" xml:lang="en-US" xmlns="http://www.w3.org/2001/10/synthesis">
+<script type="text/narration" data-chunk-id="definition" data-chunk-title="The core idea">
   <mark name="definition-heading"/>
   So let's start with the core idea.
   <mark name="definition-body"/>
-  A hash function takes any input <break time="200ms"/>
-  a word, a file, an entire movie <break time="200ms"/>
+  A hash function takes any input — a word, a file, an entire movie —
   and turns it into a fixed size fingerprint.
   <mark name="diagram"/>
   Take a look at the diagram. No matter what goes in on the left,
@@ -35,11 +42,9 @@
   <mark name="property-avalanche"/>
   Second: change one tiny bit of the input, and the entire output
   changes in a wild and unpredictable way. We call this the avalanche effect.
-</speak>
 </script>
 
-<script type="application/ssml+xml" data-chunk-id="uses" data-chunk-title="Where you've seen hashes">
-<speak version="1.0" xml:lang="en-US" xmlns="http://www.w3.org/2001/10/synthesis">
+<script type="text/narration" data-chunk-id="uses" data-chunk-title="Where you've seen hashes">
   <mark name="uses-heading"/>
   Okay, but why do we care? Here are three places you've already used
   hashes today, probably without realizing it.
@@ -48,17 +53,17 @@
   password. It stores a hash of it. That way, even if the database
   leaks, your password stays secret.
   <mark name="use-integrity"/>
-  File integrity. Ever downloaded a big file with a checksum next to it?
-  That checksum is a hash. If your downloaded file's hash matches,
-  you know it wasn't corrupted in transit.
+  File integrity. Ever downloaded a Linux ISO with a SHA-256 checksum
+  next to it? That checksum is a hash. If your downloaded file's
+  SHA-256 matches, you know it wasn't corrupted in transit.
   <mark name="use-blockchain"/>
   And of course, blockchains. Every block is named by its hash,
   and each block contains the hash of the previous one. That's
-  literally the chain in "blockchain."
+  literally the chain in "blockchain." Bitcoin even derives wallet
+  addresses by running RIPEMD-160 on top of SHA-256.
   <mark name="closing"/>
   That's the whole idea. A small, deterministic, ultra-sensitive
   fingerprint for any piece of data. Thanks for listening!
-</speak>
 </script>
 </head>
 <body>
@@ -144,7 +149,7 @@
       <div class="use-card" id="use-integrity">
         <h3>File integrity</h3>
         <p>
-          Downloading a Linux ISO? The site publishes a checksum.
+          Downloading a Linux ISO? The site publishes a SHA-256 checksum.
           Hash your local copy and compare &mdash; if it matches, the
           file arrived intact.
         </p>
@@ -155,7 +160,8 @@
         <p>
           Each block is named by its hash, and references the previous
           block's hash. Tampering with any block invalidates every
-          block that follows.
+          block that follows. Bitcoin wallet addresses, for instance,
+          are derived by running RIPEMD-160 on top of SHA-256.
         </p>
       </div>
 

@@ -1,22 +1,34 @@
-// Extracts inline SSML from a blog post HTML file, splits each chunk at
-// <mark name="..."/> boundaries, synthesizes one WAV per segment with the
-// macOS `say` command, concatenates segments into one master track, and
-// emits a manifest with absolute mark timings.
+// Extracts the inline narration script from a blog post HTML file, splits
+// each chunk at <mark name="..."/> boundaries, synthesizes one WAV per
+// segment via a pluggable TTS provider, concatenates segments into one
+// master track, and emits a manifest with absolute mark timings.
 //
 // Usage:
 //   bun run scripts/generate.ts posts/hash-functions.html
 //   bun run scripts/generate.ts posts/hash-functions.html --voice="Samantha"
 //   bun run scripts/generate.ts posts/hash-functions.html --bitrate=96k
+//   bun run scripts/generate.ts posts/hash-functions.html --tts=say
 //   bun run scripts/generate.ts posts/hash-functions.html --mock     # silent audio
 //
-// Delivers MP3 @ 64 kbps mono. Requires `ffmpeg` on PATH (the preflight
-// check below fails fast with a clear message if missing).
+// Delivers MP3 @ 64 kbps mono. Requires `ffmpeg` on PATH plus whichever
+// binaries the selected TTS provider needs (the preflight fails fast with
+// a clear message if any are missing).
 //
-// The `--mock` flag is for environments without `say` — it generates silent
+// TTS provider is selected by `--tts=NAME` (default: `say`, macOS-only).
+// Register new providers in the `ttsProviders` map (see "TTS abstraction").
+//
+// PLS pronunciation lexicons (PronunciationLexicon-spec.html) come from
+// two optional sources, both merged into one lexicon at build time:
+//   - `posts/common-terms.pls` (shared cross-post terms)
+//   - inline `<script type="application/pls+xml">` blocks in the post
+//     (post-specific terms; preserves the "one file per post" constraint)
+// The merged result is passed to every provider; providers that don't
+// honor PLS warn and ignore (the `say` adapter does this).
+//
+// The `--mock` flag is for environments without a TTS — it generates silent
 // audio of estimated duration so the player can still be demoed end-to-end.
 
 import { $ } from "bun";
-import { XMLParser } from "fast-xml-parser";
 import { mkdir, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -35,7 +47,7 @@ for (const arg of argv) {
 
 const htmlPath = positional[0];
 if (!htmlPath) {
-  console.error("usage: bun run scripts/generate.ts <post.html> [--voice=Samantha] [--mock]");
+  console.error("usage: bun run scripts/generate.ts <post.html> [--tts=say] [--voice=Samantha] [--mock]");
   process.exit(1);
 }
 
@@ -54,7 +66,7 @@ const projectRoot = resolve(dirname(htmlPath), "..");
 const outDir = join(projectRoot, "generated", slug);
 await mkdir(outDir, { recursive: true });
 
-// --- 1. Extract SSML chunks --------------------------------------------------
+// --- 1. Extract inline blocks (narration + PLS) ------------------------------
 //
 // HTMLRewriter (Bun built-in, lol-html under the hood) is a proper streaming
 // HTML parser. Regex on HTML is unsound — comments that wrap a `<script>`,
@@ -64,17 +76,25 @@ await mkdir(outDir, { recursive: true });
 //
 // `<script>` content is treated as RAWTEXT by the HTML parser: tags inside
 // are NOT parsed and entities are NOT decoded. That's what we want — the
-// SSML payload comes out byte-identical to what the author wrote (modulo
-// streaming chunk boundaries, which we re-join).
+// narration and PLS payloads come out byte-identical to what the author
+// wrote (modulo streaming chunk boundaries, which we re-join).
+//
+// Two block types share this single pass:
+//   - `text/narration` — the spoken-script chunks, one per chapter
+//   - `application/pls+xml` — inline pronunciation lexicon (optional, zero
+//     or more blocks; concatenated and merged with `common-terms.pls` at
+//     bootstrap)
 
-type SsmlChunk = { id: string; title: string; ssml: string };
+type NarrationChunk = { id: string; title: string; content: string };
 
-const chunks: SsmlChunk[] = [];
+const chunks: NarrationChunk[] = [];
+const inlinePlsBlocks: string[] = [];
 let anonCount = 0;
-let pending: { id: string; title: string; buf: string[] } | null = null;
+let pendingChunk: { id: string; title: string; buf: string[] } | null = null;
+let pendingPlsBuf: string[] | null = null;
 
 new HTMLRewriter()
-  .on('script[type="application/ssml+xml"]', {
+  .on('script[type="text/narration"]', {
     element(el) {
       const id =
         el.getAttribute("data-chunk-id") ??
@@ -83,139 +103,218 @@ new HTMLRewriter()
       const title = el.getAttribute("data-chunk-title") ?? id;
       // HTMLRewriter walks the tree in document order and serializes script
       // elements one at a time, so a single shared `pending` is safe.
-      pending = { id, title, buf: [] };
+      pendingChunk = { id, title, buf: [] };
       el.onEndTag(() => {
-        if (pending) {
-          chunks.push({ id: pending.id, title: pending.title, ssml: pending.buf.join("") });
-          pending = null;
+        if (pendingChunk) {
+          chunks.push({
+            id: pendingChunk.id,
+            title: pendingChunk.title,
+            content: pendingChunk.buf.join(""),
+          });
+          pendingChunk = null;
         }
       });
     },
     text(t) {
-      pending?.buf.push(t.text);
+      pendingChunk?.buf.push(t.text);
+    },
+  })
+  .on('script[type="application/pls+xml"]', {
+    element(el) {
+      pendingPlsBuf = [];
+      el.onEndTag(() => {
+        if (pendingPlsBuf) {
+          inlinePlsBlocks.push(pendingPlsBuf.join(""));
+          pendingPlsBuf = null;
+        }
+      });
+    },
+    text(t) {
+      pendingPlsBuf?.push(t.text);
     },
   })
   .transform(html);
 
 if (chunks.length === 0) {
-  console.error(`No <script type="application/ssml+xml"> blocks found in ${htmlPath}`);
+  console.error(`No <script type="text/narration"> blocks found in ${htmlPath}`);
   process.exit(1);
 }
 
-console.log(`Found ${chunks.length} SSML chunk(s) in ${htmlPath}`);
+console.log(`Found ${chunks.length} narration chunk(s) in ${htmlPath}`);
+if (inlinePlsBlocks.length > 0) {
+  console.log(`Found ${inlinePlsBlocks.length} inline PLS block(s) in ${htmlPath}`);
+}
 
-// --- 2. Split each SSML chunk at <mark> --------------------------------------
+// --- 2. Split each chunk at <mark> -------------------------------------------
 //
-// fast-xml-parser walks the SSML as a real XML tree, so we get correct
-// behavior on namespaces, single/double-quoted attrs, self-closing vs.
-// explicit close tags, CDATA, comments, entity decoding, and arbitrary
-// nesting (e.g. `<prosody>` wrapping speech).
+// The in-chunk format is plain text plus `<mark name="..."/>` boundaries —
+// no `<speak>` wrapper, no nested tags, no namespace. So we do not need an
+// XML parser; a single regex over `<mark name=...>` (self-closing or with
+// an explicit close tag, single or double quotes) gives the boundary
+// positions, and everything between two boundaries is the segment's text.
 //
-// We use `preserveOrder: true` so element + text nodes come back in
-// document order — essential, because the meaning of `<mark>` is "split
-// the surrounding text at THIS point in time."
-//
-// Tree shape (with preserveOrder + ignoreAttributes:false):
-//   PreservedNode =
-//     | { "#text": string }
-//     | { [tagName]: PreservedNode[], ":@"?: { "@_<attr>": string } }
-type PreservedNode =
-  | { "#text": string }
-  | ({ ":@"?: Record<string, string> } & Record<string, PreservedNode[]>);
-
-const xmlParser = new XMLParser({
-  preserveOrder: true,
-  ignoreAttributes: false,
-  attributeNamePrefix: "@_",
-  parseAttributeValue: false,
-  // Preserve whitespace inside text nodes so we can normalize at the end of
-  // each segment, not partway through. (XML's `xml:space` defaults are too
-  // surprising to rely on here.)
-  trimValues: false,
-  // We don't need PIs or comments in the output.
-  commentPropName: "",
-});
+// Entities are intentionally NOT decoded: HTMLRewriter hands us script
+// content byte-for-byte (RAWTEXT semantics), and the authoring format is
+// plain prose — `&` means `&`, not `&amp;`. A literal `<` mid-prose is
+// fine because the regex only matches `<mark ...>`, not arbitrary tags.
 
 type Segment = { markName: string | null; text: string };
 
-function splitSsml(ssml: string): Segment[] {
-  const tree = xmlParser.parse(ssml) as PreservedNode[];
-  // SSML requires `<speak>` as the document root. We enforce it here both
-  // because the spec says so and because XML's single-root rule means the
-  // parser silently drops everything after a sibling void element when no
-  // root exists — bare-text-with-marks would produce wrong output rather
-  // than wrong-but-loud output.
-  const speakNode = tree.find(
-    (n): n is Exclude<PreservedNode, { "#text": string }> =>
-      !("#text" in n) && childTagName(n) === "speak",
-  );
-  if (!speakNode) {
-    throw new Error("SSML chunk must be wrapped in <speak>...</speak>");
-  }
-  const root = (speakNode as Record<string, PreservedNode[]>)["speak"] ?? [];
+const markRegex = /<mark\s+name\s*=\s*(?:"([^"]*)"|'([^']*)')\s*\/?\s*>(?:\s*<\/mark\s*>)?/g;
 
+function splitChunk(content: string): Segment[] {
   const out: Segment[] = [];
   let currentMark: string | null = null;
-  let buffer = "";
+  let lastEnd = 0;
 
-  const flush = () => {
-    const text = normalizeWhitespace(buffer);
+  const push = (rawText: string) => {
+    const text = normalizeWhitespace(rawText);
     if (currentMark !== null || text) {
       out.push({ markName: currentMark, text });
     }
-    buffer = "";
   };
 
-  const walk = (nodes: PreservedNode[]) => {
-    for (const node of nodes) {
-      if ("#text" in node) {
-        buffer += node["#text"];
-        continue;
-      }
-      const tag = childTagName(node);
-      if (!tag) continue;
-      const attrs = node[":@"] as Record<string, string> | undefined;
-      const children = (node as Record<string, PreservedNode[]>)[tag] ?? [];
-      if (tag === "mark") {
-        // Boundary: emit the just-built segment, then start a new one
-        // labeled with this mark's name.
-        flush();
-        currentMark = attrs?.["@_name"] ?? null;
-      } else if (tag === "break") {
-        // A pause cue. `say` honors a comma as a brief pause; SSML-aware
-        // engines will ignore the comma and use their native break.
-        buffer += ", ";
-      } else {
-        // <prosody>, <emphasis>, <voice>, <sub>, etc. — we don't apply
-        // their effects with `say`, but their *text content* still needs
-        // to be spoken, so recurse into them.
-        walk(children);
-      }
-    }
-  };
-
-  walk(root);
-  flush();
-  return out;
-}
-
-// Helper: get the single element-tag key of a node (everything except `:@`).
-function childTagName(node: PreservedNode): string | null {
-  for (const k of Object.keys(node)) {
-    if (k !== ":@" && k !== "#text") return k;
+  for (const match of content.matchAll(markRegex)) {
+    push(content.slice(lastEnd, match.index));
+    currentMark = match[1] ?? match[2] ?? null;
+    lastEnd = match.index + match[0].length;
   }
-  return null;
+  push(content.slice(lastEnd));
+
+  return out;
 }
 
 function normalizeWhitespace(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
 
-// --- 3. Audio pipeline -------------------------------------------------------
+// --- 3. TTS abstraction ------------------------------------------------------
 //
-// The pipeline encapsulates everything the generator does with audio data,
-// so adding a new delivery format (Opus, AAC, FLAC) is one struct, not a
-// scatter of conditionals across the loop.
+// A `TtsProvider` turns text into speech audio. It is the only piece of the
+// generator that should change when swapping engines — `say` on macOS today,
+// likely Piper/espeak-ng on Linux dev machines, a cloud engine (ElevenLabs,
+// Google Cloud TTS, …) in production. Everything downstream (concat, trim,
+// MP3 encode) operates on the provider's output bytes via `AudioPipeline`,
+// so providers compose with pipelines orthogonally.
+//
+// Providers MUST emit WAV bytes in their declared `outputFormat`; the
+// pipeline asserts that this matches `pipeline.workingFormat` before any
+// synthesis runs. A provider whose engine natively returns MP3/AAC must
+// decode upstream (e.g. spawn ffmpeg in `synthesize`) — the rest of the
+// pipeline is PCM-aware and won't do that work for it.
+
+interface AudioFormat {
+  // Signed linear PCM is assumed throughout.
+  sampleRate: number;
+  channels: number;
+  bitsPerSample: number;
+}
+
+interface PlsLexicon {
+  // Where the lexemes came from, in merge order. Used for log messages and
+  // any provider-side caching. Entries are file paths
+  // (e.g. "posts/common-terms.pls") or virtual labels like
+  // "inline:<htmlPath>#<n>" for inline blocks.
+  sources: string[];
+  // Merged PLS XML — one `<lexicon>` root holding every `<lexeme>` from
+  // every source. We do not parse further here: providers that consume the
+  // lexicon parse on demand (or hand the bytes to their engine's
+  // pronunciation-dictionary API), and providers that ignore it pay no
+  // parsing cost.
+  xml: string;
+}
+
+interface TtsProviderConfig {
+  // Voice and rate are provider-specific strings/numbers — the registry
+  // doesn't validate them. `say` reads voice names from `say -v ?`; cloud
+  // engines have their own ids.
+  voice: string;
+  rate: number;
+  // The audio format the caller wants on `synthesize`'s output. Providers
+  // that can't honor the request should fail in their factory, not at
+  // synth-time partway through a long post.
+  format: AudioFormat;
+  // Pronunciation lexicon, if any. Loaded uniformly upstream; providers
+  // that don't honor PLS receive it and either ignore (with a warning) or
+  // refuse construction.
+  lexicon?: PlsLexicon;
+}
+
+interface TtsProvider {
+  // Logged at preflight and used in error messages. Identifies the engine,
+  // not the voice (those are config).
+  readonly name: string;
+  // Provider's actual output format. The bootstrap asserts this matches
+  // the audio pipeline's working format before any synthesis runs.
+  readonly outputFormat: AudioFormat;
+  // Binaries this provider needs on PATH (e.g. ["say"] for the macOS
+  // adapter, [] for a pure-HTTP cloud adapter). Unioned with the pipeline's
+  // binaries at preflight.
+  readonly requiredBinaries: readonly string[];
+  // Synthesize one segment into a WAV buffer matching `outputFormat`. The
+  // caller does not filter empty/whitespace input — providers must still
+  // return a valid (possibly minimal-silent) WAV in that case.
+  synthesize(text: string): Promise<Uint8Array>;
+}
+
+type TtsProviderFactory = (config: TtsProviderConfig) => TtsProvider;
+
+// macOS `say` adapter. Plumbs PLS via config because the loader is uniform
+// across providers, but ignores the lexicon at synth time — `say` has no
+// PLS support, and we'd rather warn loudly than silently mispronounce.
+function createSayProvider(config: TtsProviderConfig): TtsProvider {
+  const { format, voice, rate, lexicon } = config;
+  if (lexicon) {
+    console.warn(
+      `  · say: ignoring PLS lexicon from ${lexicon.sources.join(", ")} (\`say\` has no PLS support)`,
+    );
+  }
+  // `say` accepts `LEI16@<rate>` to force little-endian int16 PCM at the
+  // given sample rate. We pin the format from config so the pipeline's
+  // format assertion catches any mismatch up-front rather than after 30
+  // segments of synthesis at the wrong rate.
+  if (format.bitsPerSample !== 16 || format.channels !== 1) {
+    throw new Error(
+      `createSayProvider: only mono 16-bit PCM is supported (got ${format.channels}ch ${format.bitsPerSample}-bit)`,
+    );
+  }
+  const dataFormat = `LEI16@${format.sampleRate}`;
+  return {
+    name: "say",
+    outputFormat: format,
+    requiredBinaries: ["say"],
+    async synthesize(text) {
+      // `say` can't write to stdout, so we round-trip through a tmp file.
+      const spoken = text.trim().length === 0 ? "..." : text;
+      const tmpPath = join(
+        process.env.TMPDIR ?? "/tmp",
+        `read-demo-say-${process.pid}-${Math.random().toString(36).slice(2)}.wav`,
+      );
+      try {
+        await $`say --voice=${voice} --rate=${rate} --output-file=${tmpPath} --file-format=WAVE --data-format=${dataFormat} ${spoken}`.quiet();
+        return new Uint8Array(await Bun.file(tmpPath).arrayBuffer());
+      } finally {
+        await rm(tmpPath, { force: true });
+      }
+    },
+  };
+}
+
+// Registry keyed by --tts flag value. New providers register here; the
+// bootstrap looks up the factory by name and constructs with the shared
+// `TtsProviderConfig`. Adding a Piper or ElevenLabs adapter is "implement
+// `TtsProvider`, add one map entry" — no other call sites change.
+const ttsProviders: Record<string, TtsProviderFactory> = {
+  say: createSayProvider,
+};
+
+// --- 4. Audio pipeline -------------------------------------------------------
+//
+// The pipeline encapsulates everything the generator does with audio data
+// *after* synthesis — concat, trim, duration, final-mile encode — so adding
+// a new delivery format (Opus, AAC, FLAC) is one struct, not a scatter of
+// conditionals across the loop. The pipeline is orthogonal to the TTS
+// provider; they're composed at the bootstrap.
 //
 // Working representation throughout the pipeline is mono 16-bit PCM @ 22050
 // Hz wrapped in WAV. We keep that across segments and chunks because:
@@ -225,27 +324,23 @@ function normalizeWhitespace(s: string): string {
 // Final-mile encoding to a delivered format happens in `encode()` — for WAV
 // that's the identity function; for MP3 it's a single ffmpeg call.
 //
-// `synthesize` / `silence` / `duration` / `concat` / `leadingSilenceSamples`
-// / `trim` all operate on the working-format buffer. A future backend that
-// wanted to keep its own codec internally (and skip the WAV → delivery
-// final step) would have to implement these operations on its own buffers
-// — but it MUST implement them, not silently drop them. The interface is
-// what makes the codec swap safe.
+// A future backend that wanted to keep its own codec internally (and skip
+// the WAV → delivery final step) would have to implement every operation
+// on its own buffers — not silently drop them. The interface is what makes
+// the codec swap safe.
 interface AudioPipeline {
+  // Format the pipeline expects on every buffer it consumes/produces (until
+  // `encode`). TTS providers must emit audio in this format.
+  workingFormat: AudioFormat;
   // Working-format extension, used only for any tmp files written to disk.
   workingExt: string;
   // Delivered-format extension and MIME — shown to the browser.
   deliveryExt: string;
   deliveryMime: string;
-  // Sample rate of the working format. Used to convert
-  // leadingSilenceSamples()'s sample-count return into seconds.
-  samplesPerSecond: number;
-  // External binaries that must exist on PATH. Probed at startup.
+  // Binaries this pipeline needs on PATH (e.g. ffmpeg for MP3 encode).
+  // Unioned with the TTS provider's binaries at preflight.
   requiredBinaries: readonly string[];
 
-  // Synthesize one segment of speech. Returns a buffer in the working
-  // format (e.g. a WAV file's bytes).
-  synthesize(text: string): Promise<Uint8Array>;
   // Generate silence of the given duration in the working format. Used by
   // --mock and (eventually) for explicit pauses between marks.
   silence(durationSec: number): Uint8Array;
@@ -254,8 +349,8 @@ interface AudioPipeline {
   // Splice working-format buffers into one with identical playback. MUST
   // be lossless w.r.t. the audio samples — no re-encode.
   concat(bufs: Uint8Array[]): Uint8Array;
-  // Detect leading silence and return its length in *samples* (so the
-  // caller can convert to seconds via samplesPerSecond and shift mark
+  // Detect leading silence and return its length in *samples* (the caller
+  // converts to seconds via `workingFormat.sampleRate` and shifts mark
   // times accordingly). Returns 0 if no significant silence.
   leadingSilenceSamples(buf: Uint8Array): number;
   // Drop `samples` leading audio samples and return the result.
@@ -265,7 +360,7 @@ interface AudioPipeline {
   encode(workingBuf: Uint8Array): Promise<Uint8Array>;
 }
 
-// --- 4. WAV helpers (working-format implementation) --------------------------
+// --- 5. WAV helpers (working-format implementation) --------------------------
 
 // WAV header layout: 12-byte RIFF preamble, then chunks (fmt, data, ...).
 // We don't assume the data chunk lives at byte 44 — `say` sometimes emits
@@ -377,7 +472,7 @@ function concatWavs(inputs: Uint8Array[]): Uint8Array {
 // gentler ones (1000-) leave noticeable silence before the first sound.
 function findLeadingSilenceSamples(wavBuf: Uint8Array): number {
   const { data } = findChunkRanges(wavBuf);
-  const numSamples = data.size / 2;
+  const numSamples = data.size / 2; // assumes mono 16-bit PCM (bitsPerSample)
   const dv = new DataView(wavBuf.buffer, wavBuf.byteOffset + data.offset, data.size);
   const windowSize = Math.floor(sampleRate * 0.02); // 20ms
   const rmsThreshold = 2000;
@@ -422,24 +517,7 @@ function trimLeadingSamples(wavBuf: Uint8Array, samples: number): Uint8Array {
   return out;
 }
 
-// Synthesize one chunk of speech with `say` and return the resulting WAV
-// bytes. `say` can't write to stdout, so we round-trip through a tmp file.
-async function sayToWavBytes(text: string): Promise<Uint8Array> {
-  const dataFormat = `LEI16@${sampleRate}`;
-  const spoken = text.trim().length === 0 ? "..." : text;
-  const tmpPath = join(
-    process.env.TMPDIR ?? "/tmp",
-    `read-demo-say-${process.pid}-${Math.random().toString(36).slice(2)}.wav`,
-  );
-  try {
-    await $`say --voice=${voice} --rate=${rate} --output-file=${tmpPath} --file-format=WAVE --data-format=${dataFormat} ${spoken}`.quiet();
-    return new Uint8Array(await Bun.file(tmpPath).arrayBuffer());
-  } finally {
-    await rm(tmpPath, { force: true });
-  }
-}
-
-// --- 5. Delivery encoders ----------------------------------------------------
+// --- 6. Delivery encoders ----------------------------------------------------
 
 // MP3 encoder via ffmpeg. Stream-in / stream-out so we never touch disk for
 // the intermediate WAV — important because the working buffers can be tens
@@ -480,15 +558,16 @@ async function wavToMp3Ffmpeg(wavBuf: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(outBytes);
 }
 
-// --- 6. Pipeline -------------------------------------------------------------
+// --- 7. Bootstrap: pipeline + TTS provider + preflight -----------------------
+
+const workingFormat: AudioFormat = { sampleRate, channels, bitsPerSample };
 
 const pipeline: AudioPipeline = {
+  workingFormat,
   workingExt: ".wav",
   deliveryExt: ".mp3",
   deliveryMime: "audio/mpeg",
-  samplesPerSecond: sampleRate,
-  requiredBinaries: ["say", "ffmpeg"],
-  synthesize: sayToWavBytes,
+  requiredBinaries: ["ffmpeg"],
   silence: buildSilentWav,
   duration: wavDurationSeconds,
   concat: concatWavs,
@@ -497,24 +576,114 @@ const pipeline: AudioPipeline = {
   encode: wavToMp3Ffmpeg,
 };
 
-// Preflight: every required binary must exist on PATH. Surfacing a clear
-// error here is much friendlier than a cryptic `say` or `ffmpeg` failure
-// 30 segments into a synthesis run.
-for (const bin of pipeline.requiredBinaries) {
+// TTS provider selection. `--tts=NAME` picks the factory; default is `say`
+// (macOS). New engines plug in by registering a factory in `ttsProviders`.
+const ttsName = flags.get("tts") ?? "say";
+const ttsFactory = ttsProviders[ttsName];
+if (!ttsFactory) {
+  console.error(
+    `Unknown --tts=${ttsName}. Available: ${Object.keys(ttsProviders).join(", ")}`,
+  );
+  process.exit(1);
+}
+
+// PLS lexicon assembly. Two sources, both optional:
+//   - posts/common-terms.pls — shared cross-post pronunciations (SHA-256,
+//     PostgreSQL, …). Lives next to the posts so it's discoverable; merged
+//     into every post's lexicon at build time.
+//   - inline `<script type="application/pls+xml">` blocks in the post —
+//     post-specific terms. Preserves the "one file per post" constraint
+//     for pronunciations unique to that post.
+// The merged result is one synthetic PLS document (one `<lexicon>` root
+// holding all `<lexeme>`s). Order: common-terms first, then inline — so a
+// PLS engine that picks the last match per grapheme lets a post override
+// a common-terms entry.
+const sharedPlsPath = join(dirname(htmlPath), "common-terms.pls");
+type PlsSource = { label: string; xml: string };
+const plsSources: PlsSource[] = [];
+if (await Bun.file(sharedPlsPath).exists()) {
+  plsSources.push({
+    label: sharedPlsPath,
+    xml: await Bun.file(sharedPlsPath).text(),
+  });
+}
+inlinePlsBlocks.forEach((xml, i) => {
+  plsSources.push({ label: `inline:${htmlPath}#${i}`, xml });
+});
+
+const lexemeBodyRegex = /<lexicon\b[^>]*>([\s\S]*?)<\/lexicon\s*>/;
+function mergeLexicons(sources: PlsSource[]): PlsLexicon {
+  // Slice each source's `<lexicon>...</lexicon>` body verbatim and stitch
+  // them under one fresh root. Comments and whitespace ride along — they
+  // don't affect runtime behavior and preserving them keeps the merged
+  // output debuggable.
+  const bodies = sources.map((s) => {
+    const m = lexemeBodyRegex.exec(s.xml);
+    if (!m) {
+      console.error(`${s.label}: no <lexicon>...</lexicon> root found`);
+      process.exit(1);
+    }
+    return `<!-- from ${s.label} -->${m[1]}`;
+  });
+  return {
+    sources: sources.map((s) => s.label),
+    xml:
+      `<?xml version="1.0" encoding="UTF-8"?>\n` +
+      `<lexicon version="1.0" xmlns="http://www.w3.org/2005/01/pronunciation-lexicon" xml:lang="en-US">\n` +
+      bodies.join("\n") +
+      `\n</lexicon>\n`,
+  };
+}
+
+const lexicon: PlsLexicon | undefined =
+  plsSources.length > 0 ? mergeLexicons(plsSources) : undefined;
+if (lexicon) {
+  console.log(`Loaded PLS lexicon from: ${lexicon.sources.join(", ")}`);
+}
+
+const tts = ttsFactory({
+  voice,
+  rate,
+  format: workingFormat,
+  lexicon,
+});
+
+// Sanity-check that the provider's output format actually matches what the
+// pipeline expects. Catching this here is much friendlier than a downstream
+// WAV-header mismatch midway through synthesis.
+const pf = tts.outputFormat;
+const wf = pipeline.workingFormat;
+if (
+  pf.sampleRate !== wf.sampleRate ||
+  pf.channels !== wf.channels ||
+  pf.bitsPerSample !== wf.bitsPerSample
+) {
+  console.error(
+    `TTS provider "${tts.name}" outputs ${pf.channels}ch ${pf.bitsPerSample}-bit @ ${pf.sampleRate}Hz; ` +
+      `pipeline expects ${wf.channels}ch ${wf.bitsPerSample}-bit @ ${wf.sampleRate}Hz.`,
+  );
+  process.exit(1);
+}
+
+// Preflight: every required binary (TTS + pipeline) must exist on PATH.
+// Surfacing this here is much friendlier than a cryptic failure 30 segments
+// into a synthesis run.
+const installHint = (bin: string): string => {
+  if (bin === "ffmpeg") return `Install ffmpeg (\`brew install ffmpeg\`).`;
+  if (bin === "say") return `\`say\` is macOS-only; pick a different --tts on other platforms.`;
+  return `Install it and try again.`;
+};
+for (const bin of new Set([...tts.requiredBinaries, ...pipeline.requiredBinaries])) {
   if (!Bun.which(bin)) {
-    console.error(
-      `Required binary "${bin}" not found on PATH.\n` +
-        (bin === "ffmpeg"
-          ? `Install ffmpeg (\`brew install ffmpeg\`).`
-          : `Install it and try again.`),
-    );
+    console.error(`Required binary "${bin}" not found on PATH.\n${installHint(bin)}`);
     process.exit(1);
   }
 }
 
+console.log(`TTS: ${tts.name} (voice=${voice}, rate=${rate})`);
 console.log(`Encoding MP3 @ ${mp3Bitrate} mono ${sampleRate}Hz`);
 
-// --- 7. Process each chunk ---------------------------------------------------
+// --- 8. Process each chunk ---------------------------------------------------
 //
 // Per-chunk audio files are emitted alongside the full track (useful for
 // cache-friendly regeneration: re-run on a single chunk and only that file
@@ -531,15 +700,15 @@ type ChunkArtifact = {
   buffer: Uint8Array;
   duration: number;
   // `text` carries the spoken text that follows each mark (up to the next
-  // mark, or end of chunk). The drawer in the client renders this directly,
-  // so it stays plain text — no SSML markup leaks through.
+  // mark, or end of chunk). The drawer in the client renders this directly;
+  // it's already plain text because the in-chunk format is plain text.
   localMarks: { name: string; time: number; text: string }[];
 };
 
 const artifacts: ChunkArtifact[] = [];
 
 for (const chunk of chunks) {
-  const segments = splitSsml(chunk.ssml);
+  const segments = splitChunk(chunk.content);
   console.log(`  · ${chunk.id}: ${segments.length} segment(s)`);
 
   const segmentBufs: Uint8Array[] = [];
@@ -552,7 +721,7 @@ for (const chunk of chunks) {
       const estSec = (wordCount / rate) * 60 + 0.25;
       buf = pipeline.silence(estSec);
     } else {
-      buf = await pipeline.synthesize(seg.text);
+      buf = await tts.synthesize(seg.text);
     }
     segmentBufs.push(buf);
     segmentDurations.push(pipeline.duration(buf));
@@ -565,7 +734,7 @@ for (const chunk of chunks) {
   // mark 0 stays pinned to t=0 of the trimmed chunk (it now points to the
   // first phoneme rather than the silence that preceded it).
   const trimSamples = mock ? 0 : pipeline.leadingSilenceSamples(combined);
-  const trimSeconds = trimSamples / pipeline.samplesPerSecond;
+  const trimSeconds = trimSamples / pipeline.workingFormat.sampleRate;
   const trimmed = trimSamples > 0 ? pipeline.trim(combined, trimSamples) : combined;
   if (trimSeconds > 0) {
     console.log(`    trimmed ${(trimSeconds * 1000).toFixed(0)}ms of leading silence`);
