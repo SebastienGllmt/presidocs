@@ -63,12 +63,14 @@ Therefore, we split these concerns into two steps:
 2. `AudioPipeline`: takes audio files, and does any processing on them (ex: concat, change encoding) to be ready to serve (note: handles different models having different output formats, yet wanting one consistent audio format to serve to users). It supports
 - `silence`: insert silence as needed (ex: between marks if needed)
 - `duration`: gets the duration of the audio file
-- `concat`: combine audio chunks (note: ideally lossless to avoid re-encoding causing audio loss)
-- `leadingSilenceSamples`: how long the leading silence is in the audio (some audio-generating tools start with a lot of leading silence, making concatenation sound awkward)
+- `concat`: combine audio chunks  (note: ideally lossless to avoid re-encoding causing audio loss and no disk round-trip, but this is format-specific)
+- `leadingSilenceSeconds`: how long the leading silence is in the audio (some audio-generating tools start with a lot of leading silence, making concatenation sound awkward)
 - `trim`: trim the start of an audio file (usually used to remove leading silence)
 - `encode`: encode to the final audio format served to the user
 
-The final audio format we serve to users is `mp3` (64 kbps mono, benefiting from its small size, and the fact that audio quality loss is not meaningful on spoken audio). We use `ffmpeg` for audio operations to generate the final file, and try and avoid re-encoding many times to avoid accumulated quality loss.
+Every operation except `concat` is implemented as a shell-out to `ffmpeg` / `ffprobe`. `concat` stays as an in-memory byte-splice because ffmpeg's concat demuxer can't take multiple stdin pipes
+
+The final audio format we serve to users is `mp3` (64 kbps mono, benefiting from its small size, and the fact that audio quality loss is not meaningful on spoken audio).  We try to avoid re-encoding many times to avoid accumulated quality loss — concat operates on the working PCM and the final mp3 encode happens once at the end.
 
 ## Audio Player
 
