@@ -33,27 +33,43 @@ Hard constraints that shape every decision below:
 
 - Each blog post is a single HTML file. Content and narration live together
   so authoring tools only have to edit one file.
-- Inline SSML lives in `<script type="application/ssml+xml" data-chunk-id="..." data-chunk-title="...">`
+- Narration lives in `<script type="text/narration" data-chunk-id="..." data-chunk-title="...">`
   blocks. Browsers treat the contents as raw text (the type is unknown), so
-  no rendering happens; these are only read at build-time by the generators to generate static artifcats (ex: chapter information, voice files, html-friendly rendering of the narration, etc.). In other words, they could be stripped from the final HTML.
+  no rendering happens; these are only read at build-time by the generators
+  to produce static artifacts (chapter information, voice files,
+  html-friendly rendering of the narration, etc.). In other words, they
+  could be stripped from the final HTML.
 - Each `<script>` is one **chunk**, which becomes one chapter in the player.
   Chunks are the unit of cache-friendly regeneration (re-generate one chunk,
   one audio file changes).
+- Inside a chunk: plain text plus `<mark name="..."/>` boundaries. The text
+  between two marks (or from a mark to the chunk's end) is the spoken script
+  for that segment. No `<speak>` wrapper, no SSML namespace, no other tags —
+  this is **not** an SSML document (see "Specs we lean on").
 - Mark-to-element mapping is plain: `<mark name="lede"/>` highlights
   `id="lede"` in the article. No CSS selectors, no aliases — keep it dumb.
+- Pauses: write them as commas/periods in the prose. We don't ship a
+  dedicated pause marker — natural punctuation gives better TTS pacing
+  than explicit cues, and the format stays plain-text-with-marks.
+- Per-term pronunciation (when the TTS mispronounces a technical word)
+  lives **inline** as `<script type="application/pls+xml">...PLS XML...</script>`,
+  same single-file principle as the narration chunks. The generator
+  extracts it at build time (same HTMLRewriter pass) and hands it to
+  the TTS provider as a `PlsLexicon`. One lexicon per post, not a
+  shared project-wide file — see "Considered, not used" for why.
+  See `specs/PronunciationLexicon-spec.html`. Note: not all TTS systems (ex: `say`) support PLS (in which case the PLS file is not used).
 
 ## Generation pipeline (`scripts/generate.ts`)
 
 - macOS `say` for TTS. Chosen because it's a system command — no API key,
   no external service, no extra `npm install`. Forces `LEI16@22050` mono so
   every segment WAV has identical PCM format (essential for concatenation).
-- SSML is split at `<mark>` boundaries; **one `say` invocation per
+- Each chunk is split at `<mark>` boundaries; **one `say` invocation per
   segment** so we can measure each segment's exact duration. This gives
   sample-accurate mark times without forced alignment.
-- `<break>` is mapped to a comma; other SSML tags are stripped before
-  passing to `say` (it ignores SSML markup). When swapping for an
-  SSML-aware TTS, replace the pipeline's `synthesize` and the splitter
-  can stay.
+- The chunk parser is intentionally flat: walk the chunk looking for
+  `<mark name>` (a segment boundary) or text (the current segment's
+  content). No nested-tag handling, no XML namespace, no document root.
 - WAV is the **working format** throughout the pipeline — every operation
   (synthesis, silence, duration, concat, trim) reads or returns WAV bytes.
   Picked because `say` writes WAV natively, lossless concat is just
@@ -94,21 +110,50 @@ from the **delivery format** (what the browser actually downloads) via the
   future codec has larger or more variable padding (e.g. AAC ADTS),
   measure it in `encode()` and bake the offset into the trim step.
 
-### The `AudioPipeline` interface
+### The `TtsProvider` and `AudioPipeline` interfaces
+
+The generator splits TTS from audio handling into two orthogonal
+interfaces. `TtsProvider` turns text into speech bytes; `AudioPipeline`
+takes those bytes through concat / trim / final-mile encode. The two are
+composed at the bootstrap — swapping engines doesn't touch the pipeline
+and vice versa. We expect at least three providers over time: `say`
+(macOS, today), a Linux dev equivalent (Piper / espeak-ng), and a
+production cloud engine (TBD).
+
+#### `TtsProvider`
+
+- One concrete adapter per engine. Today: `createSayProvider` in
+  `scripts/generate.ts`. New providers register a factory in the
+  `ttsProviders` map; the bootstrap selects by `--tts=NAME`.
+- Each adapter declares an `outputFormat` (sample rate / channels /
+  bits-per-sample). The bootstrap asserts it matches
+  `pipeline.workingFormat` before any synthesis runs — catching a
+  format mismatch up-front rather than after 30 segments.
+- The shared `TtsProviderConfig` carries `voice`, `rate`, target
+  `format`, and an optional `PlsLexicon`. The lexicon is extracted
+  from the post's inline `<script type="application/pls+xml">` block
+  in the same HTMLRewriter pass as the narration chunks, then passed
+  to every provider. Providers that don't honor PLS warn and ignore.
+- `requiredBinaries` is per-provider (e.g. `["say"]` for the macOS
+  adapter, `[]` for a pure-HTTP cloud adapter) and is unioned with
+  the pipeline's binaries at preflight.
+
+#### `AudioPipeline`
 
 We keep the pipeline behind an interface even though there's only one backend today (MP3). The interface is the contract a future codec (Opus, AAC, FLAC) has to satisfy — every operation must be implemented, not silently dropped. That's what makes the codec swap safe.
 
 Operations on the working-format buffer (WAV today):
 
-- `synthesize(text)` — speech → working bytes (`say` writes a WAV to a
-  tmp file, we read it back).
+- `workingFormat` — the `AudioFormat` (sampleRate / channels /
+  bitsPerSample) every operation expects on its input/output. TTS
+  providers must emit audio in this format.
 - `silence(seconds)` — generate a padding clip of the given duration
   (used by `--mock`).
 - `duration(buf)` — exact seconds, parsed from the WAV header.
 - `concat(bufs[])` — lossless splice by re-emitting the header and
   byte-copying PCM data.
 - `leadingSilenceSamples(buf)` — RMS-window detector returning a sample
-  count, converted to seconds via `samplesPerSecond`.
+  count, converted to seconds via `workingFormat.sampleRate`.
 - `trim(buf, samples)` — drop leading PCM samples and rewrite the header.
 
 Delivery-side metadata + final encode:
@@ -116,20 +161,31 @@ Delivery-side metadata + final encode:
 - `encode(buf)` — working → delivery bytes. For MP3 this is a single
   ffmpeg invocation via stdin/stdout.
 - `deliveryExt` / `deliveryMime` — `.mp3` / `audio/mpeg`.
-- `requiredBinaries` — `["say", "ffmpeg"]`, checked by preflight.
+- `requiredBinaries` — `["ffmpeg"]`, unioned with the TTS provider's
+  binaries at preflight.
 
-### When swapping `say` for a real SSML TTS
+### When adding a new TTS provider
 
-- Replace `pipeline.synthesize` in `scripts/generate.ts`. Everything else
-  stays.
-- If the new TTS exposes per-mark timing callbacks (ElevenLabs, Google
-  Cloud TTS), skip the per-segment generation pattern entirely: synthesize
-  the whole chunk in one call and read the engine's mark timestamps.
+- Implement the `TtsProvider` interface in `scripts/generate.ts` (or a
+  new module) and register the factory in the `ttsProviders` map. No
+  other call sites change.
+- If the new engine exposes per-mark timing callbacks (Google Cloud TTS,
+  ElevenLabs character-level timestamps), the provider can synthesize
+  the whole chunk in one call and return its own segmentation; the
+  current per-segment pattern is for engines that don't (`say`).
+  Translate our `<mark name>` boundaries to whatever tag syntax the
+  engine wants — SSML `<mark>` for SSML-aware engines, the engine's
+  own bracket syntax (e.g. ElevenLabs v3's `[...]` tags) otherwise.
+- For technical-term pronunciation, the lexicon is already plumbed
+  through `TtsProviderConfig.lexicon`. The provider just needs to
+  consume it (parse the PLS XML, or hand the bytes to the engine's
+  pronunciation-dictionary API).
 - Re-verify the silence trim. Different engines have different pre-roll;
   threshold 2000 RMS may need adjustment, or trim may become unnecessary.
-- `say`'s output is mono int16 @ 22050 Hz; the WAV helpers assume that
-  format. If the new TTS returns MP3/AAC, either decode to PCM upstream
-  or write a non-WAV pipeline that satisfies the same interface.
+- The provider's `outputFormat` must match `pipeline.workingFormat`
+  (mono int16 @ 22050 Hz today). If the engine returns MP3/AAC, decode
+  to PCM inside `synthesize`, or define a non-WAV pipeline that
+  satisfies the same interface.
 
 
 ## Manifest format (`generated/<slug>/manifest.json`)
@@ -216,18 +272,13 @@ load-bearing, what's inspiration, and what we considered and rejected.
 
 ### Directly used
 
-- **SSML 1.0** (`specs/SSML-spec.html`) — the inline
-  `<script type="application/ssml+xml">` blocks **are** SSML documents.
-  - `<speak>` as the root, with the
-    `http://www.w3.org/2001/10/synthesis` namespace preserved so blocks
-    are valid SSML if extracted standalone.
-  - `<mark name="..."/>` is the spec's own synchronization primitive —
-    we reuse `name` directly as the target element id, no aliasing.
-  - `<break time="..."/>` for prosody pauses; mapped to a comma when
-    handing off to `say`.
-  - `<prosody>`, `<emphasis>`, `<voice>`, etc. are stripped today
-    because `say` ignores them; they come "for free" when we swap in
-    an SSML-aware TTS.
+- **SSML 1.0 — `<mark>` only** (`specs/SSML-spec.html`) — we borrow
+  exactly one primitive from SSML: `<mark name="..."/>` as the segment
+  boundary marker (the spec's own synchronization point). We reuse
+  `name` directly as the target element id, no aliasing. The chunk's
+  inner content is otherwise plain text — no `<speak>` root, no
+  namespace, no prosody/voice/sub vocabulary. See "Considered, not
+  used" for why we dropped full SSML.
 
 ### Conceptual basis (not on-the-wire)
 
@@ -275,11 +326,25 @@ load-bearing, what's inspiration, and what we considered and rejected.
 - **Web Annotation Data Model**
   (`specs/WebAnnotationDataModel-spec.html`) — a mark **is** an
   annotation (target = element via `FragmentSelector`, body = the
-  SSML segment + its audio range). We don't use the JSON-LD form
+  narration segment + its audio range). We don't use the JSON-LD form
   because nothing in the pipeline benefits from RDF semantics yet,
   but if marks ever need richer metadata (speaker attribution,
   translations, alt-text fallback) this is the data model to grow
   into rather than inventing one.
+- **SSML 1.0 (full vocabulary)** (`specs/SSML-spec.html`) — we don't support SSML as TTS is moving off SSML (ex: ElevenLabs v3 replaced it with human-language tags like `[whisper]` / `[shout]`). As a technical blog, we don't really need any SSML feature other than marks and the specifying pronunciation. To achieve this,
+    (a) we keep `<mark name>` support (only SSML tag we allow) for segment boundaries
+    (b) we instead use PLS to specify pronunciations insteaed of full SSML
+- **Pronunciation Lexicon Specification 1.0**
+  (`specs/PronunciationLexicon-spec.html`) — the W3C lexicon format
+  for per-term pronunciation overrides. Authored inline in each post
+  as `<script type="application/pls+xml">...</script>` and extracted
+  at build time. Note that some engines do not support PLS, and so
+  the lexicon is a no-op in those cases (e.g. `say` on macOS).
+- **Shared / project-wide PLS file** — rejected. Would reintroduce
+  the sidecar pattern the "one file per post" constraint forbids, and
+  every AI session editing a post would need to remember to also
+  update it. Per-post inline PLS instead. To handle frequent cross-post duplication
+  of common terms, place it in `common-terms.pls` which is merged in.
 
 ## Known bugs & workarounds
 
