@@ -19,6 +19,19 @@ Key design decisions that shape the architecture:
 - **Non-linear narration is a first-class case.** Presenters reference earlier slides; our highlight/scroll logic has to handle going backwards as gracefully as forwards.
 - **No light/dark toggle**: we will never support a dark-mode/light-mode switch, because we need to ensure generated visuals for charts, etc. appear correctly (too hard to do this for both modes)
 
+## Repository layout
+
+Each top-level folder is one concern, so finding code is "pick the folder that matches what you want to change":
+
+- `generate/` — offline pipeline that turns a post into audio + manifest (`bun run generate`)
+- `client/` — client-run JS code (ex: audio player)
+- `shared/` — types/helpers used by both sides (e.g. common types / structures)
+- `posts/` — authored inputs (one HTML file per post + the shared PLS lexicon)
+- `generated/` — pipeline output (gitignored)
+- `specs/` — local copies of the W3C specs referenced above
+
+Folder boundaries follow runtime/process boundaries (offline build vs. browser runtime vs. authored input vs. derived output), not file kind — co-locate types and tests with the code that owns them rather than splitting them into `types/` or `tests/`.
+
 ## SSML usage
 
 Although [SSML] has historically been used to represent spoken text concepts, it has been losing traction given newer LLM-based models tend to focus on natural language hints over SSML-like DSLs.
@@ -64,7 +77,7 @@ Therefore, we split these concerns into two steps:
 - `silence`: insert silence as needed (ex: between marks if needed)
 - `duration`: gets the duration of the audio file
 - `concat`: combine audio chunks  (note: ideally lossless to avoid re-encoding causing audio loss and no disk round-trip, but this is format-specific)
-- `leadingSilenceSeconds`: how long the leading silence is in the audio (some audio-generating tools start with a lot of leading silence, making concatenation sound awkward)
+- `leadingSilenceMs`: how long the leading silence is in the audio (some audio-generating tools start with a lot of leading silence, making concatenation sound awkward)
 - `trim`: trim the start of an audio file (usually used to remove leading silence)
 - `encode`: encode to the final audio format served to the user
 
@@ -86,8 +99,9 @@ The audio player is managed by [shikwasa](https://shikwasa.js.org/), and exposes
 - Toggle player entirely (to hide it and focus on just the article)
 
 *Note*:
-- `Shikwasa`s `seek(time)` calls `parseInt(time)` internally (truncating fractions), so we bypass it with our own `seekToSeconds`
+- `Shikwasa`s `seek(time)` calls `parseInt(time)` internally (truncating fractions), so we bypass it with our own `seekToMs`
 - `Shikwasa` has built-in chapter detection, but to avoid the edge-case of briefly showing the wrong chapter when seeking to exactly the chapter boundary, we add `+ 0.01` to the chapter start time when seeking so that it reliably considers us *inside* the new chapter range
+- `Shikwasa` updates the progress-bar on the audio element's `timeupdate` event, which fires ~4×/sec; its CSS transition smooths each step but still leaves a visible ~150ms idle between them. We disable that transition and write the bar's width from our existing rAF tick (the same one driving mark highlighting), so the bar advances smoothly
 - `theme: "dark"` is forced
 
 ## Player & sync (`client/narrator.ts`)
@@ -101,7 +115,7 @@ Key architectural things to make this work properly:
 
 ## Manifest format (`generated/<slug>/manifest.json`)
 
-- Times are **absolute seconds** in the master track (the player never needs to know about chunks)
+- Times are **absolute milliseconds** in the master track (the player never needs to know about chunks)
 - `audio` is a path under `/generated/<slug>/`; Content-Type is inferred
 - The time of different marks is calculated taking into account trimming out silent audio (to avoid slowly going out of sync)
 

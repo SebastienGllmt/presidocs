@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "bun --hot index.ts",
     "start": "bun index.ts",
-    "generate": "bun scripts/generate.ts",
-    "clean": "bun scripts/clean.ts"
+    "generate": "bun generate/generate.ts",
+    "clean": "bun generate/clean.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
@@ -17,6 +17,7 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "shikwasa": "^2.2.1"
+    "shikwasa": "^2.2.1",
+    "zod": "^4.4.3"
   }
 }

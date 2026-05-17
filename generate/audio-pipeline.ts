@@ -7,6 +7,7 @@
 import { $ } from "bun";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import { asMs, msToSeconds, type Milliseconds } from "../shared/time.ts";
 
 export interface AudioFormat {
   // Signed linear PCM is assumed throughout.
@@ -30,18 +31,18 @@ export interface AudioPipeline {
 
   // Generate silence of the given duration in the working format. Used by
   // --mock and (eventually) for explicit pauses between marks.
-  silence(durationSec: number): Promise<Uint8Array>;
-  // Precise duration of a working-format buffer.
-  duration(buf: Uint8Array): Promise<number>;
+  silence(durationMs: Milliseconds): Promise<Uint8Array>;
+  // Precise duration of a working-format buffer, rounded to the nearest ms.
+  duration(buf: Uint8Array): Promise<Milliseconds>;
   // Splice working-format buffers into one with identical playback. MUST
   // be lossless w.r.t. the audio samples — no re-encode. Stays synchronous
   // and in-memory (byte-splice of PCM data sections)
   concat(bufs: Uint8Array[]): Uint8Array;
-  // Detect leading silence and return its length in seconds. Returns 0 if
-  // no significant silence at the start of the buffer.
-  leadingSilenceSeconds(buf: Uint8Array): Promise<number>;
-  // Drop `seconds` of leading audio and return the result.
-  trim(buf: Uint8Array, seconds: number): Promise<Uint8Array>;
+  // Detect leading silence and return its length in ms. Returns 0 if no
+  // significant silence at the start of the buffer.
+  leadingSilenceMs(buf: Uint8Array): Promise<Milliseconds>;
+  // Drop the given duration of leading audio and return the result.
+  trim(buf: Uint8Array, ms: Milliseconds): Promise<Uint8Array>;
   // Final-mile encode for delivery (e.g. WAV → MP3). A future lossless-
   // delivery backend could make this the identity function.
   encode(workingBuf: Uint8Array): Promise<Uint8Array>;
@@ -132,11 +133,12 @@ const tmpName = (label: string, ext: string) =>
 // muxer cannot fix up the RIFF / data chunk sizes on a non-seekable pipe,
 // and `concatWavs` reads those sizes to locate the PCM payload.
 export async function buildSilence(
-  durationSec: number,
+  durationMs: Milliseconds,
   format: AudioFormat,
 ): Promise<Uint8Array> {
   const { sampleRate, channels } = format;
   const tmpPath = tmpName("silence", ".wav");
+  const durationSec = msToSeconds(durationMs);
   try {
     await $`ffmpeg -hide_banner -loglevel error -f lavfi -i anullsrc=r=${sampleRate}:cl=mono -t ${durationSec} -ac ${channels} -ar ${sampleRate} -c:a pcm_s16le -y ${tmpPath}`.quiet();
     return new Uint8Array(await Bun.file(tmpPath).arrayBuffer());
@@ -151,7 +153,7 @@ export async function buildSilence(
 // without a seek to verify), even when the header is correct. Decoding
 // to `-f null` and parsing the final `time=HH:MM:SS.ms` line gives us
 // the encoder's view of processed input duration, ms-precise, in-memory.
-export async function durationViaFfmpeg(buf: Uint8Array): Promise<number> {
+export async function durationViaFfmpeg(buf: Uint8Array): Promise<Milliseconds> {
   const proc = Bun.spawn({
     cmd: [
       "ffmpeg",
@@ -179,7 +181,9 @@ export async function durationViaFfmpeg(buf: Uint8Array): Promise<number> {
   if (!last) {
     throw new Error(`ffmpeg (duration) produced no time= stat:\n${errText}`);
   }
-  return parseInt(last[1]!, 10) * 3600 + parseInt(last[2]!, 10) * 60 + parseFloat(last[3]!);
+  const seconds =
+    parseInt(last[1]!, 10) * 3600 + parseInt(last[2]!, 10) * 60 + parseFloat(last[3]!);
+  return asMs(Math.round(seconds * 1000));
 }
 
 // `say` (and most TTS engines) open each segment with dead silence followed
@@ -196,7 +200,7 @@ export async function durationViaFfmpeg(buf: Uint8Array): Promise<number> {
 // (20*log10(2000/32767) ≈ -24dB) — calibrated to catch the first audible
 // syllable without clipping soft fricatives like the "S" of "So". `d=0.02`
 // matches the prior 20ms-window granularity.
-export async function leadingSilenceSeconds(buf: Uint8Array): Promise<number> {
+export async function leadingSilenceMs(buf: Uint8Array): Promise<Milliseconds> {
   const proc = Bun.spawn({
     cmd: [
       "ffmpeg",
@@ -218,23 +222,24 @@ export async function leadingSilenceSeconds(buf: Uint8Array): Promise<number> {
   ]);
   if (code !== 0) throw new Error(`ffmpeg (silencedetect) exited ${code}:\n${errText}`);
   const startMatch = errText.match(/silence_start:\s*([\d.eE+-]+)/);
-  if (!startMatch || parseFloat(startMatch[1]!) > 0.05) return 0;
+  if (!startMatch || parseFloat(startMatch[1]!) > 0.05) return asMs(0);
   const endMatch = errText.match(/silence_end:\s*([\d.eE+-]+)/);
-  if (!endMatch) return 0;
-  return Math.max(0, parseFloat(endMatch[1]!));
+  if (!endMatch) return asMs(0);
+  return asMs(Math.max(0, Math.round(parseFloat(endMatch[1]!) * 1000)));
 }
 
 // Drop leading audio via ffmpeg `-ss` with stream copy. We round-trip
 // through temp files (rather than piping) because the wav muxer cannot fix
 // up RIFF / data chunk sizes on a non-seekable pipe, and `concatWavs` reads
 // those sizes. `-c copy` keeps it lossless — no PCM re-encode.
-export async function trimLeadingSeconds(
+export async function trimLeadingMs(
   buf: Uint8Array,
-  seconds: number,
+  ms: Milliseconds,
 ): Promise<Uint8Array> {
-  if (seconds <= 0) return buf;
+  if (ms <= 0) return buf;
   const inPath = tmpName("trim-in", ".wav");
   const outPath = tmpName("trim-out", ".wav");
+  const seconds = msToSeconds(ms);
   try {
     await Bun.write(inPath, buf);
     await $`ffmpeg -hide_banner -loglevel error -ss ${seconds} -i ${inPath} -c copy -y ${outPath}`.quiet();
@@ -296,11 +301,11 @@ export function createMp3AudioPipeline(
     deliveryExt: ".mp3",
     deliveryMime: "audio/mpeg",
     requiredBinaries: ["ffmpeg"],
-    silence: (sec) => buildSilence(sec, format),
+    silence: (ms) => buildSilence(ms, format),
     duration: durationViaFfmpeg,
     concat: (bufs) => concatWavs(bufs, format),
-    leadingSilenceSeconds,
-    trim: trimLeadingSeconds,
+    leadingSilenceMs,
+    trim: trimLeadingMs,
     encode: (buf) => wavToMp3(buf, format, mp3Bitrate),
   };
 }

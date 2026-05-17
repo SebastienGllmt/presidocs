@@ -1,30 +1,33 @@
 // Narrator: mounts a Shikwasa audio player fixed to the bottom of the page
 // and synchronizes <mark> highlights with playback.
 //
-// Manifest shape (see scripts/generate.ts):
+// Manifest shape (see generate/generate.ts):
 // {
 //   audio: "/audio/<slug>/full.wav",
-//   duration: 84.3,
+//   duration: 84300,
 //   chapters: [{ id, title, startTime, endTime }, ...],
-//   marks: [{ name: "elementId", time: <absolute seconds>, chapter }, ...]
+//   marks: [{ name: "elementId", time: <absolute ms>, chapter }, ...]
 // }
+// Every time field is integer milliseconds; we convert to seconds only at
+// the audio element + Shikwasa boundary (their APIs are second-based).
 
 import "shikwasa/dist/style.css";
 import { Player, Chapter } from "shikwasa";
+import { asMs, msToSeconds, secondsToMs, asSeconds, type Milliseconds } from "../shared/time.ts";
 
 type ManifestMark = {
   name: string;
-  time: number;
+  time: Milliseconds;
   chapter: string;
   // The spoken text that follows this mark, up to the next mark. Used to
   // populate the script drawer; segment elements get id="spoken-<name>"
   // so they can be deep-linked and (eventually) commented on.
   text?: string;
 };
-type ManifestChapter = { id: string; title: string; startTime: number; endTime: number };
+type ManifestChapter = { id: string; title: string; startTime: Milliseconds; endTime: Milliseconds };
 type Manifest = {
   audio: string;
-  duration: number;
+  duration: Milliseconds;
   chapters: ManifestChapter[];
   marks: ManifestMark[];
 };
@@ -35,8 +38,8 @@ type Manifest = {
 const SPOKEN_ID_PREFIX = "spoken-";
 const spokenSegmentId = (markName: string) => SPOKEN_ID_PREFIX + markName;
 
-function formatClockTime(seconds: number) {
-  const total = Math.max(0, Math.round(seconds));
+function formatClockTime(ms: Milliseconds) {
+  const total = Math.max(0, Math.round(msToSeconds(ms)));
   const m = Math.floor(total / 60);
   const s = total % 60;
   return `${m}:${s.toString().padStart(2, "0")}`;
@@ -61,6 +64,9 @@ class Narrator {
   private drawerTabBtn: HTMLButtonElement | null = null;
   private segmentEls = new Map<string, HTMLElement>();
   private drawerOpen = false;
+  // Cached progress-bar element so the rAF ticker can update its width directly
+  // (see comment on `updateBar` for why we drive the bar ourselves).
+  private playedBarEl: HTMLElement | null = null;
 
   constructor(
     private manifestUrl: string,
@@ -103,11 +109,12 @@ class Narrator {
         title: this.title,
         artist: this.artist,
         src: manifest.audio,
-        duration: manifest.duration,
+        // Shikwasa's audio config is second-based; the manifest is ms.
+        duration: msToSeconds(manifest.duration),
         chapters: manifest.chapters.map((c) => ({
           title: c.title,
-          startTime: c.startTime,
-          endTime: c.endTime,
+          startTime: msToSeconds(c.startTime),
+          endTime: msToSeconds(c.endTime),
         })),
       },
     });
@@ -115,6 +122,7 @@ class Narrator {
     this.renderChapters(manifest);
     this.setupVisibilityToggle();
     this.setupHighlightToggle();
+    this.setupSmoothBar();
     this.setupKeyboardShortcuts();
     this.buildDrawer(manifest);
     this.applyHashIfMatching();
@@ -134,7 +142,7 @@ class Narrator {
     // Seek a hair past startTime so the chapter plugin reliably considers
     // us inside the new chapter for `chapterchange` (its check is t >=
     // startTime && t < endTime).
-    this.seekToSeconds(chapter.startTime + 0.01);
+    this.seekToMs(asMs(chapter.startTime + 10));
     this.player.play();
   }
 
@@ -199,12 +207,12 @@ class Narrator {
 
       if (e.key === "ArrowLeft") {
         e.preventDefault();
-        this.skipBy(-10);
+        this.skipBy(asMs(-10_000));
         return;
       }
       if (e.key === "ArrowRight") {
         e.preventDefault();
-        this.skipBy(10);
+        this.skipBy(asMs(10_000));
         return;
       }
 
@@ -250,6 +258,30 @@ class Narrator {
     this.highlightBtn = btn;
   }
 
+  // Shikwasa updates `.shk-bar_played` on `timeupdate`, which fires ~4×/sec.
+  // The default CSS transition (width .1s ease-in) smooths each step but
+  // still leaves a visible ~150ms idle between updates, so playback looks
+  // steppy. We cache the bar element here, disable its transition, and let
+  // `updateBar` (called from our existing rAF tick) write the width 60×/sec
+  // straight from `audio.currentTime`. Shikwasa's own timeupdate write still
+  // runs — it just gets overwritten on the next animation frame.
+  private setupSmoothBar() {
+    const bar = this.playerContainer.querySelector(".shk-bar_played") as HTMLElement | null;
+    if (!bar) return;
+    bar.style.transition = "none";
+    this.playedBarEl = bar;
+  }
+
+  private updateBar() {
+    if (!this.playedBarEl || !this.player) return;
+    const audio = (this.player as unknown as { audio?: HTMLAudioElement }).audio;
+    if (!audio) return;
+    const duration = audio.duration;
+    if (!duration || !isFinite(duration)) return;
+    const pct = Math.max(0, Math.min(1, audio.currentTime / duration));
+    this.playedBarEl.style.width = pct * 100 + "%";
+  }
+
   private setHighlightEnabled(enabled: boolean) {
     this.highlightEnabled = enabled;
     if (this.highlightBtn) {
@@ -273,15 +305,15 @@ class Narrator {
     }
   }
 
-  private skipBy(seconds: number) {
+  private skipBy(ms: Milliseconds) {
     if (!this.player || !this.manifest) return;
     // Read currentTime from the underlying audio element rather than
-    // player.currentTime so we share the same code path as seekToSeconds()
+    // player.currentTime so we share the same code path as seekToMs()
     // and don't depend on Shikwasa's wrapper accessor.
     const audio = (this.player as unknown as { audio?: HTMLAudioElement }).audio;
-    const current = audio?.currentTime ?? 0;
-    const target = Math.max(0, Math.min(this.manifest.duration, current + seconds));
-    this.seekToSeconds(target);
+    const currentMs = secondsToMs(asSeconds(audio?.currentTime ?? 0));
+    const target = asMs(Math.max(0, Math.min(this.manifest.duration, currentMs + ms)));
+    this.seekToMs(target);
   }
 
   private renderChapters(manifest: Manifest) {
@@ -309,20 +341,21 @@ class Narrator {
   // Write directly to the underlying HTMLAudioElement (exposed as
   // `player.audio`) for sample-accurate seeking. Falls back to the broken
   // API if a future Shikwasa version hides the element.
-  private seekToSeconds(time: number) {
+  private seekToMs(ms: Milliseconds) {
+    const seconds = msToSeconds(ms);
     const audio = (this.player as unknown as { audio?: HTMLAudioElement }).audio;
     if (audio) {
-      audio.currentTime = time;
+      audio.currentTime = seconds;
     } else {
-      this.player?.seek(time);
+      this.player?.seek(seconds);
     }
   }
 
   private updateActiveChapter() {
     if (!this.manifest || !this.player) return;
-    const t = this.player.currentTime;
+    const tMs = secondsToMs(asSeconds(this.player.currentTime));
     const active = this.manifest.chapters.find(
-      (c) => t >= c.startTime && t < c.endTime,
+      (c) => tMs >= c.startTime && tMs < c.endTime,
     ) ?? this.manifest.chapters[0];
     for (const [id, el] of this.pillEls) {
       const isActive = id === active?.id;
@@ -367,13 +400,14 @@ class Narrator {
     // Keep chapter pills in sync alongside the per-mark highlight; on raw
     // seeks Shikwasa may not always emit chapterchange before the tick.
     this.updateActiveChapter();
-    const t = this.player.currentTime;
-    // Find the latest mark with time <= t. This works for both linear
+    this.updateBar();
+    const tMs = secondsToMs(asSeconds(this.player.currentTime));
+    // Find the latest mark with time <= tMs. This works for both linear
     // playback AND backward seeks — we never advance an index, we derive
     // the active mark from currentTime each tick.
     let active: ManifestMark | null = null;
     for (const m of this.manifest.marks) {
-      if (m.time <= t) active = m;
+      if (m.time <= tMs) active = m;
       else break;
     }
     this.setActive(active ? active.name : null);
@@ -510,7 +544,7 @@ class Narrator {
     seg.className = "spoken-segment";
     seg.dataset.mark = mark.name;
     seg.dataset.chapter = mark.chapter;
-    seg.dataset.time = String(mark.time);
+    seg.dataset.timeMs = String(mark.time);
     // `tabindex` so :focus-visible works when arrived at by URL fragment.
     seg.tabIndex = -1;
 
@@ -523,12 +557,12 @@ class Narrator {
     );
     play.innerHTML =
       '<svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 1l6 4-6 4z" fill="currentColor"/></svg>' +
-      `<time datetime="PT${mark.time}S">${formatClockTime(mark.time)}</time>`;
+      `<time datetime="PT${msToSeconds(mark.time)}S">${formatClockTime(mark.time)}</time>`;
     play.addEventListener("click", () => {
       // Seek into the start of this segment (the small offset matches the
       // chapter-jump nudge — keeps the chapter plugin's range check happy
       // when a mark sits exactly on a chapter boundary).
-      this.seekToSeconds(mark.time + 0.01);
+      this.seekToMs(asMs(mark.time + 10));
       this.player?.play();
     });
     seg.appendChild(play);

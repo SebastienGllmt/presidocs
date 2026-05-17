@@ -4,11 +4,11 @@
 // master track, and emits a manifest with absolute mark timings.
 //
 // Usage:
-//   bun run scripts/generate.ts posts/hash-functions.html
-//   bun run scripts/generate.ts posts/hash-functions.html --voice="Samantha"
-//   bun run scripts/generate.ts posts/hash-functions.html --bitrate=96k
-//   bun run scripts/generate.ts posts/hash-functions.html --tts=say
-//   bun run scripts/generate.ts posts/hash-functions.html --mock     # silent audio
+//   bun run generate/generate.ts posts/hash-functions.html
+//   bun run generate/generate.ts posts/hash-functions.html --voice="Samantha"
+//   bun run generate/generate.ts posts/hash-functions.html --bitrate=96k
+//   bun run generate/generate.ts posts/hash-functions.html --tts=say
+//   bun run generate/generate.ts posts/hash-functions.html --mock     # silent audio
 //
 // Delivers MP3 @ 64 kbps mono. Requires `ffmpeg` on PATH plus whichever
 // binaries the selected TTS provider needs (the preflight fails fast with
@@ -36,6 +36,7 @@ import {
   type AudioPipeline,
 } from "./audio-pipeline.ts";
 import { ttsProviders, type PlsLexicon } from "./tts-providers.ts";
+import { asMs, msToSeconds, type Milliseconds } from "../shared/time.ts";
 
 const argv = Bun.argv.slice(2);
 const flags = new Map<string, string>();
@@ -52,7 +53,7 @@ for (const arg of argv) {
 
 const htmlPath = positional[0];
 if (!htmlPath) {
-  console.error("usage: bun run scripts/generate.ts <post.html> [--tts=say] [--voice=Samantha] [--mock]");
+  console.error("usage: bun run generate/generate.ts <post.html> [--tts=say] [--voice=Samantha] [--mock]");
   process.exit(1);
 }
 
@@ -326,11 +327,11 @@ type ChunkArtifact = {
   title: string;
   // Working-format buffer (lossless), kept for the final concat into `full`.
   buffer: Uint8Array;
-  duration: number;
+  duration: Milliseconds;
   // `text` carries the spoken text that follows each mark (up to the next
   // mark, or end of chunk). The drawer in the client renders this directly;
   // it's already plain text because the in-chunk format is plain text.
-  localMarks: { name: string; time: number; text: string }[];
+  localMarks: { name: string; time: Milliseconds; text: string }[];
 };
 
 const artifacts: ChunkArtifact[] = [];
@@ -340,14 +341,14 @@ for (const chunk of chunks) {
   console.log(`  · ${chunk.id}: ${segments.length} segment(s)`);
 
   const segmentBufs: Uint8Array[] = [];
-  const segmentDurations: number[] = [];
+  const segmentDurations: Milliseconds[] = [];
 
   for (const seg of segments) {
     let buf: Uint8Array;
     if (mock) {
       const wordCount = seg.text.split(/\s+/).filter(Boolean).length || 1;
-      const estSec = (wordCount / rate) * 60 + 0.25;
-      buf = await pipeline.silence(estSec);
+      const estMs = asMs(Math.round(((wordCount / rate) * 60 + 0.25) * 1000));
+      buf = await pipeline.silence(estMs);
     } else {
       buf = await tts.synthesize(seg.text);
     }
@@ -361,10 +362,10 @@ for (const chunk of chunks) {
   // Everything inside the chunk shifts earlier by the trimmed duration;
   // mark 0 stays pinned to t=0 of the trimmed chunk (it now points to the
   // first phoneme rather than the silence that preceded it).
-  const trimSeconds = mock ? 0 : await pipeline.leadingSilenceSeconds(combined);
-  const trimmed = trimSeconds > 0 ? await pipeline.trim(combined, trimSeconds) : combined;
-  if (trimSeconds > 0) {
-    console.log(`    trimmed ${(trimSeconds * 1000).toFixed(0)}ms of leading silence`);
+  const trimMs = mock ? asMs(0) : await pipeline.leadingSilenceMs(combined);
+  const trimmed = trimMs > 0 ? await pipeline.trim(combined, trimMs) : combined;
+  if (trimMs > 0) {
+    console.log(`    trimmed ${trimMs}ms of leading silence`);
   }
 
   // Encode + write the per-chunk delivery file. We do this even though the
@@ -375,24 +376,24 @@ for (const chunk of chunks) {
   await Bun.write(chunkPath, chunkDelivered);
 
   // Compute mark times relative to the trimmed chunk's start.
-  const localMarks: { name: string; time: number; text: string }[] = [];
-  let t = 0;
+  const localMarks: { name: string; time: Milliseconds; text: string }[] = [];
+  let t = asMs(0);
   for (const [i, seg] of segments.entries()) {
     if (seg.markName) {
       localMarks.push({
         name: seg.markName,
-        time: Math.max(0, t - trimSeconds),
+        time: asMs(Math.max(0, t - trimMs)),
         text: seg.text,
       });
     }
-    t += segmentDurations[i]!;
+    t = asMs(t + segmentDurations[i]!);
   }
 
   artifacts.push({
     id: chunk.id,
     title: chunk.title,
     buffer: trimmed,
-    duration: t - trimSeconds,
+    duration: asMs(t - trimMs),
     localMarks,
   });
 }
@@ -406,17 +407,17 @@ const fullDelivered = await pipeline.encode(fullBuf);
 const fullPath = join(outDir, `full${pipeline.deliveryExt}`);
 await Bun.write(fullPath, fullDelivered);
 
-const chapters: { id: string; title: string; startTime: number; endTime: number }[] = [];
-const marks: { name: string; time: number; chapter: string; text: string }[] = [];
-let offset = 0;
+const chapters: { id: string; title: string; startTime: Milliseconds; endTime: Milliseconds }[] = [];
+const marks: { name: string; time: Milliseconds; chapter: string; text: string }[] = [];
+let offset = asMs(0);
 for (const a of artifacts) {
   const start = offset;
-  const end = offset + a.duration;
-  chapters.push({ id: a.id, title: a.title, startTime: round3(start), endTime: round3(end) });
+  const end = asMs(offset + a.duration);
+  chapters.push({ id: a.id, title: a.title, startTime: start, endTime: end });
   for (const m of a.localMarks) {
     marks.push({
       name: m.name,
-      time: round3(start + m.time),
+      time: asMs(start + m.time),
       chapter: a.id,
       text: m.text,
     });
@@ -424,23 +425,20 @@ for (const a of artifacts) {
   offset = end;
 }
 
-function round3(n: number) {
-  return Math.round(n * 1000) / 1000;
-}
-
 const manifest = {
   slug,
   generatedAt: new Date().toISOString(),
   audio: `/generated/${slug}/full${pipeline.deliveryExt}`,
-  duration: round3(offset),
+  duration: offset,
   chapters,
   marks,
 };
 await Bun.write(join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2));
 
 console.log(`\nWrote ${chapters.length} chapter(s), ${marks.length} mark(s) to ${outDir}`);
-console.log(`  full duration: ${manifest.duration.toFixed(2)}s`);
+console.log(`  full duration: ${msToSeconds(manifest.duration).toFixed(2)}s`);
 for (const c of chapters) {
   const count = marks.filter((m) => m.chapter === c.id).length;
-  console.log(`  ${c.id.padEnd(14)} ${(c.endTime - c.startTime).toFixed(2)}s   ${count} mark(s)   "${c.title}"`);
+  const lenSec = msToSeconds(asMs(c.endTime - c.startTime));
+  console.log(`  ${c.id.padEnd(14)} ${lenSec.toFixed(2)}s   ${count} mark(s)   "${c.title}"`);
 }
