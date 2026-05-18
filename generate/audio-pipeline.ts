@@ -164,7 +164,7 @@ export async function durationViaFfmpeg(buf: Uint8Array): Promise<Milliseconds> 
       "-f", "null",
       "-",
     ],
-    stdin: new Blob([buf]),
+    stdin: new Blob([buf as BlobPart]),
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -211,7 +211,7 @@ export async function leadingSilenceMs(buf: Uint8Array): Promise<Milliseconds> {
       "-f", "null",
       "-",
     ],
-    stdin: new Blob([buf]),
+    stdin: new Blob([buf as BlobPart]),
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -276,7 +276,7 @@ export async function wavToMp3(
       "-f", "mp3",
       "pipe:1",
     ],
-    stdin: new Blob([wavBuf]),
+    stdin: new Blob([wavBuf as BlobPart]),
     stdout: "pipe",
     stderr: "pipe",
   });

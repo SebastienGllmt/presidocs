@@ -458,7 +458,7 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 }
 
 /* ============================================================================
-   Spoken-script drawer — slides in from the right and lists the full
+   Spoken-script drawer — slides in from the left and lists the full
    narration script grouped by chapter. Segments have stable
    `id="spoken-<mark-name>"` so they're URL-fragment-targetable for deep
    links and (future) per-segment comment threads.
@@ -517,9 +517,9 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 }
 
 .narrate-drawer-tab[aria-expanded="true"] {
-  /* When open, the tab acts as a close affordance. */
-  background: rgba(88, 166, 255, 0.18);
-  border-color: rgba(88, 166, 255, 0.4);
+  /* The drawer header already provides an X to close, so the tab is
+     redundant once the drawer is open — hide it rather than restyling. */
+  display: none;
 }
 
 .narrate-drawer-tab svg { color: var(--accent); }
