@@ -1,7 +1,7 @@
 // Comments: Google-Docs-style threads in a right-margin column, anchored
 // to text selections (in the article body OR the spoken-script drawer) or
-// to whole graphics. v1 stores threads in localStorage keyed by the post's
-// pathname — a future backend can sync from there.
+// to whole graphics. Persistence + merge live in `commentsStore.ts`,
+// which wraps an Automerge document. This file is purely the UI layer.
 //
 // Why a column instead of a floating popover
 // ------------------------------------------
@@ -26,70 +26,18 @@
 // graphic isn't text, so there's nothing to hash; if the graphic is
 // replaced (same id, new contents) the comment intentionally follows.
 
-const STORAGE_KEY_PREFIX = "blog-comments:";
-
-type Context = "article" | "narration";
-
-type TextAnchor = {
-  kind: "text";
-  context: Context;
-  segments: Array<{ id: string; hash: string }>;
-  startOffset: number;
-  endOffset: number;
-  // Verbatim text of the selection at creation time. Shown on the card so
-  // a reader knows what the thread is about even if the surrounding
-  // sentences have since changed.
-  quote: string;
-};
-
-type GraphicAnchor = {
-  kind: "graphic";
-  context: Context;
-  id: string;
-};
-
-type Anchor = TextAnchor | GraphicAnchor;
-
-type Reply = {
-  id: string;
-  body: string;
-  createdAt: number;
-  // Set when the user deletes the reply. Same pattern as `Thread.resolvedAt`:
-  // the reply stays in storage so a future server sync can issue a DELETE
-  // for replies that were already pushed to the backend. UI filters them
-  // out everywhere. In v1 (no networking) every delete tombstones; the
-  // "never synced → remove immediately" optimization comes with the
-  // server-sync work.
-  deletedAt?: number;
-  // No author/user fields in v1 (anonymous). Reserved for the future
-  // backend-synced version where login provides identity.
-};
-
-type Thread = {
-  id: string;
-  anchor: Anchor;
-  replies: Reply[];
-  createdAt: number;
-  // Set when the user resolves the thread (decisive permanent dismiss,
-  // distinct from session-only "Hide"). Resolved threads vanish from the
-  // UI — no card, no highlight, not counted on figure indicators — but
-  // they stay in localStorage so a future server sync can flush them as
-  // DELETEs. That makes localStorage itself the pending-deletion queue
-  // without needing a separate data structure.
-  resolvedAt?: number;
-};
-
-function isResolved(thread: Thread): boolean {
-  return thread.resolvedAt !== undefined;
-}
-
-function isDeleted(reply: Reply): boolean {
-  return reply.deletedAt !== undefined;
-}
-
-function visibleReplies(thread: Thread): Reply[] {
-  return thread.replies.filter((r) => !isDeleted(r));
-}
+import {
+  CommentStore,
+  isResolved,
+  isDeleted,
+  visibleReplies,
+  type Anchor,
+  type Context,
+  type GraphicAnchor,
+  type Reply,
+  type TextAnchor,
+  type Thread,
+} from "./commentsStore.ts";
 
 type BlockInfo = {
   id: string;
@@ -128,30 +76,6 @@ async function sha256(s: string): Promise<string> {
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
-}
-
-function storageKey(): string {
-  return STORAGE_KEY_PREFIX + window.location.pathname;
-}
-
-function loadThreads(): Thread[] {
-  try {
-    const raw = localStorage.getItem(storageKey());
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed as Thread[];
-  } catch {
-    return [];
-  }
-}
-
-function saveThreads(threads: Thread[]): void {
-  try {
-    localStorage.setItem(storageKey(), JSON.stringify(threads));
-  } catch (err) {
-    console.warn("Failed to persist comments:", err);
-  }
 }
 
 // Walk descendants of `root` in document order, yielding elements matching
@@ -237,12 +161,18 @@ class CommentSystem {
   // (manifest missing) we still work on the article alone.
   private drawerRoot: HTMLElement | null = null;
 
-  // Persisted threads.
-  private threads: Thread[] = [];
+  // The CRDT store owns persistence + merge semantics. `snapshot` is a
+  // cached plain-JSON view of the store's threads, refreshed after every
+  // mutation. The UI reads from `snapshot`; mutations route through the
+  // store. Stays null briefly during init while Automerge is dynamically
+  // imported — the action bar and other entry points check for store
+  // readiness before doing work.
+  private store: CommentStore | null = null;
+  private snapshot: Thread[] = [];
   // In-memory drafts — a freshly composed thread that the user hasn't
-  // submitted yet. Promoted to `threads` on first reply, removed on
-  // Cancel. Each draft owns its own card+textarea, so drafts naturally
-  // survive any number of unrelated clicks.
+  // submitted yet. Promoted to the store on first reply, removed on
+  // Cancel. Deliberately not in the CRDT: drafts shouldn't sync to a
+  // server (or to the user's other devices) until the user commits.
   private drafts: Thread[] = [];
   // Thread ids whose card the user has temporarily hidden via "Cancel".
   // Session-only (deliberately not persisted) — a reload brings every
@@ -295,7 +225,12 @@ class CommentSystem {
       obs.observe(document.body, { childList: true, subtree: false });
     }
 
-    this.threads = loadThreads();
+    // Spin up the CRDT-backed store. This is the only place we await
+    // Automerge's WASM load — once `create()` returns the store is fully
+    // hydrated (including any one-shot migration from the v1 JSON key)
+    // and all UI handlers can safely call its mutation methods.
+    this.store = await CommentStore.create(window.location.pathname);
+    this.snapshot = this.store.snapshot();
 
     this.mountColumn();
     this.mountActionBar();
@@ -379,7 +314,7 @@ class CommentSystem {
     document.querySelectorAll<HTMLElement>(".cmt-highlight").forEach((s) =>
       this.unwrap(s),
     );
-    for (const thread of this.threads) {
+    for (const thread of this.snapshot) {
       if (isResolved(thread)) continue;
       if (thread.anchor.kind === "text" && !this.threadIsStale(thread)) {
         this.highlightTextThread(thread);
@@ -395,7 +330,7 @@ class CommentSystem {
     // decide whether to delete the now-orphaned thread.
     this.column.innerHTML = "";
     this.cardEls.clear();
-    const all: Thread[] = [...this.threads, ...this.drafts];
+    const all: Thread[] = [...this.snapshot, ...this.drafts];
     for (const thread of all) {
       if (isResolved(thread)) continue;
       const isStale = thread.anchor.kind === "text"
@@ -569,12 +504,12 @@ class CommentSystem {
         "Resolve this thread — hides it permanently and queues a delete to sync to the server";
       resolve.addEventListener("click", (e) => {
         e.stopPropagation();
-        thread.resolvedAt = Date.now();
+        if (!this.store) return;
         // Also drop any session-only "hide" mark so the thread isn't
         // stuck in the hidden set forever after being resolved.
         this.hiddenCardIds.delete(thread.id);
-        saveThreads(this.threads);
-        this.renderAll();
+        this.store.resolveThread(thread.id, Date.now());
+        this.refreshSnapshotAndRender();
       });
       row.appendChild(resolve);
     }
@@ -584,19 +519,23 @@ class CommentSystem {
     submit.className = "cmt-reply-submit";
     submit.textContent = isDraft ? "Comment" : "Reply";
     const doSubmit = () => {
+      if (!this.store) return;
       const body = ta.value.trim();
       if (!body) return;
       const reply: Reply = { id: uid(), body, createdAt: Date.now() };
-      thread.replies.push(reply);
       if (isDraft) {
-        // Promote draft → persisted thread. (`thread` is the same object
-        // identity, so we just move it from one list to the other.)
+        // Promote draft → persisted thread. Single Automerge change
+        // would be tidier here, but the public store API has separate
+        // ops; we accept two ops for the v1 case since it's a fresh
+        // thread no one else has touched yet.
+        this.store.addThread(thread.id, thread.anchor, thread.createdAt);
+        this.store.addReply(thread.id, reply);
         this.drafts = this.drafts.filter((t) => t.id !== thread.id);
-        this.threads.push(thread);
+      } else {
+        this.store.addReply(thread.id, reply);
       }
-      saveThreads(this.threads);
       ta.value = "";
-      this.renderAll();
+      this.refreshSnapshotAndRender();
     };
     submit.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -615,23 +554,26 @@ class CommentSystem {
   }
 
   private deleteReply(thread: Thread, replyId: string) {
+    if (!this.store) return;
     const reply = thread.replies.find((r) => r.id === replyId);
     if (!reply || isDeleted(reply)) return;
-    // Tombstone, don't remove — the entry remains in localStorage so a
-    // future server sync can issue a DELETE for replies that were already
-    // pushed upstream. The reply body is kept too, both because storage
-    // cost is trivial and because we may want it for an undo / audit
-    // view later.
-    reply.deletedAt = Date.now();
-    // If no visible replies are left, also resolve the thread so the
-    // server sync issues a thread-level DELETE alongside the reply
-    // DELETEs (server-side a thread with zero replies is a dead record
-    // anyway).
-    if (visibleReplies(thread).length === 0) {
-      thread.resolvedAt = Date.now();
-      this.hiddenCardIds.delete(thread.id);
-    }
-    saveThreads(this.threads);
+    // Tombstoning + the auto-resolve-on-last-delete bundling is all
+    // handled atomically inside CommentStore.deleteReply so future
+    // server sync sees one coherent CRDT change per user action.
+    this.store.deleteReply(thread.id, replyId, Date.now());
+    // The store auto-resolves the thread if this was the last visible
+    // reply; clear the session-only "hide" mark in the same step so a
+    // previously-hidden, now-resolved thread doesn't leave a dangling
+    // entry in the set.
+    this.hiddenCardIds.delete(thread.id);
+    this.refreshSnapshotAndRender();
+  }
+
+  // Re-pull the JSON snapshot from the store and re-render. Called after
+  // every mutation so the UI always reflects current doc state.
+  private refreshSnapshotAndRender() {
+    if (!this.store) return;
+    this.snapshot = this.store.snapshot();
     this.renderAll();
   }
 
@@ -649,7 +591,7 @@ class CommentSystem {
     }> = [];
     const docHeight = document.documentElement.scrollHeight;
     for (const [tid, card] of this.cardEls) {
-      const thread = this.threads.find((t) => t.id === tid)
+      const thread = this.snapshot.find((t) => t.id === tid)
         ?? this.drafts.find((t) => t.id === tid);
       if (!thread) continue;
       const target = this.computeAnchorTop(thread) ?? docHeight + 200;
@@ -1015,7 +957,7 @@ class CommentSystem {
         e.stopPropagation();
         const gid = el.dataset.commentGraphicId;
         if (!gid) return;
-        const matching = this.threads.filter(
+        const matching = this.snapshot.filter(
           (t) => !isResolved(t)
             && t.anchor.kind === "graphic"
             && t.anchor.id === gid,
@@ -1043,7 +985,7 @@ class CommentSystem {
   // Called from renderAll so it stays correct after submits / deletes.
   private updateGraphicIndicators() {
     for (const [gid, el] of this.graphicsById) {
-      const count = this.threads.filter(
+      const count = this.snapshot.filter(
         (t) => !isResolved(t)
           && t.anchor.kind === "graphic"
           && t.anchor.id === gid,

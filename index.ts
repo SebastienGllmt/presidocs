@@ -4,6 +4,16 @@ import hashFunctions from "./posts/hash-functions.html";
 
 const projectRoot = import.meta.dir;
 
+// Automerge ships its WebAssembly module as a binary file in its `dist/`.
+// We serve it directly here so the browser can `fetch()` it once and
+// cache it, instead of carrying a ~3.6MB base64-encoded copy inline in
+// the JS bundle. `commentsStore.ts` calls `initializeWasm()` with this
+// URL.
+const AUTOMERGE_WASM_PATH = join(
+  projectRoot,
+  "node_modules/@automerge/automerge/dist/automerge.wasm",
+);
+
 // Serve files from a fixed subdirectory of the project — used for the
 // generated audio + manifest files which Bun's bundler doesn't manage.
 function serveFromDir(dir: string) {
@@ -27,6 +37,14 @@ const server = Bun.serve({
     "/": index,
     "/posts/hash-functions": hashFunctions,
     "/generated/*": serveFromDir("generated"),
+    "/assets/automerge.wasm": async () =>
+      new Response(Bun.file(AUTOMERGE_WASM_PATH), {
+        headers: {
+          "Content-Type": "application/wasm",
+          // 30-day cache — the WASM only changes when the dep does.
+          "Cache-Control": "public, max-age=2592000, immutable",
+        },
+      }),
   },
   development: { hmr: true, console: true },
   fetch() {

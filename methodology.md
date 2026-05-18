@@ -198,15 +198,40 @@ Whole-graphic only in v1, scoped to `<figure>` (the authoring convention from [S
 
 Standalone `<svg>`/`<img>`/`<canvas>` are deferred: `<img>` is a void element, `<svg>` is a different DOM namespace, both need a wrapper before we can drop an HTML trigger button inside. The figure-only restriction keeps the indexing code free of those edge cases.
 
-### Storage
+### Storage layer (`client/commentsStore.ts`)
 
-`localStorage`, keyed by `location.pathname`. The data shape is plain JSON `Thread[]`, so a future server sync is a write-on-change push and a read-on-load merge — no migration. Author identity is deliberately omitted in v1 (every reply renders as "Anonymous"); the `Reply` type leaves the field reserved.
+Comments live in an **Automerge document** (CRDT) rather than a plain JSON array. The store module owns the document; `comments.ts` is purely a UI layer reading snapshots and routing mutations through the store API.
+
+**Why a CRDT given how little concurrency we have today.** In v1 there's almost no concurrent-write surface — each `(post, reader)` pair gets its own R2 blob, so two writers on the same blob is rare even after sync lands (it only happens when one reader uses two devices). The CRDT is here to make the *future* trivial: Phase 2's R2 sync becomes `merge + save + PUT-with-If-Match` instead of a hand-rolled op log, and if "readers see each other" is ever a feature we want, the merge is already correct. Picking up the CRDT mental model now also forces the data shape to be merge-friendly (maps not lists, tombstones not deletions) — that's mostly what shaped the design decisions one section above.
+
+**Why Automerge over Yjs / json-joy.** Automerge's plain-object mutation API (`change(doc, "op name", d => { d.threads[id].replies[rid] = {...} })`) maps almost 1:1 onto the v1 `Thread`/`Reply` types, so the refactor was a port not a rewrite. Yjs's `Y.Map`/`Y.Array` wrappers would have been imposed on every read path for a comments use case that doesn't need any of Yjs's rich-text power. The Automerge WASM core is <1MB and loads on first interaction only so it doesn't bloat the initial JS bundle. Standards-wise, neither Yjs nor Automerge is a "spec" in the IETF sense — there's no portable CRDT format, so we'd have picked one library no matter what. Automerge's [JSON-CRDT paper](https://arxiv.org/abs/1608.03960) is the closest thing to a published formal model.
+
+**Doc shape.** The internal document keeps threads and replies as maps (not arrays) so two devices adding records concurrently never tussle over list positions:
+```ts
+type CommentDoc = {
+  threads: {
+    [id: string]: {
+      anchor: Anchor,
+      replies: { [id: string]: Reply },  // map; sorted on render by createdAt
+      createdAt: number,
+      resolvedAt?: number,
+    }
+  }
+}
+```
+The public `snapshot()` method converts both maps to arrays (replies sorted by `createdAt`) so the UI can keep iterating naturally.
+
+**Reader identity.** A UUID per browser, generated once and stashed in `localStorage` under `blog-reader-id`. Independent of post — it's a device identity, not a per-post token. The blob key in R2 will be `comments/<post>/<reader-id>.amrg` so each browser writes to its own slot. Once login lands, the user's account id replaces the UUID and the per-device docs merge into one logical user doc; the CRDT makes that merge a non-event.
+
+**Persistence.** `Automerge.save(doc)` produces a `Uint8Array`; we base64-encode it into `localStorage` under `blog-comments:<path>:<reader-id>.amrg`. localStorage is string-only and snapshots are small (a hundred bytes per op), so the base64 inefficiency doesn't register; if comments ever grow huge we'd switch to IndexedDB (which stores binary natively).
+
+**Author identity.** Still deliberately omitted in v1 (every reply renders as "Anonymous"); the `Reply` type leaves the field reserved.
 
 ### UI
 
 - **Selection → floating action bar.** A "Comment" pill appears above any selection inside a commentable root. Clicking it creates a draft card in the column, scrolls to it, and focuses its textarea.
 - **Cards column** spans the document height. Each card is within it, so cards scroll with the page naturally. `repositionCards()` aligns each card's top with its anchor's `getBoundingClientRect().top + scrollY`, then walks in sort order pushing later cards down by at least `CARD_GAP_PX` so they don't overlap. It runs on scroll, resize, and after every render.
-- **Drafts vs threads.** A *draft* is an unsubmitted thread held in `this.drafts` (in-memory only). Its card looks the same as a saved one but is framed with a blue border; the composer's "Cancel" discards the entire draft, "Comment" promotes it to `this.threads` and persists. After the first reply lands, subsequent typing in the same card just appends replies (Cancel then just clears the textarea instead of removing the card). Each card owns its own textarea, so drafts never collide with each other and the old "you have unsaved work" draft-protection logic isn't needed.
+- **Drafts vs threads.** A *draft* is an unsubmitted thread held in `this.drafts` (in-memory only — drafts deliberately don't go into the CRDT, so they never sync to a server or the user's other devices until committed). Its card looks the same as a saved one but is framed with a blue border; the composer's "Cancel" discards the entire draft, "Comment" promotes it (registering the thread and the reply). After the first reply lands the thread lives in the CRDT and subsequent typing in the same card just appends replies. Each card owns its own textarea, so drafts never collide with each other and the old "you have unsaved work" draft-protection logic isn't needed.
 - **Cross-linking** between card and anchor: clicking a highlight scrolls its card into view and pulses it; clicking a card (anywhere outside its buttons / textarea) scrolls the article to the anchor and pulses the highlight.
 - **Highlight color** is soft blue (`rgba(88, 166, 255, 0.22)`), deliberately not yellow — narration already paints the active sentence yellow/orange, and a sentence that's both being read and commented needs to be visually unambiguous. Nested highlight spans (overlapping threads) naturally compose to a darker blue, which reads as "denser commentary here."
 - **Layout reservation.** When the column is visible (≥1100px viewport) `body { padding-right: 360px }` shifts the centered article left so the column has a clean gutter to live in. The narration dock stays viewport-centered and so no longer sits dead-center under the article when the column is showing; that visual mismatch is mild enough to ignore for v1.
@@ -240,11 +265,11 @@ Two notes on what's deferred:
 
 - Reply threading beyond a flat list per anchor.
 - Resolve undo (resolutions are one-way until server sync exists to round-trip).
-- Garbage-collecting accumulated `resolvedAt` records (rely on a future server-sync sweep).
-- Draft persistence across reloads (drafts live only in `this.drafts`, in-memory).
+- Garbage-collecting accumulated `resolvedAt` / `deletedAt` tombstones (the future server-sync sweep does this).
+- Draft persistence across reloads (drafts live in `this.drafts` in-memory, deliberately not in the CRDT).
 - Sub-region selection on graphics (drag-rectangle, SVG child clicks).
-- Author identity / login.
-- Backend persistence and conflict resolution.
+- Author identity / login (every reply renders as "Anonymous"; `Reply` reserves the field).
+- **R2 sync (Phase 2)** — the CRDT layer is in place; the GET/PUT-with-If-Match loop and the author-side aggregating viewer come next.
 - Cross-document selections (selection must stay within one of: article body OR drawer).
 - Narrow-viewport UI for viewing existing threads.
 
