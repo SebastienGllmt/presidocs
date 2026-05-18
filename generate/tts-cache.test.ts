@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { readdirSync } from "node:fs";
 import {
   computeCacheKey,
+  computeTextHash,
   wrapWithCache,
   type TtsCacheIdentity,
 } from "./tts-cache.ts";
@@ -94,6 +95,17 @@ test("computeCacheKey differs by local lexicon", () => {
   );
 });
 
+test("computeTextHash depends only on text", () => {
+  // Same text, different identity → same text-hash. This is the property
+  // that lets GC reap all voice/rate variants of a removed sentence in
+  // one shot.
+  const a = computeTextHash("hello");
+  const b = computeTextHash("hello");
+  expect(a).toBe(b);
+  expect(a).toMatch(/^[0-9a-f]{64}$/);
+  expect(computeTextHash("hello")).not.toBe(computeTextHash("hello!"));
+});
+
 test("wrapWithCache: miss then hit on identical input", async () => {
   const fake = makeFake();
   const cached = wrapWithCache(fake, { cacheDir, identity: baseIdentity });
@@ -157,6 +169,42 @@ test("wrapWithCache: passes through provider identity fields", () => {
   expect(cached.name).toBe(fake.name);
   expect(cached.outputFormat).toEqual(fake.outputFormat);
   expect(cached.requiredBinaries).toEqual(fake.requiredBinaries);
+});
+
+test("wrapWithCache: tracks every text-hash it touches (hits and misses)", async () => {
+  const fake = makeFake();
+  const cached = wrapWithCache(fake, { cacheDir, identity: baseIdentity });
+  await cached.synthesize("alpha");
+  await cached.synthesize("beta");
+  await cached.synthesize("alpha"); // hit — should not double-count or skip
+  // Two distinct texts → two distinct text-hashes, regardless of hit/miss.
+  expect(cached.textHashes.size).toBe(2);
+  expect(cached.textHashes.has(computeTextHash("alpha"))).toBe(true);
+  expect(cached.textHashes.has(computeTextHash("beta"))).toBe(true);
+});
+
+test("wrapWithCache: same text + different identity share one bucket", async () => {
+  // Different voice produces a different full-hash file, but both live
+  // inside the same text-hash bucket. That's what lets removed sentences
+  // GC every variant at once.
+  const fake = makeFake();
+  const cachedA = wrapWithCache(fake, { cacheDir, identity: baseIdentity });
+  await cachedA.synthesize("hello");
+  const cachedB = wrapWithCache(fake, {
+    cacheDir,
+    identity: { ...baseIdentity, voice: "Daniel" },
+  });
+  await cachedB.synthesize("hello");
+
+  // Both wrappers report the same single text-hash.
+  expect(cachedA.textHashes).toEqual(cachedB.textHashes);
+  expect(cachedA.textHashes.size).toBe(1);
+
+  // On disk: one bucket dir, two full-hash files inside.
+  const buckets = readdirSync(cacheDir);
+  expect(buckets.length).toBe(1);
+  expect(buckets[0]).toBe(computeTextHash("hello"));
+  expect(readdirSync(join(cacheDir, buckets[0]!)).length).toBe(2);
 });
 
 test("wrapWithCache: creates cacheDir lazily on first miss", async () => {

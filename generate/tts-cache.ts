@@ -17,10 +17,31 @@
 // the post's segments, because that's the scope the author is actively
 // iterating on.
 //
-// The cache lives at `generated/.tts-cache/<hash>.wav` and is shared
-// across posts. Segments are addressed purely by content, so two posts
-// that share a sentence share the cache entry. `generate/clean.ts` only
-// touches `generated/<slug>/`, so it never wipes the cache.
+// ----- Two-layer layout -----
+//
+// On disk the cache is nested: `generated/.tts-cache/<text-hash>/<full-hash>.wav`.
+//   - `<text-hash>` = sha256(segment text). One directory per distinct
+//     sentence, regardless of how it's synthesized.
+//   - `<full-hash>` = sha256 of the full identity (provider, voice, rate,
+//     format, local lexicon, text). One file per distinct synthesized
+//     variant of that sentence.
+//
+// The cache lookup uses the full hash — only an exact identity match is a
+// hit. The text-hash layer exists for garbage collection: it lets
+// `clean.ts` ask "is this sentence still in use by some post?" without
+// having to enumerate every voice/rate/lexicon combination ever generated.
+//
+// Each post's `cache-keys.json` records only its CURRENT text-hashes
+// (overwritten on every generate, NOT unioned). A sentence removed from a
+// post drops its text-hash from the index, so the next clean reaps the
+// whole bucket (every voice/rate variant of that sentence) in one shot.
+// Re-running with a different voice writes the same set of text-hashes
+// (the text didn't change), so the old voice's audio survives the next
+// clean alongside the new voice's — both are "still in use" at the
+// text level.
+//
+// `generate/clean.ts` deletes `generated/<slug>/` and then sweeps any
+// text-hash bucket no longer referenced by any post's index.
 
 import { mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -55,17 +76,36 @@ export interface TtsCacheConfig {
 
 export interface CachedTtsProvider extends TtsProvider {
   readonly stats: TtsCacheStats;
+  // Every text-hash this wrapper touched. Maps 1:1 to text-hash buckets
+  // on disk. The generator persists this set per-post under
+  // `generated/<slug>/cache-keys.json` (overwriting, not unioning) so
+  // `clean.ts` can GC entire buckets of sentences no longer used by any
+  // post. Within a bucket, every voice/rate/lexicon variant survives —
+  // they're all "the same sentence" from a still-in-use perspective.
+  readonly textHashes: ReadonlySet<string>;
 }
 
 // Bump when the key encoding changes in a backwards-incompatible way
 // (e.g. adding a new identity field, or changing what an existing field
 // represents). Old cache entries become unreachable but aren't deleted —
-// they age out naturally if the user prunes the dir.
+// they age out naturally on the next `clean` run (the new layout reads
+// nested `<text-hash>/<full-hash>.wav`, so flat root-level files from
+// older versions never resolve and get reaped as orphans).
 //
 // v2: lexicon field narrowed from "full merged lexicon" to "post-local
 // lexicon only". v1 entries used a key that mixed in `common-terms.pls`
 // and so are unreachable from v2 keys.
-const KEY_VERSION = "v2";
+// v3: disk layout changed from flat `<hash>.wav` to nested
+// `<text-hash>/<full-hash>.wav` to make sentence-level GC possible.
+const KEY_VERSION = "v3";
+
+export function computeTextHash(text: string): string {
+  // Just the raw segment text — no provider/voice/rate/lexicon. Same
+  // sentence under different voices shares this hash, which is the whole
+  // point: the GC layer asks "is this sentence still used by any post?"
+  // not "is this exact audio variant still used?".
+  return createHash("sha256").update(text).digest("hex");
+}
 
 export function computeCacheKey(identity: TtsCacheIdentity, text: string): string {
   // Explicit field order keeps the hash stable across JS engines that
@@ -90,16 +130,20 @@ export function wrapWithCache(
   config: TtsCacheConfig,
 ): CachedTtsProvider {
   const stats: TtsCacheStats = { hits: 0, misses: 0 };
-  let dirEnsured = false;
+  const textHashes = new Set<string>();
 
   return {
     name: inner.name,
     outputFormat: inner.outputFormat,
     requiredBinaries: inner.requiredBinaries,
     stats,
+    textHashes,
     async synthesize(text) {
-      const key = computeCacheKey(config.identity, text);
-      const path = join(config.cacheDir, `${key}.wav`);
+      const textHash = computeTextHash(text);
+      const fullHash = computeCacheKey(config.identity, text);
+      textHashes.add(textHash);
+      const bucket = join(config.cacheDir, textHash);
+      const path = join(bucket, `${fullHash}.wav`);
       const file = Bun.file(path);
       if (await file.exists()) {
         stats.hits++;
@@ -107,12 +151,9 @@ export function wrapWithCache(
       }
       stats.misses++;
       const buf = await inner.synthesize(text);
-      // Lazily create the cache dir on first miss so a fully-cached run
-      // doesn't touch the filesystem unnecessarily.
-      if (!dirEnsured) {
-        await mkdir(config.cacheDir, { recursive: true });
-        dirEnsured = true;
-      }
+      // mkdir with recursive is idempotent and cheap — no need to track
+      // which buckets we've already ensured this run.
+      await mkdir(bucket, { recursive: true });
       await Bun.write(path, buf);
       return buf;
     },

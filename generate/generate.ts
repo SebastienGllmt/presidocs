@@ -491,4 +491,16 @@ for (const c of manifestChapters) {
 if (cachedTts) {
   const { hits, misses } = cachedTts.stats;
   console.log(`  TTS cache: ${hits} hit(s), ${misses} miss(es) (${cacheDir})`);
+
+  // Persist the set of TEXT-hashes this post currently uses. `clean.ts`
+  // reads these per-post indices to GC orphaned text-hash buckets in the
+  // shared cache. Crucially, this is OVERWRITTEN (not unioned) on every
+  // run: a sentence removed from the post drops its text-hash here, and
+  // the next clean reaps the whole bucket — every voice/rate variant of
+  // that sentence in one shot. Re-running with a different voice writes
+  // the same set of text-hashes (text didn't change), so old voice
+  // variants survive inside their bucket.
+  const keysPath = join(outDir, "cache-keys.json");
+  const current = Array.from(cachedTts.textHashes).sort();
+  await Bun.write(keysPath, JSON.stringify(current, null, 2));
 }

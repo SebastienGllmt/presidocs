@@ -105,7 +105,19 @@ If any of these change, the corresponding entries miss and are re-synthesized. N
 
 **Cache value** is the raw provider output bytes (working-format WAV), captured *before* trim / concat / encode. Those downstream ops are cheap and deterministic, so caching them would just bloat the cache without saving time.
 
-**Cache location** is `generated/.tts-cache/<hash>.wav`, shared across all posts. Segments are content-addressed, so two posts that share a sentence (or a common boilerplate line) share the cache entry. `generate/clean.ts` only touches `generated/<slug>/`, so cleaning a post never invalidates the shared cache — wipe `generated/.tts-cache/` by hand if you need to force re-synthesis.
+**Cache location** is `generated/.tts-cache/<text-hash>/<full-hash>.wav`, shared across all posts. The layout is two-layer:
+- `<text-hash>` is `sha256(segment text)` — one *bucket* per distinct sentence, independent of how it's synthesized.
+- `<full-hash>` is the sha256 from the bullet list above — one file per distinct synthesized variant of that sentence (voice, rate, lexicon, …).
+
+Cache lookups always use the full hash, so only an exact identity match is a hit. The text-hash layer exists purely for GC.
+
+**Cache garbage collection.** Each generate run writes the set of *current* text-hashes for the post to `generated/<slug>/cache-keys.json` — **overwritten** every run, not unioned. `bun run clean <slug>` then deletes that post's directory AND sweeps the shared cache, removing any text-hash bucket no longer referenced by some other post's `cache-keys.json`.
+
+The two-layer split lets GC distinguish the two cases that matter:
+- **Sentence removed from the post**: its text-hash drops out of the index. On next clean, the bucket — and *every* voice/rate/lexicon variant inside it — is reaped.
+- **Voice or rate changed (sentence unchanged)**: adds new files without deleting the old ones for different models/parameters.
+
+To force re-synthesis without losing post artifacts, wipe `generated/.tts-cache/` by hand.
 
 `--mock` runs bypass the cache entirely: the silent-audio shortcut is already trivially fast, and caching placeholder silence wastes disk.
 

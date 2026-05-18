@@ -2,11 +2,13 @@
 // !!!  DESTRUCTIVE  !!!
 //
 // Permanently deletes the generated content (audio files + manifest.json)
-// for a specific blog post under `generated/<slug>/`. Use only when you are
-// confident the content can be rebuilt with
+// for a specific blog post under `generated/<slug>/`, AND garbage-collects
+// any shared TTS cache entries that were only referenced by that post.
+// Use only when you are confident the content can be rebuilt with
 //   `bun run generate posts/<slug>.html`
 // (regeneration takes a few minutes; the deleted artifacts are not
-// recoverable without it).
+// recoverable without it — for orphan cache entries the regen cost is
+// proportional to how many segments only that post used).
 //
 // USAGE:  bun run clean <slug>
 //
@@ -74,6 +76,51 @@ if (!existsSync(targetDir)) {
 
 const files = await readdir(targetDir);
 
+// Compute shared-cache entries that will be orphaned by this deletion.
+// The cache layout is `generated/.tts-cache/<text-hash>/<full-hash>.wav`,
+// so GC operates at the text-hash bucket level: a bucket is needed if
+// any OTHER post's `cache-keys.json` lists its text-hash. Sweeping by
+// bucket means removing one sentence from a post reaps every variant of
+// it (different voices/rates/lexicons) in one shot. We do this before
+// deletion so the banner shows the full blast radius up-front.
+//
+// Stray files at the cache-dir root (leftovers from earlier flat
+// layouts) are always orphan — the current code never produces them.
+const generatedRoot = join(projectRoot, "generated");
+const cacheDir = join(generatedRoot, ".tts-cache");
+const orphans: string[] = [];
+if (existsSync(cacheDir)) {
+  const stillNeeded = new Set<string>();
+  for (const entry of await readdir(generatedRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    // Skip `.tts-cache` itself and any other hidden bookkeeping dirs.
+    if (entry.name.startsWith(".")) continue;
+    // The slug being deleted no longer counts toward "still needed".
+    if (entry.name === slug) continue;
+    const keysPath = join(generatedRoot, entry.name, "cache-keys.json");
+    if (!existsSync(keysPath)) continue;
+    const ks: unknown = await Bun.file(keysPath).json();
+    if (!Array.isArray(ks)) {
+      console.error(`Refusing: ${keysPath} is not a JSON array.`);
+      process.exit(2);
+    }
+    for (const k of ks) {
+      if (typeof k === "string") stillNeeded.add(k);
+    }
+  }
+  for (const entry of await readdir(cacheDir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      // Bucket name should be a hex sha256. Anything else is unfamiliar —
+      // leave it alone rather than risk deleting unrelated user data.
+      if (!/^[0-9a-f]{64}$/.test(entry.name)) continue;
+      if (!stillNeeded.has(entry.name)) orphans.push(entry.name);
+    } else if (/^[0-9a-f]{64}\.wav$/.test(entry.name)) {
+      // Flat-layout leftover from a previous cache version. Always orphan.
+      orphans.push(entry.name);
+    }
+  }
+}
+
 // Safety 3: loud warning + audit trail in stdout. Printed unconditionally so
 // the user reading their conversation log sees exactly what was deleted.
 const bar = "═".repeat(64);
@@ -82,6 +129,11 @@ console.log("  !!!  DESTRUCTIVE OPERATION  !!!");
 console.log(bar);
 console.log(`  About to permanently delete generated/${slug}/ :`);
 for (const f of files) console.log(`    - generated/${slug}/${f}`);
+if (orphans.length > 0) {
+  console.log("");
+  console.log(`  Plus ${orphans.length} orphan cache bucket(s) in generated/.tts-cache/`);
+  console.log(`  (sentences no other post's cache-keys.json references after this deletion)`);
+}
 console.log("");
 console.log(`  Rebuilding requires \`bun run generate posts/${slug}.html\`,`);
 console.log("  which takes a few minutes. Proceed only if intentional.");
@@ -100,3 +152,12 @@ if (process.stdin.isTTY) {
 
 await rm(targetDir, { recursive: true, force: true });
 console.log(`Deleted generated/${slug}/`);
+
+// `recursive: true` handles both text-hash bucket directories and any
+// leftover flat-layout files identically.
+for (const f of orphans) {
+  await rm(join(cacheDir, f), { recursive: true, force: true });
+}
+if (orphans.length > 0) {
+  console.log(`Deleted ${orphans.length} orphan cache bucket(s) from generated/.tts-cache/`);
+}
