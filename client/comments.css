@@ -1,6 +1,6 @@
-/* Comments UI: floating action bar, popover, highlight spans, graphic
-   trigger, outdated pill. Visual tokens piggyback on narrator.css's
-   palette where it makes sense; we add a yellow-toned highlight for
+/* Comments UI: floating action bar, right-side cards column, highlight
+   spans, graphic trigger. Visual tokens piggyback on narrator.css's
+   palette where it makes sense; we add a soft-blue highlight for
    commented text (distinct from the orange narration highlight so the
    two are visually separable when both apply). */
 
@@ -10,38 +10,53 @@
   --cmt-fg-muted: #57606a;
   --cmt-border: #d0d7de;
   --cmt-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+  --cmt-shadow-soft: 0 2px 8px rgba(15, 23, 42, 0.08);
   --cmt-accent: #0969da;
+  --cmt-draft-border: #58a6ff;
   /* Blue family — kept clear of narration's yellow/orange so a sentence
      that's both being narrated AND has a comment is unambiguous. */
   --cmt-highlight-bg: rgba(88, 166, 255, 0.22);
   --cmt-highlight-bg-hover: rgba(88, 166, 255, 0.42);
   --cmt-highlight-border: rgba(9, 105, 218, 0.6);
   --cmt-stale: #b35900;
-  /* Float above the narration dock (z-index 100) and the drawer (z-index
-     200) in narrator.css, but below transient browser UI like native
-     menus. */
-  --cmt-z: 250;
+  /* Action bar floats above the narration dock (z-index 100) and the
+     drawer (z-index 200) in narrator.css. The cards column sits in the
+     normal flow above the article but below modal-style UI. */
+  --cmt-z-action: 250;
+  --cmt-z-card: 50;
 }
 
-/* Highlight span wrapping commented text. Doesn't break inline flow. */
+/* ============================================================================
+   Highlight spans (DOM-wrapped inside the article + drawer). Don't disrupt
+   inline flow. Nested spans (two threads on the same selection) compose
+   their backgrounds, so denser overlap reads as darker — a useful visual.
+   ============================================================================ */
 .cmt-highlight {
   background: var(--cmt-highlight-bg);
   border-bottom: 1px solid var(--cmt-highlight-border);
   cursor: pointer;
   transition: background 120ms ease;
-  /* Keep the highlight visually distinct from narration's orange glow. */
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
 }
-.cmt-highlight:hover {
-  background: var(--cmt-highlight-bg-hover);
+.cmt-highlight:hover { background: var(--cmt-highlight-bg-hover); }
+
+/* Brief flash on the article-side anchor when its card is clicked. */
+@keyframes cmt-anchor-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(9, 105, 218, 0); }
+  35% { box-shadow: 0 0 0 4px rgba(9, 105, 218, 0.35); }
+}
+.cmt-anchor-pulse {
+  animation: cmt-anchor-pulse 1100ms ease;
+  border-radius: 4px;
 }
 
-/* Floating action bar (the "Comment" button shown above a selection). */
+/* ============================================================================
+   Floating action bar (the "Comment" pill above a fresh selection).
+   ============================================================================ */
 .cmt-action-bar {
   position: absolute;
-  z-index: var(--cmt-z);
-  pointer-events: auto;
+  z-index: var(--cmt-z-action);
 }
 .cmt-action-bar[hidden] { display: none; }
 .cmt-action-btn {
@@ -58,93 +73,71 @@
   box-shadow: var(--cmt-shadow);
 }
 .cmt-action-btn:hover { background: #2d333b; }
-.cmt-action-btn svg { color: currentColor; }
 
-/* Popover that hosts an entire thread (existing replies + composer). */
-.cmt-popover {
+/* ============================================================================
+   Right-margin column — Google-Docs-style. Each thread (and each draft) is
+   a card, absolutely positioned within the column so it aligns vertically
+   with its anchor. The column itself spans the full document height so
+   cards scroll naturally with the page.
+   ============================================================================ */
+.cmt-column {
   position: absolute;
-  z-index: var(--cmt-z);
+  top: 64px; /* match article top margin */
+  right: 24px;
   width: 320px;
-  max-width: calc(100vw - 32px);
+  /* No fixed height — cards are absolutely positioned inside; the column
+     just provides the right-anchored coordinate space. */
+  pointer-events: none;
+  z-index: var(--cmt-z-card);
+}
+
+.cmt-card {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: auto;
   background: var(--cmt-bg);
   color: var(--cmt-fg);
   border: 1px solid var(--cmt-border);
   border-radius: 10px;
-  box-shadow: var(--cmt-shadow);
-  font: 14px/1.45 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.cmt-popover[hidden] { display: none; }
-.cmt-popover-arrow { display: none; /* reserved for a future arrow tail */ }
-
-.cmt-popover-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   padding: 10px 12px;
-  border-bottom: 1px solid var(--cmt-border);
-  background: #fafbfc;
+  box-shadow: var(--cmt-shadow-soft);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  transition: top 180ms cubic-bezier(0.22, 1, 0.36, 1),
+              box-shadow 160ms ease,
+              border-color 160ms ease;
 }
-.cmt-popover-title {
-  font-weight: 600;
-  font-size: 13px;
-  color: var(--cmt-fg-muted);
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  flex: 1;
+.cmt-card:hover {
+  box-shadow: var(--cmt-shadow);
 }
-.cmt-popover-header { gap: 8px; }
-.cmt-draft-tag {
-  padding: 2px 6px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  background: rgba(9, 105, 218, 0.12);
-  color: var(--cmt-accent);
-  border-radius: 4px;
+.cmt-card[data-draft="true"] {
+  border-color: var(--cmt-draft-border);
+  box-shadow: 0 0 0 1px var(--cmt-draft-border), var(--cmt-shadow-soft);
 }
-.cmt-draft-tag[hidden] { display: none; }
-@keyframes cmt-draft-flash {
-  0%, 100% { transform: scale(1); background: rgba(9, 105, 218, 0.12); }
-  35% { transform: scale(1.18); background: rgba(9, 105, 218, 0.3); }
-}
-.cmt-draft-tag.cmt-flash {
-  animation: cmt-draft-flash 380ms ease;
-}
-.cmt-popover-close {
-  background: transparent;
-  border: 0;
-  padding: 4px;
-  color: var(--cmt-fg-muted);
-  cursor: pointer;
-  border-radius: 4px;
-  display: inline-flex;
-}
-.cmt-popover-close:hover { background: #eef0f3; color: var(--cmt-fg); }
-
-.cmt-popover-body {
-  padding: 12px;
-  max-height: 40vh;
-  overflow-y: auto;
+.cmt-card[data-stale="true"] {
+  opacity: 0.85;
 }
 
-/* Quote preview at the top of a thread. */
+@keyframes cmt-card-pulse {
+  0%, 100% { box-shadow: var(--cmt-shadow-soft); }
+  35% { box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.45), var(--cmt-shadow); }
+}
+.cmt-card-pulse { animation: cmt-card-pulse 1100ms ease; }
+
+/* Anchor preview — the quoted span the card is about. */
 .cmt-anchor-preview {
   display: flex;
   gap: 8px;
   align-items: flex-start;
-  padding: 8px 10px;
+  padding: 6px 8px;
   background: #fafbfc;
   border-left: 3px solid var(--cmt-highlight-border);
-  border-radius: 0 6px 6px 0;
-  margin-bottom: 12px;
+  border-radius: 0 4px 4px 0;
+  margin-bottom: 8px;
 }
 .cmt-quote-text {
   flex: 1;
-  font-size: 13px;
+  font-size: 12px;
   color: var(--cmt-fg-muted);
   font-style: italic;
   display: -webkit-box;
@@ -164,77 +157,69 @@
   border-radius: 4px;
 }
 
-.cmt-empty {
-  font-size: 13px;
-  color: var(--cmt-fg-muted);
-  text-align: center;
-  padding: 8px 0;
-}
-
+/* Existing replies list. */
 .cmt-reply-list {
   list-style: none;
-  margin: 0;
+  margin: 0 0 8px;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 .cmt-reply {
   position: relative;
-  padding: 8px 10px;
+  padding: 6px 8px;
   background: #fafbfc;
   border: 1px solid var(--cmt-border);
-  border-radius: 8px;
+  border-radius: 6px;
 }
 .cmt-reply-meta {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
   gap: 8px;
-  margin-bottom: 4px;
-  font-size: 12px;
+  margin-bottom: 2px;
+  font-size: 11px;
   color: var(--cmt-fg-muted);
 }
-.cmt-reply-author {
-  font-weight: 600;
-  color: var(--cmt-fg);
-}
+.cmt-reply-author { font-weight: 600; color: var(--cmt-fg); }
 .cmt-reply-text {
   margin: 0;
-  font-size: 13.5px;
+  font-size: 13px;
   white-space: pre-wrap;
   word-break: break-word;
 }
 .cmt-reply-delete {
   position: absolute;
-  top: 4px;
-  right: 4px;
+  top: 2px;
+  right: 2px;
   background: transparent;
   border: 0;
   color: var(--cmt-fg-muted);
-  padding: 2px 6px;
+  padding: 2px 4px;
   border-radius: 4px;
   cursor: pointer;
   opacity: 0;
   transition: opacity 120ms ease, background 120ms ease;
-  font-size: 11px;
+  display: inline-flex;
 }
 .cmt-reply:hover .cmt-reply-delete { opacity: 1; }
 .cmt-reply-delete:hover { background: #eef0f3; color: #cf222e; }
 
-.cmt-popover-footer {
-  padding: 10px 12px;
-  border-top: 1px solid var(--cmt-border);
-  background: #fafbfc;
+/* Composer (always present at the bottom of every card). */
+.cmt-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 .cmt-reply-input {
   width: 100%;
   border: 1px solid var(--cmt-border);
   border-radius: 6px;
-  padding: 8px 10px;
+  padding: 6px 8px;
   font: inherit;
   resize: vertical;
-  min-height: 56px;
+  min-height: 40px;
   background: #fff;
 }
 .cmt-reply-input:focus {
@@ -245,22 +230,30 @@
 .cmt-reply-row {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  margin-top: 8px;
+  gap: 6px;
 }
 .cmt-reply-cancel,
+.cmt-reply-resolve,
 .cmt-reply-submit {
-  font: 600 13px/1 inherit;
-  padding: 6px 12px;
-  border-radius: 6px;
+  font: 600 12px/1 inherit;
+  padding: 5px 10px;
+  border-radius: 5px;
   cursor: pointer;
   border: 1px solid var(--cmt-border);
 }
-.cmt-reply-cancel {
-  background: #fff;
-  color: var(--cmt-fg);
-}
+.cmt-reply-cancel { background: #fff; color: var(--cmt-fg); }
 .cmt-reply-cancel:hover { background: #eef0f3; }
+/* Resolve uses the same neutral surface as Hide/Cancel; it's not a
+   primary action (Reply is) but it's also not destructive in the
+   irreversible sense — a future server sync can restore from the deletion
+   queue if we ever want an undo. The green accent on hover signals
+   "completed/done" rather than "danger." */
+.cmt-reply-resolve { background: #fff; color: var(--cmt-fg); }
+.cmt-reply-resolve:hover {
+  background: #ddf4e3;
+  border-color: #56c08e;
+  color: #1a7f4d;
+}
 .cmt-reply-submit {
   background: var(--cmt-accent);
   color: #fff;
@@ -268,9 +261,11 @@
 }
 .cmt-reply-submit:hover { background: #0860c4; }
 
-/* Graphic trigger: small "Comment" button shown in the figure's top-right
-   corner. Always visible when the figure already has comments; otherwise
-   appears on hover. */
+/* ============================================================================
+   Graphic trigger — small "+" button shown in the figure's top-right corner
+   on hover. Multiple threads per graphic now stack as cards in the column,
+   so we no longer overload this button with a count badge.
+   ============================================================================ */
 [data-comment-graphic-id] { position: relative; }
 .cmt-graphic-btn {
   position: absolute;
@@ -297,57 +292,47 @@
 }
 .cmt-graphic-btn:hover { background: rgba(31, 35, 40, 1); }
 
-/* Indicator badge on figures that already have a thread. Stays visible. */
+/* Count badge — always visible when the graphic has threads. Click to
+   bring back any cards the user hid via "Hide". Nudges the "+" button
+   left so they don't stack on top of each other when both are on screen. */
 .cmt-graphic-indicator {
   position: absolute;
   top: 8px;
   right: 8px;
   min-width: 22px;
   height: 22px;
-  padding: 0 6px;
+  padding: 0 7px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   background: var(--cmt-accent);
   color: #fff;
+  border: 0;
   border-radius: 11px;
   font: 700 11px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   cursor: pointer;
   box-shadow: 0 2px 6px rgba(9, 105, 218, 0.35);
   z-index: 3;
 }
-/* When a figure has both the indicator AND the (hover-only) button, nudge
-   the button to the left so they don't stack on top of each other. */
-[data-comment-graphic-id]:has(.cmt-graphic-indicator) .cmt-graphic-btn {
+.cmt-graphic-indicator[hidden] { display: none; }
+.cmt-graphic-indicator:hover { background: #0860c4; }
+[data-comment-graphic-id]:has(.cmt-graphic-indicator:not([hidden])) .cmt-graphic-btn {
   right: 40px;
 }
 
-/* Outdated-comments pill: bottom-left affordance to review orphaned
-   threads after the document changed under them. */
-.cmt-outdated-pill {
-  position: fixed;
-  left: 20px;
-  bottom: 24px;
-  z-index: var(--cmt-z);
-  padding: 8px 14px;
-  background: rgba(179, 89, 0, 0.92);
-  color: #fff;
-  border: 0;
-  border-radius: 999px;
-  font: 600 12px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  cursor: pointer;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+/* ============================================================================
+   Responsive: the column sits in the right margin of a 720px-wide article.
+   At wide viewports we reserve space on the right of the body so the
+   article's `margin: auto` shifts it left, opening a clear gutter for the
+   column instead of overlapping article content. Below ~1100px there
+   isn't enough horizontal room — we hide the column entirely; a mobile-
+   friendly bottom sheet is a future task. Narrow viewports still get the
+   action bar (so new comments can be authored), they just don't display
+   existing threads alongside the article.
+   ============================================================================ */
+@media (min-width: 1100px) {
+  body { padding-right: 360px; }
 }
-.cmt-outdated-pill:hover { background: rgba(150, 75, 0, 1); }
-
-.cmt-outdated-list .cmt-outdated-item .cmt-reply-delete {
-  position: static;
-  opacity: 1;
-  font-size: 12px;
-  margin-top: 6px;
-  background: #fff;
-  border: 1px solid var(--cmt-border);
-  color: var(--cmt-fg);
-  padding: 4px 10px;
-  width: max-content;
+@media (max-width: 1099px) {
+  .cmt-column { display: none; }
 }

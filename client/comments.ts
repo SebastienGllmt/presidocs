@@ -1,7 +1,16 @@
-// Comments: Google-Docs-style floating comments anchored to text selections
-// (in the article body OR the spoken-script drawer) and to whole graphics
-// (figures / images). v1 stores threads in localStorage keyed by the post's
+// Comments: Google-Docs-style threads in a right-margin column, anchored
+// to text selections (in the article body OR the spoken-script drawer) or
+// to whole graphics. v1 stores threads in localStorage keyed by the post's
 // pathname — a future backend can sync from there.
+//
+// Why a column instead of a floating popover
+// ------------------------------------------
+// Multiple threads can target the same selection (e.g., two readers leave
+// independent comments on the same sentence). A single floating popover
+// can only display one thread at a time and clicks on overlapping
+// highlight spans only ever resolve to the innermost — so any thread
+// underneath becomes unreachable. The cards-in-a-column layout makes every
+// thread visible at once and removes the disambiguation problem entirely.
 //
 // Text anchoring strategy
 // -----------------------
@@ -11,7 +20,7 @@
 // A text anchor stores the *list* of segments the selection touches plus
 // character offsets within the first and last segment. On render we re-hash
 // each segment and mark the thread `outdated` when any hash mismatches —
-// matching the user's "orphan + flag" preference.
+// matching the "orphan + flag" preference.
 //
 // Graphic anchoring is far simpler: just the element id. The content of a
 // graphic isn't text, so there's nothing to hash; if the graphic is
@@ -27,9 +36,9 @@ type TextAnchor = {
   segments: Array<{ id: string; hash: string }>;
   startOffset: number;
   endOffset: number;
-  // Verbatim text of the selection at creation time. Shown in the outdated-
-  // comments list so the reader can find what the comment used to point at
-  // even when the surrounding sentences have changed.
+  // Verbatim text of the selection at creation time. Shown on the card so
+  // a reader knows what the thread is about even if the surrounding
+  // sentences have since changed.
   quote: string;
 };
 
@@ -45,6 +54,13 @@ type Reply = {
   id: string;
   body: string;
   createdAt: number;
+  // Set when the user deletes the reply. Same pattern as `Thread.resolvedAt`:
+  // the reply stays in storage so a future server sync can issue a DELETE
+  // for replies that were already pushed to the backend. UI filters them
+  // out everywhere. In v1 (no networking) every delete tombstones; the
+  // "never synced → remove immediately" optimization comes with the
+  // server-sync work.
+  deletedAt?: number;
   // No author/user fields in v1 (anonymous). Reserved for the future
   // backend-synced version where login provides identity.
 };
@@ -54,7 +70,26 @@ type Thread = {
   anchor: Anchor;
   replies: Reply[];
   createdAt: number;
+  // Set when the user resolves the thread (decisive permanent dismiss,
+  // distinct from session-only "Hide"). Resolved threads vanish from the
+  // UI — no card, no highlight, not counted on figure indicators — but
+  // they stay in localStorage so a future server sync can flush them as
+  // DELETEs. That makes localStorage itself the pending-deletion queue
+  // without needing a separate data structure.
+  resolvedAt?: number;
 };
+
+function isResolved(thread: Thread): boolean {
+  return thread.resolvedAt !== undefined;
+}
+
+function isDeleted(reply: Reply): boolean {
+  return reply.deletedAt !== undefined;
+}
+
+function visibleReplies(thread: Thread): Reply[] {
+  return thread.replies.filter((r) => !isDeleted(r));
+}
 
 type BlockInfo = {
   id: string;
@@ -75,11 +110,9 @@ const BLOCK_TAGS = new Set([
 // need a wrapper before we could place the trigger; we can add that later.
 const GRAPHIC_ROOT_TAGS = new Set(["FIGURE"]);
 
-// Approximate vertical room occupied by the narration dock (chapter strip +
-// Shikwasa player). The popover keeps clear of this band so it never sits
-// under the player. If a post has no narrator dock the extra reserve is
-// harmless slack.
-const DOCK_RESERVE_PX = 160;
+// Cards stack with this much vertical space between them when collision-
+// avoidance pushes a later card past its preferred anchor-aligned top.
+const CARD_GAP_PX = 8;
 
 function uid(): string {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -128,8 +161,6 @@ function* walkBlocks(
   root: Element,
   tagSet: Set<string>,
 ): Generator<HTMLElement> {
-  // Iterative DFS so we can short-circuit. Children pushed in reverse order
-  // so popping yields them left-to-right.
   const stack: Element[] = [root];
   while (stack.length) {
     const node = stack.pop()!;
@@ -146,13 +177,7 @@ function* walkBlocks(
   }
 }
 
-// Returns the in-block character offset for a (node, offset) pair. We sum
-// the text-node lengths encountered while walking through `block` up until
-// we reach `node`. Element-targeted offsets (e.g., from clicking past a
-// `<br>`) fall back to "end of nearest text content".
 function offsetInBlock(block: HTMLElement, node: Node, offset: number): number {
-  // If `node` is the block itself (range edge landed on element), interpret
-  // `offset` as a child-element count and translate to text length.
   if (node === block) {
     let total = 0;
     for (let i = 0; i < offset && i < block.childNodes.length; i++) {
@@ -167,13 +192,9 @@ function offsetInBlock(block: HTMLElement, node: Node, offset: number): number {
     if (n === node) return total + offset;
     total += (n.nodeValue ?? "").length;
   }
-  // Fallback: node wasn't inside the block (shouldn't happen if we picked
-  // the block via closest()) — return end of text.
   return block.textContent?.length ?? 0;
 }
 
-// Inverse of offsetInBlock: returns the (textNode, offsetWithinNode) pair
-// representing the given character offset measured from the block's start.
 function nodeAtOffset(
   block: HTMLElement,
   charOffset: number,
@@ -183,12 +204,9 @@ function nodeAtOffset(
   while (walker.nextNode()) {
     const n = walker.currentNode as Text;
     const len = n.nodeValue?.length ?? 0;
-    if (remaining <= len) {
-      return { node: n, offset: remaining };
-    }
+    if (remaining <= len) return { node: n, offset: remaining };
     remaining -= len;
   }
-  // Past the end → return last node at its end.
   let last: Text | null = null;
   const w2 = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
   while (w2.nextNode()) last = w2.currentNode as Text;
@@ -200,38 +218,56 @@ function findBlockFor(node: Node): HTMLElement | null {
   let el: Node | null = node;
   while (el && el.nodeType !== Node.ELEMENT_NODE) el = el.parentNode;
   if (!el) return null;
-  return (el as Element).closest<HTMLElement>(
-    "[data-comment-block-id]",
-  );
+  return (el as Element).closest<HTMLElement>("[data-comment-block-id]");
 }
 
-function findGraphicFor(node: Node): HTMLElement | null {
-  let el: Node | null = node;
-  while (el && el.nodeType !== Node.ELEMENT_NODE) el = el.parentNode;
-  if (!el) return null;
-  return (el as Element).closest<HTMLElement>(
-    "[data-comment-graphic-id]",
-  );
+function formatRelative(timestamp: number): string {
+  const diff = Date.now() - timestamp;
+  const min = 60_000;
+  if (diff < min) return "just now";
+  if (diff < 60 * min) return `${Math.floor(diff / min)}m ago`;
+  if (diff < 24 * 60 * min) return `${Math.floor(diff / (60 * min))}h ago`;
+  return new Date(timestamp).toLocaleDateString();
 }
 
 class CommentSystem {
   private articleRoot: HTMLElement | null = null;
+  // `drawerRoot` is set when the narrator drawer is detected. Threads in
+  // the drawer index against this root; if the drawer never appears
+  // (manifest missing) we still work on the article alone.
   private drawerRoot: HTMLElement | null = null;
+
+  // Persisted threads.
   private threads: Thread[] = [];
-  // Block index in document order, separated by context (article vs drawer).
+  // In-memory drafts — a freshly composed thread that the user hasn't
+  // submitted yet. Promoted to `threads` on first reply, removed on
+  // Cancel. Each draft owns its own card+textarea, so drafts naturally
+  // survive any number of unrelated clicks.
+  private drafts: Thread[] = [];
+  // Thread ids whose card the user has temporarily hidden via "Cancel".
+  // Session-only (deliberately not persisted) — a reload brings every
+  // card back, so you can't accidentally lose track of comments by
+  // hiding them all and forgetting. Restored by clicking the anchor's
+  // highlight (text) or graphic indicator (figures).
+  private hiddenCardIds = new Set<string>();
+
   private blocksByContext = new Map<Context, BlockInfo[]>();
   private blocksById = new Map<string, BlockInfo>();
   private graphicsById = new Map<string, HTMLElement>();
 
-  // Floating UI elements.
-  private actionBar: HTMLDivElement | null = null;
-  private popover: HTMLDivElement | null = null;
-  private outdatedPill: HTMLButtonElement | null = null;
+  // The right-margin column hosting all cards. One card per thread/draft.
+  private column: HTMLElement | null = null;
+  private cardEls = new Map<string, HTMLElement>();
 
-  // The pending selection captured when the action bar was shown.
+  // Floating "Comment" pill that appears above a text selection.
+  private actionBar: HTMLDivElement | null = null;
   private pendingRange: Range | null = null;
   private pendingStartBlock: BlockInfo | null = null;
   private pendingEndBlock: BlockInfo | null = null;
+
+  // Set while a card is being scrolled-to / pulsed, used to suppress the
+  // reposition pass from fighting the smooth-scroll.
+  private pulseTimer = 0;
 
   async init() {
     this.articleRoot = document.querySelector<HTMLElement>(
@@ -242,8 +278,8 @@ class CommentSystem {
     await this.indexArticle();
 
     // The narrator drawer is appended asynchronously after fetching the
-    // manifest. Watch for it; if it never arrives (e.g. manifest missing),
-    // commenting still works on the article.
+    // manifest. Watch for it; if it never arrives, commenting still works
+    // on the article alone.
     const existing = document.querySelector<HTMLElement>(".narrate-drawer");
     if (existing) {
       await this.indexDrawer(existing);
@@ -253,29 +289,33 @@ class CommentSystem {
         if (d) {
           obs.disconnect();
           await this.indexDrawer(d);
-          await this.renderAllThreads();
+          this.renderAll();
         }
       });
       obs.observe(document.body, { childList: true, subtree: false });
     }
 
     this.threads = loadThreads();
-    await this.renderAllThreads();
 
+    this.mountColumn();
     this.mountActionBar();
-    this.mountPopover();
     this.installGraphicTriggers();
+    this.renderAll();
 
     document.addEventListener("selectionchange", () => this.onSelectionChange());
-    document.addEventListener("mousedown", (e) => this.onMaybeDismiss(e));
     document.addEventListener("click", (e) => this.onAnyClick(e));
-    window.addEventListener("scroll", () => this.repositionFloating(), {
+    window.addEventListener("scroll", () => this.repositionCards(), {
       passive: true,
     });
-    window.addEventListener("resize", () => this.repositionFloating());
+    window.addEventListener("resize", () => {
+      this.repositionCards();
+      if (this.pendingRange && this.actionBar && !this.actionBar.hidden) {
+        this.showActionBarFor(this.pendingRange);
+      }
+    });
   }
 
-  // ----- Indexing -----
+  // ===== Indexing =====
 
   private async indexArticle() {
     if (!this.articleRoot) return;
@@ -290,7 +330,6 @@ class CommentSystem {
   private async indexRoot(root: HTMLElement, context: Context) {
     const blocks: BlockInfo[] = [];
     let counter = 0;
-
     for (const el of walkBlocks(root, BLOCK_TAGS)) {
       const stableId = el.id && el.id.length > 0
         ? `id:${el.id}`
@@ -304,10 +343,6 @@ class CommentSystem {
       this.blocksById.set(stableId, info);
       counter++;
     }
-
-    // Graphics: annotate each so it becomes a click target. The hover
-    // button itself is mounted by `installGraphicTriggers` after the
-    // popover/action bar exist.
     let gCounter = 0;
     for (const el of walkBlocks(root, GRAPHIC_ROOT_TAGS)) {
       const stableId = el.id && el.id.length > 0
@@ -318,11 +353,381 @@ class CommentSystem {
       this.graphicsById.set(stableId, el);
       gCounter++;
     }
-
     this.blocksByContext.set(context, blocks);
   }
 
-  // ----- Selection → action bar -----
+  // ===== Column =====
+
+  private mountColumn() {
+    const col = document.createElement("aside");
+    col.id = "cmt-column";
+    col.className = "cmt-column";
+    col.setAttribute("role", "complementary");
+    col.setAttribute("aria-label", "Comments");
+    document.body.appendChild(col);
+    this.column = col;
+  }
+
+  // Master render: redraws cards, highlights, and indicators from scratch.
+  // Cheap enough at our scale (a handful of threads per post) that we
+  // don't bother diffing.
+  private renderAll() {
+    if (!this.column) return;
+
+    // Highlights: wipe and re-apply (only for non-stale, non-resolved
+    // text threads — resolved threads must leave no visual trace).
+    document.querySelectorAll<HTMLElement>(".cmt-highlight").forEach((s) =>
+      this.unwrap(s),
+    );
+    for (const thread of this.threads) {
+      if (isResolved(thread)) continue;
+      if (thread.anchor.kind === "text" && !this.threadIsStale(thread)) {
+        this.highlightTextThread(thread);
+      }
+    }
+
+    // Cards. Hidden saved threads are skipped entirely (their highlight
+    // remains in the article so the user can click to bring them back).
+    // Drafts can't be hidden — they don't have a recovery affordance.
+    // STALE text threads also bypass the hide list: their highlight is no
+    // longer drawn (the segments changed), so there'd be no way to bring
+    // them back. Surfacing them unconditionally lets the user review and
+    // decide whether to delete the now-orphaned thread.
+    this.column.innerHTML = "";
+    this.cardEls.clear();
+    const all: Thread[] = [...this.threads, ...this.drafts];
+    for (const thread of all) {
+      if (isResolved(thread)) continue;
+      const isStale = thread.anchor.kind === "text"
+        && this.threadIsStale(thread);
+      if (this.hiddenCardIds.has(thread.id) && !isStale) continue;
+      const card = this.buildCard(thread);
+      this.column.appendChild(card);
+      this.cardEls.set(thread.id, card);
+    }
+
+    this.updateGraphicIndicators();
+    this.repositionCards();
+  }
+
+  // Build a single card. Cards reflect both saved threads and unsubmitted
+  // drafts; we distinguish them via `data-draft="true"` so CSS can frame
+  // drafts distinctly and so the composer's Cancel button can do the
+  // right thing (discard the draft entirely vs. just clear the reply box).
+  private buildCard(thread: Thread): HTMLElement {
+    const isDraft = this.drafts.includes(thread);
+    const isStale = !isDraft && thread.anchor.kind === "text"
+      && this.threadIsStale(thread);
+
+    const card = document.createElement("article");
+    card.className = "cmt-card";
+    card.dataset.threadId = thread.id;
+    card.dataset.kind = thread.anchor.kind;
+    if (isDraft) card.dataset.draft = "true";
+    if (isStale) card.dataset.stale = "true";
+
+    // --- Anchor preview ---
+    const preview = document.createElement("div");
+    preview.className = "cmt-anchor-preview";
+    if (thread.anchor.kind === "text") {
+      const quote = document.createElement("span");
+      quote.className = "cmt-quote-text";
+      quote.textContent = thread.anchor.quote;
+      preview.appendChild(quote);
+      if (isStale) {
+        const tag = document.createElement("span");
+        tag.className = "cmt-stale-tag";
+        tag.textContent = "outdated";
+        preview.appendChild(tag);
+      }
+    } else {
+      const span = document.createElement("span");
+      span.className = "cmt-quote-text";
+      span.textContent = "Comment on graphic";
+      preview.appendChild(span);
+    }
+    card.appendChild(preview);
+
+    // --- Existing replies (excluding tombstoned deletes) ---
+    const liveReplies = visibleReplies(thread);
+    if (liveReplies.length > 0) {
+      const list = document.createElement("ol");
+      list.className = "cmt-reply-list";
+      for (const reply of liveReplies) {
+        list.appendChild(this.buildReplyLi(reply, thread));
+      }
+      card.appendChild(list);
+    }
+
+    // --- Composer ---
+    card.appendChild(this.buildComposer(thread, isDraft, isStale));
+
+    // Clicking anywhere on a card sets it as "active" so we can highlight
+    // its anchor in the article. Doesn't capture clicks on buttons / the
+    // textarea (those have their own handlers).
+    card.addEventListener("click", (e) => {
+      // Ignore clicks on interactive children — they bubble here but we
+      // don't want to steal focus from textarea/buttons.
+      const t = e.target as HTMLElement | null;
+      if (t && t.closest("button, textarea")) return;
+      this.scrollAnchorIntoView(thread);
+    });
+
+    return card;
+  }
+
+  private buildReplyLi(reply: Reply, thread: Thread): HTMLLIElement {
+    const li = document.createElement("li");
+    li.className = "cmt-reply";
+
+    const meta = document.createElement("div");
+    meta.className = "cmt-reply-meta";
+    const author = document.createElement("span");
+    author.className = "cmt-reply-author";
+    author.textContent = "Anonymous";
+    const time = document.createElement("time");
+    time.className = "cmt-reply-time";
+    time.dateTime = new Date(reply.createdAt).toISOString();
+    time.textContent = formatRelative(reply.createdAt);
+    meta.appendChild(author);
+    meta.appendChild(time);
+    li.appendChild(meta);
+
+    const text = document.createElement("p");
+    text.className = "cmt-reply-text";
+    text.textContent = reply.body;
+    li.appendChild(text);
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "cmt-reply-delete";
+    del.setAttribute("aria-label", "Delete this comment");
+    del.innerHTML =
+      '<svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true">' +
+      '<path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.deleteReply(thread, reply.id);
+    });
+    li.appendChild(del);
+
+    return li;
+  }
+
+  private buildComposer(thread: Thread, isDraft: boolean, isStale: boolean): HTMLElement {
+    const composer = document.createElement("div");
+    composer.className = "cmt-composer";
+
+    const ta = document.createElement("textarea");
+    ta.className = "cmt-reply-input";
+    ta.rows = isDraft ? 3 : 2;
+    ta.placeholder = isDraft ? "Comment…" : "Reply…";
+    // Stop card-click bubbling from inside the textarea (would re-trigger
+    // anchor scrolling on every click while typing).
+    ta.addEventListener("click", (e) => e.stopPropagation());
+    composer.appendChild(ta);
+
+    const row = document.createElement("div");
+    row.className = "cmt-reply-row";
+
+    // Drafts can't be recovered (no anchor highlight to click), so Cancel
+    // discards. Non-stale saved threads keep their highlight, so Cancel
+    // just hides the card. STALE saved threads have no recovery
+    // affordance (the highlight is no longer drawn) — we omit the button
+    // entirely rather than offer a Hide that traps the comment.
+    if (isDraft || !isStale) {
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "cmt-reply-cancel";
+      cancel.textContent = isDraft ? "Cancel" : "Hide";
+      cancel.title = isDraft
+        ? "Discard this draft"
+        : "Hide this card (click the highlight to bring it back)";
+      cancel.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (isDraft) {
+          this.drafts = this.drafts.filter((t) => t.id !== thread.id);
+          this.renderAll();
+        } else {
+          this.hiddenCardIds.add(thread.id);
+          this.renderAll();
+        }
+      });
+      row.appendChild(cancel);
+    }
+
+    // Resolve — decisive, permanent dismiss. Available on every saved
+    // thread (including stale, where it's often *the* right action). Not
+    // shown on drafts: there's nothing to resolve yet, and Cancel already
+    // covers "throw this away."
+    if (!isDraft) {
+      const resolve = document.createElement("button");
+      resolve.type = "button";
+      resolve.className = "cmt-reply-resolve";
+      resolve.textContent = "Resolve";
+      resolve.title =
+        "Resolve this thread — hides it permanently and queues a delete to sync to the server";
+      resolve.addEventListener("click", (e) => {
+        e.stopPropagation();
+        thread.resolvedAt = Date.now();
+        // Also drop any session-only "hide" mark so the thread isn't
+        // stuck in the hidden set forever after being resolved.
+        this.hiddenCardIds.delete(thread.id);
+        saveThreads(this.threads);
+        this.renderAll();
+      });
+      row.appendChild(resolve);
+    }
+
+    const submit = document.createElement("button");
+    submit.type = "button";
+    submit.className = "cmt-reply-submit";
+    submit.textContent = isDraft ? "Comment" : "Reply";
+    const doSubmit = () => {
+      const body = ta.value.trim();
+      if (!body) return;
+      const reply: Reply = { id: uid(), body, createdAt: Date.now() };
+      thread.replies.push(reply);
+      if (isDraft) {
+        // Promote draft → persisted thread. (`thread` is the same object
+        // identity, so we just move it from one list to the other.)
+        this.drafts = this.drafts.filter((t) => t.id !== thread.id);
+        this.threads.push(thread);
+      }
+      saveThreads(this.threads);
+      ta.value = "";
+      this.renderAll();
+    };
+    submit.addEventListener("click", (e) => {
+      e.stopPropagation();
+      doSubmit();
+    });
+    ta.addEventListener("keydown", (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        doSubmit();
+      }
+    });
+
+    row.appendChild(submit);
+    composer.appendChild(row);
+    return composer;
+  }
+
+  private deleteReply(thread: Thread, replyId: string) {
+    const reply = thread.replies.find((r) => r.id === replyId);
+    if (!reply || isDeleted(reply)) return;
+    // Tombstone, don't remove — the entry remains in localStorage so a
+    // future server sync can issue a DELETE for replies that were already
+    // pushed upstream. The reply body is kept too, both because storage
+    // cost is trivial and because we may want it for an undo / audit
+    // view later.
+    reply.deletedAt = Date.now();
+    // If no visible replies are left, also resolve the thread so the
+    // server sync issues a thread-level DELETE alongside the reply
+    // DELETEs (server-side a thread with zero replies is a dead record
+    // anyway).
+    if (visibleReplies(thread).length === 0) {
+      thread.resolvedAt = Date.now();
+      this.hiddenCardIds.delete(thread.id);
+    }
+    saveThreads(this.threads);
+    this.renderAll();
+  }
+
+  // Vertically align each card with its anchor's top, then push later
+  // cards down to avoid overlap. Stale text threads (no highlight) fall
+  // back to their first segment's position; if even that segment is gone,
+  // we stack them at the page bottom.
+  private repositionCards() {
+    if (!this.column) return;
+
+    const items: Array<{
+      card: HTMLElement;
+      thread: Thread;
+      target: number;
+    }> = [];
+    const docHeight = document.documentElement.scrollHeight;
+    for (const [tid, card] of this.cardEls) {
+      const thread = this.threads.find((t) => t.id === tid)
+        ?? this.drafts.find((t) => t.id === tid);
+      if (!thread) continue;
+      const target = this.computeAnchorTop(thread) ?? docHeight + 200;
+      items.push({ card, thread, target });
+    }
+    items.sort((a, b) => a.target - b.target);
+
+    let prevBottom = 0;
+    for (const { card, target } of items) {
+      const top = Math.max(target, prevBottom + CARD_GAP_PX);
+      card.style.top = `${top}px`;
+      // Use offsetHeight after the style.top write — height is independent
+      // of top so reading offsetHeight here is safe.
+      prevBottom = top + card.offsetHeight;
+    }
+  }
+
+  private computeAnchorTop(thread: Thread): number | null {
+    if (thread.anchor.kind === "text") {
+      // Prefer the first highlight (matches exactly where the comment
+      // points); fall back to the first segment block (works for stale
+      // threads when the segment still exists, just with different text).
+      const hl = document.querySelector<HTMLElement>(
+        `.cmt-highlight[data-thread-id="${CSS.escape(thread.id)}"]`,
+      );
+      if (hl) return hl.getBoundingClientRect().top + window.scrollY;
+      const firstSeg = thread.anchor.segments[0];
+      const block = firstSeg ? this.blocksById.get(firstSeg.id) : undefined;
+      if (block) return block.element.getBoundingClientRect().top + window.scrollY;
+      return null;
+    }
+    const el = this.graphicsById.get(thread.anchor.id);
+    if (el) return el.getBoundingClientRect().top + window.scrollY;
+    return null;
+  }
+
+  // Scroll the article so the anchor is visible, and briefly pulse the
+  // matching highlight / graphic. Used when the user clicks on a card to
+  // jump back to its anchor in the document.
+  private scrollAnchorIntoView(thread: Thread) {
+    let target: HTMLElement | null = null;
+    if (thread.anchor.kind === "text") {
+      target = document.querySelector<HTMLElement>(
+        `.cmt-highlight[data-thread-id="${CSS.escape(thread.id)}"]`,
+      );
+      if (!target) {
+        const firstSeg = thread.anchor.segments[0];
+        const block = firstSeg ? this.blocksById.get(firstSeg.id) : undefined;
+        target = block?.element ?? null;
+      }
+    } else {
+      target = this.graphicsById.get(thread.anchor.id) ?? null;
+    }
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.classList.add("cmt-anchor-pulse");
+    if (this.pulseTimer) clearTimeout(this.pulseTimer);
+    this.pulseTimer = window.setTimeout(() => {
+      target!.classList.remove("cmt-anchor-pulse");
+      this.pulseTimer = 0;
+    }, 1200);
+  }
+
+  // Scroll the column so the given thread's card is visible, and pulse
+  // it. Used when the user clicks on a highlight in the article.
+  private scrollCardIntoView(threadId: string) {
+    const card = this.cardEls.get(threadId);
+    if (!card) return;
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+    card.classList.add("cmt-card-pulse");
+    if (this.pulseTimer) clearTimeout(this.pulseTimer);
+    this.pulseTimer = window.setTimeout(() => {
+      card.classList.remove("cmt-card-pulse");
+      this.pulseTimer = 0;
+    }, 1200);
+  }
+
+  // ===== Selection → action bar =====
 
   private mountActionBar() {
     const bar = document.createElement("div");
@@ -333,11 +738,11 @@ class CommentSystem {
       '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
       '<path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H8l-4 4V6a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>' +
       "<span>Comment</span></button>";
+    // mousedown (not click) so the selection isn't lost to a focus event
+    // before we capture it.
     bar.querySelector("button")!.addEventListener("mousedown", (e) => {
-      // mousedown (not click) so the selection isn't lost to a focus event
-      // before we capture it.
       e.preventDefault();
-      this.openComposeForSelection();
+      this.addDraftForSelection();
     });
     document.body.appendChild(bar);
     this.actionBar = bar;
@@ -349,9 +754,9 @@ class CommentSystem {
       this.hideActionBar();
       return;
     }
-    // Ignore selections initiated inside our own popover.
     const range = sel.getRangeAt(0);
-    if (this.popover && this.popover.contains(range.startContainer)) {
+    // Ignore selections originating inside our own UI (column / cards).
+    if (this.column && this.column.contains(range.startContainer)) {
       this.hideActionBar();
       return;
     }
@@ -383,12 +788,14 @@ class CommentSystem {
       return;
     }
     this.actionBar.hidden = false;
-    // Position above the top of the selection, clamped to viewport.
     const barW = this.actionBar.offsetWidth || 110;
     const barH = this.actionBar.offsetHeight || 32;
     const top = window.scrollY + rect.top - barH - 8;
     let left = window.scrollX + rect.left + rect.width / 2 - barW / 2;
-    left = Math.max(8, Math.min(left, window.scrollX + window.innerWidth - barW - 8));
+    left = Math.max(
+      8,
+      Math.min(left, window.scrollX + window.innerWidth - barW - 8),
+    );
     this.actionBar.style.top = `${top}px`;
     this.actionBar.style.left = `${left}px`;
   }
@@ -400,62 +807,17 @@ class CommentSystem {
     this.pendingEndBlock = null;
   }
 
-  // ----- Compose / popover -----
+  // ===== Compose new drafts =====
 
-  private mountPopover() {
-    const pop = document.createElement("div");
-    pop.className = "cmt-popover";
-    pop.hidden = true;
-    pop.setAttribute("role", "dialog");
-    pop.setAttribute("aria-label", "Comments");
-    pop.innerHTML =
-      '<div class="cmt-popover-arrow" aria-hidden="true"></div>' +
-      '<header class="cmt-popover-header">' +
-      '<span class="cmt-popover-title">Comments</span>' +
-      '<span class="cmt-draft-tag" hidden>Draft</span>' +
-      '<button type="button" class="cmt-popover-close" aria-label="Close">' +
-      '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
-      '<path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>' +
-      "</header>" +
-      '<div class="cmt-popover-body"></div>' +
-      '<footer class="cmt-popover-footer">' +
-      '<textarea class="cmt-reply-input" rows="2" placeholder="Add a comment&hellip;"></textarea>' +
-      '<div class="cmt-reply-row">' +
-      '<button type="button" class="cmt-reply-cancel">Cancel</button>' +
-      '<button type="button" class="cmt-reply-submit">Comment</button>' +
-      "</div></footer>";
-    pop.querySelector(".cmt-popover-close")!.addEventListener("click", () => {
-      this.closePopover();
-    });
-    pop.querySelector(".cmt-reply-cancel")!.addEventListener("click", () => {
-      this.closePopover();
-    });
-    pop.querySelector(".cmt-reply-submit")!.addEventListener("click", () => {
-      this.submitReply();
-    });
-    // Cmd/Ctrl+Enter to submit
-    const input = pop.querySelector<HTMLTextAreaElement>(".cmt-reply-input")!;
-    input.addEventListener("keydown", (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-        e.preventDefault();
-        this.submitReply();
-      }
-    });
-    // Surface a "Draft" badge in the header whenever the textarea has
-    // content — clarifies that the popover is staying open *because* of
-    // unsaved work (click-outside is silently refused, see onMaybeDismiss).
-    input.addEventListener("input", () => this.updateDraftIndicator());
-    document.body.appendChild(pop);
-    this.popover = pop;
-  }
-
-  private async openComposeForSelection() {
+  // Triggered by the "Comment" action-bar button after a text selection.
+  // Captures the selection into a TextAnchor, creates an empty draft, and
+  // adds a card for it in the column (auto-focused for typing).
+  private addDraftForSelection() {
     if (!this.pendingRange || !this.pendingStartBlock || !this.pendingEndBlock) {
       return;
     }
     if (this.pendingStartBlock.context !== this.pendingEndBlock.context) return;
 
-    // Determine the ordered list of segments spanned and offsets.
     const blocks = this.blocksByContext.get(this.pendingStartBlock.context) ?? [];
     const startIdx = blocks.indexOf(this.pendingStartBlock);
     const endIdx = blocks.indexOf(this.pendingEndBlock);
@@ -463,228 +825,76 @@ class CommentSystem {
     const [a, b] = startIdx <= endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
     const touched = blocks.slice(a, b + 1);
 
+    // Direction matters: the selection may be created in reverse, in
+    // which case startContainer/endContainer is the *visual* end. The
+    // anchor needs to store the forward-document order regardless.
     const rangeForwards = startIdx <= endIdx;
     const startBlock = rangeForwards ? this.pendingStartBlock : this.pendingEndBlock;
     const endBlock = rangeForwards ? this.pendingEndBlock : this.pendingStartBlock;
-    const startNode = rangeForwards ? this.pendingRange.startContainer : this.pendingRange.endContainer;
-    const startNodeOffset = rangeForwards ? this.pendingRange.startOffset : this.pendingRange.endOffset;
-    const endNode = rangeForwards ? this.pendingRange.endContainer : this.pendingRange.startContainer;
-    const endNodeOffset = rangeForwards ? this.pendingRange.endOffset : this.pendingRange.startOffset;
+    const startNode = rangeForwards
+      ? this.pendingRange.startContainer
+      : this.pendingRange.endContainer;
+    const startNodeOffset = rangeForwards
+      ? this.pendingRange.startOffset
+      : this.pendingRange.endOffset;
+    const endNode = rangeForwards
+      ? this.pendingRange.endContainer
+      : this.pendingRange.startContainer;
+    const endNodeOffset = rangeForwards
+      ? this.pendingRange.endOffset
+      : this.pendingRange.startOffset;
 
     const startOffset = offsetInBlock(startBlock.element, startNode, startNodeOffset);
     const endOffset = offsetInBlock(endBlock.element, endNode, endNodeOffset);
-
     const quote = this.pendingRange.toString();
 
     const anchor: TextAnchor = {
       kind: "text",
       context: this.pendingStartBlock.context,
-      segments: touched.map((b) => ({ id: b.id, hash: b.hash })),
+      segments: touched.map((blk) => ({ id: blk.id, hash: blk.hash })),
       startOffset,
       endOffset,
       quote,
     };
 
-    // Build a new (empty) thread; the user's first reply is added on submit.
-    const thread: Thread = {
+    const draft: Thread = {
       id: uid(),
       anchor,
       replies: [],
       createdAt: Date.now(),
     };
-    this.openPopoverForThread(thread, /*isNew=*/ true);
+    this.drafts.push(draft);
     this.hideActionBar();
+    this.renderAll();
+    this.focusDraft(draft.id);
   }
 
-  private openComposeForGraphic(graphicEl: HTMLElement) {
+  // Triggered by clicking the "+" comment button on a figure.
+  private addDraftForGraphic(graphicEl: HTMLElement) {
     const id = graphicEl.dataset.commentGraphicId;
     const ctx = (graphicEl.dataset.commentContext as Context) ?? "article";
     if (!id) return;
     const anchor: GraphicAnchor = { kind: "graphic", context: ctx, id };
-    const existing = this.threads.find(
-      (t) => t.anchor.kind === "graphic" && t.anchor.id === id,
-    );
-    if (existing) {
-      this.openPopoverForThread(existing, false);
-      return;
-    }
-    const thread: Thread = {
+    const draft: Thread = {
       id: uid(),
       anchor,
       replies: [],
       createdAt: Date.now(),
     };
-    this.openPopoverForThread(thread, true);
+    this.drafts.push(draft);
+    this.renderAll();
+    this.focusDraft(draft.id);
   }
 
-  // The thread currently displayed in the popover. `isNewThread` means the
-  // thread isn't yet persisted — the submit handler will append it on save.
-  private currentThread: Thread | null = null;
-  private currentIsNew = false;
-
-  private openPopoverForThread(thread: Thread, isNew: boolean) {
-    if (!this.popover) return;
-    this.currentThread = thread;
-    this.currentIsNew = isNew;
-    // Footer may have been hidden by the outdated-list view; restore.
-    const footer = this.popover.querySelector<HTMLElement>(".cmt-popover-footer");
-    if (footer) footer.style.display = "";
-    const input = this.popover.querySelector<HTMLTextAreaElement>(
-      ".cmt-reply-input",
-    );
-    if (input) input.value = "";
-    this.updateDraftIndicator();
-    this.renderPopover();
-    this.popover.hidden = false;
-    this.repositionPopover();
-    input?.focus();
+  private focusDraft(threadId: string) {
+    const card = this.cardEls.get(threadId);
+    if (!card) return;
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+    const ta = card.querySelector<HTMLTextAreaElement>(".cmt-reply-input");
+    ta?.focus();
   }
 
-  private closePopover() {
-    if (!this.popover) return;
-    this.popover.hidden = true;
-    this.currentThread = null;
-    this.currentIsNew = false;
-    // If user cancelled before adding any reply, the thread isn't in
-    // `this.threads` so there's nothing to clean up.
-  }
-
-  private renderPopover() {
-    if (!this.popover || !this.currentThread) return;
-    const body = this.popover.querySelector<HTMLDivElement>(
-      ".cmt-popover-body",
-    )!;
-    const submitBtn = this.popover.querySelector<HTMLButtonElement>(
-      ".cmt-reply-submit",
-    )!;
-    body.innerHTML = "";
-
-    // Anchor preview (quote or "graphic")
-    const preview = document.createElement("div");
-    preview.className = "cmt-anchor-preview";
-    if (this.currentThread.anchor.kind === "text") {
-      const stale = this.threadIsStale(this.currentThread);
-      preview.innerHTML =
-        `<span class="cmt-quote-text"></span>` +
-        (stale ? '<span class="cmt-stale-tag">outdated</span>' : "");
-      preview.querySelector(".cmt-quote-text")!.textContent =
-        this.currentThread.anchor.quote;
-    } else {
-      preview.innerHTML =
-        '<span class="cmt-quote-text">Comment on graphic</span>';
-    }
-    body.appendChild(preview);
-
-    if (this.currentThread.replies.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "cmt-empty";
-      empty.textContent = this.currentIsNew
-        ? "Start the thread below."
-        : "No comments yet.";
-      body.appendChild(empty);
-    } else {
-      const list = document.createElement("ol");
-      list.className = "cmt-reply-list";
-      for (const reply of this.currentThread.replies) {
-        const li = document.createElement("li");
-        li.className = "cmt-reply";
-        const meta = document.createElement("div");
-        meta.className = "cmt-reply-meta";
-        meta.innerHTML =
-          '<span class="cmt-reply-author">Anonymous</span>' +
-          `<time class="cmt-reply-time" datetime="${new Date(reply.createdAt).toISOString()}">${formatRelative(reply.createdAt)}</time>`;
-        const text = document.createElement("p");
-        text.className = "cmt-reply-text";
-        text.textContent = reply.body;
-        const del = document.createElement("button");
-        del.type = "button";
-        del.className = "cmt-reply-delete";
-        del.setAttribute("aria-label", "Delete this comment");
-        del.innerHTML =
-          '<svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true">' +
-          '<path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
-        del.addEventListener("click", () => this.deleteReply(reply.id));
-        li.appendChild(meta);
-        li.appendChild(text);
-        li.appendChild(del);
-        list.appendChild(li);
-      }
-      body.appendChild(list);
-    }
-
-    submitBtn.textContent = this.currentThread.replies.length === 0 ? "Comment" : "Reply";
-  }
-
-  private submitReply() {
-    if (!this.popover || !this.currentThread) return;
-    const input = this.popover.querySelector<HTMLTextAreaElement>(
-      ".cmt-reply-input",
-    )!;
-    const body = input.value.trim();
-    if (!body) return;
-    const reply: Reply = {
-      id: uid(),
-      body,
-      createdAt: Date.now(),
-    };
-    this.currentThread.replies.push(reply);
-    // First save: register the thread.
-    if (this.currentIsNew) {
-      this.threads.push(this.currentThread);
-      this.currentIsNew = false;
-    }
-    saveThreads(this.threads);
-    input.value = "";
-    this.updateDraftIndicator();
-    this.renderPopover();
-    this.renderAllThreads();
-  }
-
-  private deleteReply(replyId: string) {
-    if (!this.currentThread) return;
-    this.currentThread.replies = this.currentThread.replies.filter(
-      (r) => r.id !== replyId,
-    );
-    if (this.currentThread.replies.length === 0) {
-      // No replies left → remove the entire thread.
-      this.threads = this.threads.filter((t) => t.id !== this.currentThread!.id);
-      saveThreads(this.threads);
-      this.closePopover();
-      this.renderAllThreads();
-      return;
-    }
-    saveThreads(this.threads);
-    this.renderPopover();
-    this.renderAllThreads();
-  }
-
-  // ----- Rendering existing threads (highlights + outdated pill) -----
-
-  private async renderAllThreads() {
-    // Clear all existing highlight spans first so re-renders are clean.
-    document
-      .querySelectorAll<HTMLElement>(".cmt-highlight")
-      .forEach((s) => this.unwrap(s));
-    document
-      .querySelectorAll<HTMLElement>(".cmt-graphic-indicator")
-      .forEach((n) => n.remove());
-
-    const outdated: Thread[] = [];
-    for (const thread of this.threads) {
-      if (thread.anchor.kind === "graphic") {
-        const el = this.graphicsById.get(thread.anchor.id);
-        if (el) this.addGraphicIndicator(el, thread);
-        else outdated.push(thread);
-        continue;
-      }
-      if (this.threadIsStale(thread)) {
-        outdated.push(thread);
-        continue;
-      }
-      this.highlightTextThread(thread);
-    }
-    this.updateOutdatedPill(outdated);
-  }
+  // ===== Stale detection =====
 
   private threadIsStale(thread: Thread): boolean {
     if (thread.anchor.kind !== "text") return false;
@@ -696,6 +906,8 @@ class CommentSystem {
     return false;
   }
 
+  // ===== Highlight wrapping (DOM-mutating; reversed by `unwrap`) =====
+
   private highlightTextThread(thread: Thread) {
     if (thread.anchor.kind !== "text") return;
     const segs = thread.anchor.segments;
@@ -703,7 +915,7 @@ class CommentSystem {
       const seg = segs[i];
       if (!seg) continue;
       const block = this.blocksById.get(seg.id);
-      if (!block) return; // bail; treated stale at top-level
+      if (!block) return;
       const isFirst = i === 0;
       const isLast = i === segs.length - 1;
       const fullLen = block.element.textContent?.length ?? 0;
@@ -730,15 +942,10 @@ class CommentSystem {
     } catch {
       return;
     }
-    // For ranges that cross multiple text nodes, surroundContents throws.
-    // Walk and wrap each fully-contained text node, plus partial start/end.
     this.wrapRange(range, threadId);
   }
 
   private wrapRange(range: Range, threadId: string) {
-    // Collect every text node the range touches (we then wrap each — partial
-    // for start/end, full for the middle). `intersectsNode` keeps us out of
-    // the historically-confusing `compareBoundaryPoints` constant ordering.
     const anchorEl =
       range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
         ? (range.commonAncestorContainer as Element)
@@ -751,7 +958,6 @@ class CommentSystem {
       if (range.intersectsNode(n)) textNodes.push(n);
     }
     if (textNodes.length === 0) return;
-
     for (const node of textNodes) {
       let target: Text = node;
       const nodeLen = target.nodeValue?.length ?? 0;
@@ -760,8 +966,6 @@ class CommentSystem {
       const startInNode = isStart ? range.startOffset : 0;
       const endInNode = isEnd ? range.endOffset : nodeLen;
       if (startInNode >= endInNode) continue;
-      // splitText returns the second half; we always end up wrapping the
-      // middle piece (the part that fell inside the range).
       if (endInNode < nodeLen) target.splitText(endInNode);
       if (startInNode > 0) target = target.splitText(startInNode);
       const span = document.createElement("span");
@@ -772,8 +976,6 @@ class CommentSystem {
     }
   }
 
-  // Replace a highlight span with its children. Splits and merges adjacent
-  // text nodes so subsequent re-wraps see a flat tree.
   private unwrap(span: HTMLElement) {
     const parent = span.parentNode;
     if (!parent) return;
@@ -782,10 +984,11 @@ class CommentSystem {
     parent.normalize();
   }
 
-  // ----- Graphics: hover trigger + indicator -----
+  // ===== Graphics: hover trigger =====
 
   private installGraphicTriggers() {
-    for (const [id, el] of this.graphicsById) {
+    for (const [, el] of this.graphicsById) {
+      // The "+" button (visible on hover) → creates a new draft.
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "cmt-graphic-btn";
@@ -796,270 +999,100 @@ class CommentSystem {
       btn.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        this.openComposeForGraphic(el);
+        this.addDraftForGraphic(el);
       });
-      // Make the graphic a positioned container so the button can sit in
-      // its top-right corner. We don't want to disturb authored styles, so
-      // only set position when it's currently 'static'.
+
+      // Indicator badge (always visible when >0 threads on this graphic).
+      // Click = unhide any hidden cards for the graphic, then scroll to
+      // the first one. Mirrors the "click the highlight to bring text
+      // threads back" affordance.
+      const ind = document.createElement("button");
+      ind.type = "button";
+      ind.className = "cmt-graphic-indicator";
+      ind.hidden = true; // updateGraphicIndicators() shows it when threads exist
+      ind.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const gid = el.dataset.commentGraphicId;
+        if (!gid) return;
+        const matching = this.threads.filter(
+          (t) => !isResolved(t)
+            && t.anchor.kind === "graphic"
+            && t.anchor.id === gid,
+        );
+        let didUnhide = false;
+        for (const t of matching) {
+          if (this.hiddenCardIds.has(t.id)) {
+            this.hiddenCardIds.delete(t.id);
+            didUnhide = true;
+          }
+        }
+        if (didUnhide) this.renderAll();
+        const first = matching[0];
+        if (first) this.scrollCardIntoView(first.id);
+      });
+
       const cs = getComputedStyle(el);
       if (cs.position === "static") el.style.position = "relative";
       el.appendChild(btn);
+      el.appendChild(ind);
     }
   }
 
-  private addGraphicIndicator(el: HTMLElement, thread: Thread) {
-    const dot = document.createElement("span");
-    dot.className = "cmt-graphic-indicator";
-    dot.dataset.threadId = thread.id;
-    dot.title = `${thread.replies.length} comment${thread.replies.length === 1 ? "" : "s"}`;
-    dot.textContent = String(thread.replies.length);
-    el.appendChild(dot);
-  }
-
-  // ----- Outdated comments pill (bottom-left) -----
-
-  private updateOutdatedPill(outdated: Thread[]) {
-    if (outdated.length === 0) {
-      this.outdatedPill?.remove();
-      this.outdatedPill = null;
-      return;
-    }
-    if (!this.outdatedPill) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "cmt-outdated-pill";
-      btn.addEventListener("click", () => this.showOutdatedList(outdated));
-      document.body.appendChild(btn);
-      this.outdatedPill = btn;
-    }
-    this.outdatedPill.textContent = `${outdated.length} outdated comment${outdated.length === 1 ? "" : "s"}`;
-    this.outdatedPill.dataset.count = String(outdated.length);
-  }
-
-  private showOutdatedList(outdated: Thread[]) {
-    // Reuse the popover layout: pop it open with no anchor, showing the
-    // collection of orphaned threads. Clicking one opens it for review /
-    // deletion.
-    if (!this.popover) return;
-    this.currentThread = null;
-    this.currentIsNew = false;
-    const body = this.popover.querySelector<HTMLDivElement>(
-      ".cmt-popover-body",
-    )!;
-    const footer = this.popover.querySelector<HTMLElement>(
-      ".cmt-popover-footer",
-    )!;
-    body.innerHTML = "";
-    footer.style.display = "none";
-    const heading = document.createElement("div");
-    heading.className = "cmt-anchor-preview";
-    heading.innerHTML = '<span class="cmt-stale-tag">outdated</span><span class="cmt-quote-text">These threads no longer match the document.</span>';
-    body.appendChild(heading);
-    const list = document.createElement("ol");
-    list.className = "cmt-reply-list cmt-outdated-list";
-    for (const thread of outdated) {
-      const li = document.createElement("li");
-      li.className = "cmt-reply cmt-outdated-item";
-      const quote = thread.anchor.kind === "text"
-        ? `"${thread.anchor.quote}"`
-        : "(graphic)";
-      const firstBody = thread.replies[0]?.body ?? "(empty)";
-      const meta = document.createElement("div");
-      meta.className = "cmt-reply-meta";
-      meta.innerHTML = `<span class="cmt-reply-author">${formatRelative(thread.createdAt)}</span><span class="cmt-quote-text"></span>`;
-      meta.querySelector(".cmt-quote-text")!.textContent = quote;
-      const text = document.createElement("p");
-      text.className = "cmt-reply-text";
-      text.textContent = firstBody;
-      const open = document.createElement("button");
-      open.type = "button";
-      open.className = "cmt-reply-delete";
-      open.setAttribute("aria-label", "Open this outdated thread");
-      open.textContent = "Open";
-      open.addEventListener("click", () => {
-        footer.style.display = "";
-        this.openPopoverForThread(thread, false);
-      });
-      li.appendChild(meta);
-      li.appendChild(text);
-      li.appendChild(open);
-      list.appendChild(li);
-    }
-    body.appendChild(list);
-    this.popover.hidden = false;
-    // Position centered near the bottom-left pill.
-    const pillRect = this.outdatedPill?.getBoundingClientRect();
-    if (pillRect) {
-      this.popover.style.top = `${window.scrollY + pillRect.top - this.popover.offsetHeight - 12}px`;
-      this.popover.style.left = `${window.scrollX + pillRect.left}px`;
-    }
-  }
-
-  // ----- Floating positioning + dismissal -----
-
-  private repositionPopover() {
-    if (!this.popover || this.popover.hidden || !this.currentThread) return;
-    const thread = this.currentThread;
-    let rect: DOMRect | null = null;
-    if (thread.anchor.kind === "text") {
-      const highlights = document.querySelectorAll<HTMLElement>(
-        `.cmt-highlight[data-thread-id="${CSS.escape(thread.id)}"]`,
-      );
-      const firstHl = highlights[0];
-      if (firstHl) {
-        rect = firstHl.getBoundingClientRect();
-      } else if (this.pendingRange && this.currentIsNew) {
-        rect = this.pendingRange.getBoundingClientRect();
+  // Keep each graphic's indicator badge in sync with the thread count.
+  // Called from renderAll so it stays correct after submits / deletes.
+  private updateGraphicIndicators() {
+    for (const [gid, el] of this.graphicsById) {
+      const count = this.threads.filter(
+        (t) => !isResolved(t)
+          && t.anchor.kind === "graphic"
+          && t.anchor.id === gid,
+      ).length;
+      const ind = el.querySelector<HTMLElement>(".cmt-graphic-indicator");
+      if (!ind) continue;
+      if (count > 0) {
+        ind.textContent = String(count);
+        ind.title = `${count} comment${count === 1 ? "" : "s"} on this graphic`;
+        ind.hidden = false;
       } else {
-        // Fall back to the first segment's bounding box.
-        const firstSeg = thread.anchor.segments[0];
-        const seg = firstSeg ? this.blocksById.get(firstSeg.id) : undefined;
-        if (seg) rect = seg.element.getBoundingClientRect();
+        ind.hidden = true;
       }
-    } else {
-      const el = this.graphicsById.get(thread.anchor.id);
-      if (el) rect = el.getBoundingClientRect();
-    }
-    if (!rect) return;
-    const popW = this.popover.offsetWidth || 320;
-    const popH = this.popover.offsetHeight || 180;
-
-    // Prefer to the right of the selection when there's room; else left.
-    const margin = 12;
-    const viewportW = window.innerWidth;
-    const spaceRight = viewportW - rect.right;
-    const spaceLeft = rect.left;
-    let left: number;
-    if (spaceRight >= popW + margin) {
-      left = window.scrollX + rect.right + margin;
-    } else if (spaceLeft >= popW + margin) {
-      left = window.scrollX + rect.left - popW - margin;
-    } else {
-      // Center horizontally if neither side fits.
-      left = window.scrollX + Math.max(8, (viewportW - popW) / 2);
-    }
-    let top = window.scrollY + rect.top;
-    // Keep the popover within the viewport vertically, leaving room at the
-    // bottom for the narration dock (chapter strip + Shikwasa player).
-    const viewportTop = window.scrollY + 8;
-    const viewportBottom =
-      window.scrollY + window.innerHeight - popH - DOCK_RESERVE_PX;
-    top = Math.max(viewportTop, Math.min(top, viewportBottom));
-    this.popover.style.top = `${top}px`;
-    this.popover.style.left = `${left}px`;
-  }
-
-  private repositionFloating() {
-    this.repositionPopover();
-    if (this.actionBar && !this.actionBar.hidden && this.pendingRange) {
-      this.showActionBarFor(this.pendingRange);
     }
   }
 
-  private onMaybeDismiss(e: MouseEvent) {
-    const target = e.target as HTMLElement | null;
-    if (!target) return;
-    // Don't dismiss if click is inside the popover, action bar, or any
-    // commentable highlight / graphic button.
-    if (
-      this.popover && this.popover.contains(target)
-    ) return;
-    if (this.actionBar && this.actionBar.contains(target)) return;
-    if (target.closest(".cmt-highlight")) return;
-    if (target.closest(".cmt-graphic-btn")) return;
-    if (target.closest(".cmt-graphic-indicator")) return;
-    if (target.closest(".cmt-outdated-pill")) return;
-    if (this.popover && !this.popover.hidden) {
-      // Preserve unsubmitted drafts — losing typed content to a stray
-      // click-outside is the kind of thing that erodes trust in the tool.
-      // The popover stays open with a "Draft" badge until the user either
-      // submits, clicks Cancel, or clicks the X (both explicit discards).
-      if (this.popoverHasDraft()) {
-        this.flashDraft();
-        return;
-      }
-      this.closePopover();
-    }
-  }
+  // ===== Document click routing =====
 
   private onAnyClick(e: MouseEvent) {
     const target = e.target as HTMLElement | null;
     if (!target) return;
+    // Click on a highlight → unhide its card (if hidden) and scroll to
+    // it. When highlights are *nested* (multiple threads on the same
+    // selection), we walk all enclosing `.cmt-highlight` ancestors and
+    // unhide every one of them — so clicking a stacked span surfaces all
+    // the overlapping threads at once, not just the innermost.
     const hl = target.closest<HTMLElement>(".cmt-highlight");
-    if (hl) {
-      e.preventDefault();
-      const tid = hl.dataset.threadId;
-      // Already showing this thread → no-op.
-      if (this.currentThread && this.currentThread.id === tid) return;
-      // Switching threads with an unsubmitted draft would wipe it (we
-      // share one textarea across all popovers); refuse and nudge the
-      // user back to the draft.
-      if (this.popoverHasDraft()) {
-        this.flashDraft();
-        this.popover?.querySelector<HTMLTextAreaElement>(
-          ".cmt-reply-input",
-        )?.focus();
-        return;
+    if (!hl) return;
+    const ids: string[] = [];
+    let cur: HTMLElement | null = hl;
+    while (cur) {
+      if (cur.classList.contains("cmt-highlight") && cur.dataset.threadId) {
+        ids.push(cur.dataset.threadId);
       }
-      const thread = this.threads.find((t) => t.id === tid);
-      if (thread) this.openPopoverForThread(thread, false);
-      return;
+      cur = cur.parentElement;
     }
-    const ind = target.closest<HTMLElement>(".cmt-graphic-indicator");
-    if (ind) {
-      e.preventDefault();
-      const tid = ind.dataset.threadId;
-      if (this.currentThread && this.currentThread.id === tid) return;
-      if (this.popoverHasDraft()) {
-        this.flashDraft();
-        this.popover?.querySelector<HTMLTextAreaElement>(
-          ".cmt-reply-input",
-        )?.focus();
-        return;
+    let didUnhide = false;
+    for (const id of ids) {
+      if (this.hiddenCardIds.has(id)) {
+        this.hiddenCardIds.delete(id);
+        didUnhide = true;
       }
-      const thread = this.threads.find((t) => t.id === tid);
-      if (thread) this.openPopoverForThread(thread, false);
-      return;
     }
+    if (didUnhide) this.renderAll();
+    // Innermost (= the actual clicked span) scrolls to keep the focal
+    // card most prominent.
+    const innermost = ids[0];
+    if (innermost) this.scrollCardIntoView(innermost);
   }
-
-  // True if the popover is currently displayed AND its composer textarea
-  // contains anything that the user would lose on dismiss.
-  private popoverHasDraft(): boolean {
-    if (!this.popover || this.popover.hidden) return false;
-    const input = this.popover.querySelector<HTMLTextAreaElement>(
-      ".cmt-reply-input",
-    );
-    return !!(input && input.value.trim().length > 0);
-  }
-
-  private updateDraftIndicator() {
-    if (!this.popover) return;
-    const tag = this.popover.querySelector<HTMLElement>(".cmt-draft-tag");
-    if (!tag) return;
-    tag.hidden = !this.popoverHasDraft();
-  }
-
-  // Brief animation that draws attention to the draft badge when the user
-  // tries (and the system refuses) to dismiss the popover.
-  private flashDraft() {
-    if (!this.popover) return;
-    const tag = this.popover.querySelector<HTMLElement>(".cmt-draft-tag");
-    if (!tag) return;
-    tag.classList.remove("cmt-flash");
-    // Force reflow so re-adding the class restarts the animation.
-    void tag.offsetWidth;
-    tag.classList.add("cmt-flash");
-  }
-}
-
-function formatRelative(timestamp: number): string {
-  const diff = Date.now() - timestamp;
-  const min = 60_000;
-  if (diff < min) return "just now";
-  if (diff < 60 * min) return `${Math.floor(diff / min)}m ago`;
-  if (diff < 24 * 60 * min) return `${Math.floor(diff / (60 * min))}h ago`;
-  return new Date(timestamp).toLocaleDateString();
 }
 
 function boot() {

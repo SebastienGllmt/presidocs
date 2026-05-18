@@ -154,6 +154,100 @@ Key architectural things to make this work properly:
 - Times are **absolute milliseconds** in the master track (the player never needs to know that the audio was assembled from per-chapter files)
 - `audio` is a path under `/generated/<slug>/`; Content-Type is inferred
 - The time of different marks is calculated taking into account trimming out silent audio (to avoid slowly going out of sync)
+
+## Comments (`client/comments.ts`)
+
+Google-Docs-style threads anchored to selections in the article body, selections in the spoken-script drawer, *or* whole graphics. Every thread (and every in-progress draft) renders as its own card in a **right-side margin column** that scrolls with the article — same idea as Google Docs's comment pane.
+
+### Why a column, not a single popover
+
+One floating popover per span breaks as soon as you have **multiple threads on the same selection** — a real requirement for comments that sync across users, since two readers can independently comment on the same sentence.
+
+The column sidesteps the disambiguation problem entirely: every thread is always visible, stacked next to its anchor. Clicking a highlight scrolls its card into view (and pulses it); clicking a card scrolls the article back to its anchor (and pulses that). Two threads on the same selection just appear as two cards at the same vertical position.
+
+### Anchoring (text)
+
+Selections aren't stored as DOM ranges (those break on any edit). Each *block* gets a stable id and a sha256 of its normalized text content. A text anchor is:
+
+- **`segments`** — the ordered list of blocks the selection touches, each `{ id, hash }`. Multi-segment selections (e.g., spanning two paragraphs) carry one entry per block.
+- **`startOffset` / `endOffset`** — character offsets within the *first* and *last* segment respectively, measured against `textContent` (which is invariant under our highlight-span DOM wrapping, so re-anchoring after a reload is deterministic).
+- **`quote`** — the verbatim selected text at creation time, kept for the outdated-comments list so an orphaned thread can still tell you what it used to point at.
+
+Every block needs an id so we can refer to it later. We try them in this order:
+
+1. **Use the author's existing `id` attribute** if there is one. These are usually present because the block is also a `<mark>` target for the spoken track, so the comment system gets stable ids "for free" wherever the narration already anchored. An id like `definition-body` stays the same even if the author moves that paragraph around in the document.
+2. **Otherwise, make one up** of the form `<context>:__b-<n>` — e.g. `article:__b-7` for the 8th block found while walking the article. This works fine when the document doesn't change, but the index shifts the moment a paragraph is inserted earlier in the file. That's okay: when that happens, the block's text content also shifts under the comment, the stored hash no longer matches, and the comment gets flagged as outdated rather than silently pointing at the wrong sentence.
+
+The takeaway: blocks the author labelled stay rock-solid, and blocks they didn't label still work — they just become eligible for the "outdated" flow as soon as the surrounding document changes.
+
+### Stale anchors: orphan + flag
+
+On every render, each segment's current hash is recomputed and compared to the stored one. If *any* segment in a thread mismatches, the thread is marked **outdated**:
+
+- Its highlight is not drawn in the article (we don't want to point at the wrong sentence).
+- Its card still renders in the column, with an "outdated" tag in the anchor preview and the original `quote` text intact so the reader can find what it used to point at. The card falls back to the first segment's element for vertical positioning; if even that segment is gone, it stacks at the bottom of the column.
+- Stale text cards **bypass the hide list** and lose their Hide button. Hide's contract is "click the highlight to bring it back," but stale threads have no highlight — leaving the button there would orphan the card with no recovery affordance. Surfacing stale cards unconditionally keeps them visible until the user either updates the article or deletes the obsolete thread.
+
+Note this means we reject these alternatives:
+- silently dropping stale comments (dangerous loss of content)
+- Fuzzy re-anchoring (too hard to get correct)
+
+### Anchoring (graphics)
+
+Whole-graphic only in v1, scoped to `<figure>` (the authoring convention from [SSML usage](#ssml-usage)). The anchor is just the figure's id — no hash, because the graphic's content isn't text and isn't comparable across edits. If a figure is replaced (same id, new contents) the comment intentionally follows; that's almost always the right behavior when an author iterates on a diagram. Multiple threads on the same figure simply stack as multiple cards in the column — there's no dedupe.
+
+Standalone `<svg>`/`<img>`/`<canvas>` are deferred: `<img>` is a void element, `<svg>` is a different DOM namespace, both need a wrapper before we can drop an HTML trigger button inside. The figure-only restriction keeps the indexing code free of those edge cases.
+
+### Storage
+
+`localStorage`, keyed by `location.pathname`. The data shape is plain JSON `Thread[]`, so a future server sync is a write-on-change push and a read-on-load merge — no migration. Author identity is deliberately omitted in v1 (every reply renders as "Anonymous"); the `Reply` type leaves the field reserved.
+
+### UI
+
+- **Selection → floating action bar.** A "Comment" pill appears above any selection inside a commentable root. Clicking it creates a draft card in the column, scrolls to it, and focuses its textarea.
+- **Cards column** spans the document height. Each card is within it, so cards scroll with the page naturally. `repositionCards()` aligns each card's top with its anchor's `getBoundingClientRect().top + scrollY`, then walks in sort order pushing later cards down by at least `CARD_GAP_PX` so they don't overlap. It runs on scroll, resize, and after every render.
+- **Drafts vs threads.** A *draft* is an unsubmitted thread held in `this.drafts` (in-memory only). Its card looks the same as a saved one but is framed with a blue border; the composer's "Cancel" discards the entire draft, "Comment" promotes it to `this.threads` and persists. After the first reply lands, subsequent typing in the same card just appends replies (Cancel then just clears the textarea instead of removing the card). Each card owns its own textarea, so drafts never collide with each other and the old "you have unsaved work" draft-protection logic isn't needed.
+- **Cross-linking** between card and anchor: clicking a highlight scrolls its card into view and pulses it; clicking a card (anywhere outside its buttons / textarea) scrolls the article to the anchor and pulses the highlight.
+- **Highlight color** is soft blue (`rgba(88, 166, 255, 0.22)`), deliberately not yellow — narration already paints the active sentence yellow/orange, and a sentence that's both being read and commented needs to be visually unambiguous. Nested highlight spans (overlapping threads) naturally compose to a darker blue, which reads as "denser commentary here."
+- **Layout reservation.** When the column is visible (≥1100px viewport) `body { padding-right: 360px }` shifts the centered article left so the column has a clean gutter to live in. The narration dock stays viewport-centered and so no longer sits dead-center under the article when the column is showing; that visual mismatch is mild enough to ignore for v1.
+
+### Lifecycle: Hide vs Resolve
+
+Three ways a thread can leave the UI, with very different semantics:
+
+| | Trigger | UI effect | Storage effect | How to undo |
+|---|---|---|---|---|
+| **Hide** | "Hide" button on a non-stale saved card | Card removed; highlight stays | None (session-only `hiddenCardIds` Set) | Click the highlight, or reload |
+| **Resolve** | "Resolve" button on any saved card (incl. stale) | Card removed; highlight removed | `resolvedAt` timestamp set on the thread; record stays in localStorage | Not in v1 — permanent |
+| **Delete reply** | "x" on each reply | Reply removed; thread auto-resolves when last visible reply is gone | `deletedAt` timestamp set on the reply (and `resolvedAt` on the thread if it's the last one); both stay in localStorage | Not in v1 — permanent |
+
+**Why three?** Hide is a casual "I'm done looking at this for now." Resolve is the decisive "this is addressed, get rid of it." Reply-delete is for fixing typos / removing individual replies. Conflating them would force every dismissal to feel either too cavalier (one-click delete-everything) or too cautious (confirm-every-time).
+
+**Localstorage as the deletion queue.** Resolved threads and deleted replies aren't removed from localStorage — they sit there as **tombstones** (`resolvedAt` on the thread, `deletedAt` on the reply), filtered out of every render path. When a server sync lands, the client will iterate tombstones, send a DELETE for each, and only then remove them locally. Using the existing store as the queue (instead of a separate `pendingDeletions` array) means there's no second data structure to keep in sync and no migration once networking arrives.
+
+The same logic applies symmetrically to threads (Resolve) and replies (Delete) — different user-facing actions, same architectural pattern. Deleting the *last* visible reply on a thread additionally sets `thread.resolvedAt`, so the server sync issues both reply-level DELETEs and a thread-level DELETE; a zero-reply thread is a dead record server-side anyway, so the extra request is harmless.
+
+Two notes on what's deferred:
+- **"Never synced → remove immediately."** Once networking lands, items will gain a `syncedAt` field set after a successful server write. At that point Delete/Resolve on an item that's still local-only could skip the tombstone and remove outright. In v1 there's no `syncedAt`, so everything tombstones — slightly more work than necessary but ready for the future without a data migration.
+- **Tombstone GC.** In v1 (no networking) tombstones accumulate in localStorage forever. At the scale of "comments on one blog post" this is kilobytes, not megabytes, and reloading the page never re-surfaces them, so the user doesn't notice. The eventual server-sync sweep will GC them.
+
+### Responsive
+
+- **≥1100px:** column visible alongside the article.
+- **<1100px:** column hidden entirely (not enough horizontal room without overlapping content). The action bar and selection capture still work, so comments can be authored — they just won't render as cards until the user widens the window. A mobile-friendly bottom sheet / toggle is a follow-up.
+
+### Excluded from v1
+
+- Reply threading beyond a flat list per anchor.
+- Resolve undo (resolutions are one-way until server sync exists to round-trip).
+- Garbage-collecting accumulated `resolvedAt` records (rely on a future server-sync sweep).
+- Draft persistence across reloads (drafts live only in `this.drafts`, in-memory).
+- Sub-region selection on graphics (drag-rectangle, SVG child clicks).
+- Author identity / login.
+- Backend persistence and conflict resolution.
+- Cross-document selections (selection must stay within one of: article body OR drawer).
+- Narrow-viewport UI for viewing existing threads.
+
 ## Terminology
 
 Two units of spoken content come up throughout this doc
