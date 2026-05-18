@@ -1,6 +1,14 @@
 import { join, normalize } from "node:path";
 import index from "./index.html";
 import hashFunctions from "./posts/hash-functions.html";
+import {
+  startGoogleAuth,
+  startMicrosoftAuth,
+  googleCallback,
+  microsoftCallback,
+  whoami,
+  logout,
+} from "./server/auth/routes.ts";
 
 const projectRoot = import.meta.dir;
 
@@ -45,6 +53,12 @@ const server = Bun.serve({
           "Cache-Control": "public, max-age=2592000, immutable",
         },
       }),
+    "/auth/google": startGoogleAuth,
+    "/auth/google/callback": googleCallback,
+    "/auth/microsoft": startMicrosoftAuth,
+    "/auth/microsoft/callback": microsoftCallback,
+    "/auth/me": whoami,
+    "/auth/logout": { POST: logout },
   },
   development: { hmr: true, console: true },
   fetch() {

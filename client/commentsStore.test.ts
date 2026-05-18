@@ -80,12 +80,24 @@ const ANCHOR_GRAPHIC = {
   id: "id:diagram",
 };
 
+const TEST_USER_ID = "google:test-user-123";
+
 function reply(id: string, body: string, createdAt: number) {
-  return { id, body, createdAt };
+  return {
+    id,
+    body,
+    createdAt,
+    authorId: TEST_USER_ID,
+    authorName: "Test User",
+    authorEmail: "test@example.com",
+  };
 }
 
-async function makeStore(path = "/posts/hash-functions"): Promise<StoreT> {
-  return await CommentStore.create(path);
+async function makeStore(
+  path = "/posts/hash-functions",
+  userId = TEST_USER_ID,
+): Promise<StoreT> {
+  return await CommentStore.create(path, userId);
 }
 
 // ---- Tests -------------------------------------------------------------
@@ -223,117 +235,32 @@ test("reload from localStorage preserves the doc", async () => {
   expect(s2.snapshot()).toEqual(s1.snapshot());
 });
 
-test("reader UUID persists across store instantiations", async () => {
-  // First create: generates a UUID.
-  await makeStore();
-  const firstId = localStorageShim.getItem("blog-reader-id");
-  expect(firstId).toBeTruthy();
+test("doc is keyed by user id: different users see different docs", async () => {
+  const sa = await makeStore("/posts/p", "google:user-a");
+  sa.addThread("tA", ANCHOR_TEXT, 100);
+  sa.addReply("tA", reply("rA", "from A", 110));
 
-  // Second create: must reuse the same UUID. (Otherwise the second
-  // instance would write to a different blob key, and the user's
-  // previous comments would look "missing" until they reload.)
-  await makeStore();
-  const secondId = localStorageShim.getItem("blog-reader-id");
-  expect(secondId).toBe(firstId);
+  const sb = await makeStore("/posts/p", "google:user-b");
+  // Same post path, different user → independent docs.
+  expect(sb.snapshot()).toEqual([]);
+  expect(sa.snapshot().length).toBe(1);
 });
 
-test("v1 JSON migration: legacy key is replayed and cleared", async () => {
-  // Pre-populate the legacy v1 store at the un-reader-scoped key.
-  const legacyThreads = [
-    {
-      id: "t1",
-      anchor: ANCHOR_TEXT,
-      replies: [
-        reply("r1", "old comment", 100),
-        { ...reply("r2", "deleted comment", 110), deletedAt: 200 },
-      ],
-      createdAt: 100,
-      resolvedAt: undefined,
-    },
-    {
-      id: "t2",
-      anchor: ANCHOR_GRAPHIC,
-      replies: [reply("r3", "on the diagram", 120)],
-      createdAt: 120,
-      resolvedAt: 999, // pre-resolved
-    },
-  ];
-  localStorageShim.setItem(
-    "blog-comments:/posts/hash-functions",
-    JSON.stringify(legacyThreads),
-  );
+test("doc persists across reloads for the same user", async () => {
+  const s1 = await makeStore("/posts/p", "google:user-x");
+  s1.addThread("t1", ANCHOR_TEXT, 100);
+  s1.addReply("t1", reply("r1", "hello", 110));
 
-  const s = await makeStore();
-  const snap = s.snapshot();
-  expect(snap.length).toBe(2);
-
-  const t1 = snap.find((t) => t.id === "t1")!;
-  const t2 = snap.find((t) => t.id === "t2")!;
-  expect(t1.replies.length).toBe(2); // tombstoned reply preserved
-  expect(isDeleted(t1.replies.find((r) => r.id === "r2")!)).toBe(true);
-  expect(t2.resolvedAt).toBe(999);
-
-  // Legacy key is gone.
-  expect(localStorageShim.getItem("blog-comments:/posts/hash-functions"))
-    .toBeNull();
-  // New key exists.
-  const readerId = localStorageShim.getItem("blog-reader-id")!;
-  expect(
-    localStorageShim.getItem(
-      `blog-comments:/posts/hash-functions:${readerId}.amrg`,
-    ),
-  ).toBeTruthy();
-});
-
-test("v1 migration is one-shot — second load doesn't re-migrate", async () => {
-  localStorageShim.setItem(
-    "blog-comments:/posts/hash-functions",
-    JSON.stringify([
-      { id: "t1", anchor: ANCHOR_TEXT, replies: [reply("r1", "a", 100)], createdAt: 100 },
-    ]),
-  );
-
-  const s1 = await makeStore();
-  const after1 = s1.snapshot();
-
-  // The legacy key should be gone — even if someone repopulates it,
-  // the store has the new key now and won't migrate again.
-  localStorageShim.setItem(
-    "blog-comments:/posts/hash-functions",
-    JSON.stringify([
-      { id: "tInjected", anchor: ANCHOR_TEXT, replies: [reply("rX", "x", 1)], createdAt: 1 },
-    ]),
-  );
-
-  const s2 = await makeStore();
-  const after2 = s2.snapshot();
-  // s2 must show s1's state, not the re-injected legacy data.
-  expect(after2.map((t) => t.id)).toEqual(after1.map((t) => t.id));
-});
-
-test("corrupt v1 JSON doesn't crash — fresh empty doc is used", async () => {
-  localStorageShim.setItem(
-    "blog-comments:/posts/hash-functions",
-    "not valid json{{{",
-  );
-  // The store logs the parse failure via console.warn; suppress just
-  // for this assertion so test output stays clean.
-  const origWarn = console.warn;
-  console.warn = () => {};
-  try {
-    const s = await makeStore();
-    expect(s.snapshot()).toEqual([]);
-  } finally {
-    console.warn = origWarn;
-  }
+  const s2 = await makeStore("/posts/p", "google:user-x");
+  expect(s2.snapshot()).toEqual(s1.snapshot());
 });
 
 test("per-path isolation: comments on /posts/a don't bleed into /posts/b", async () => {
-  const sa = await CommentStore.create("/posts/a");
+  const sa = await CommentStore.create("/posts/a", TEST_USER_ID);
   sa.addThread("t1", ANCHOR_TEXT, 100);
   sa.addReply("t1", reply("r1", "for a", 110));
 
-  const sb = await CommentStore.create("/posts/b");
+  const sb = await CommentStore.create("/posts/b", TEST_USER_ID);
   expect(sb.snapshot()).toEqual([]);
   // And sa is unchanged
   expect(sa.snapshot().length).toBe(1);
@@ -355,13 +282,13 @@ test("per-path isolation: comments on /posts/a don't bleed into /posts/b", async
 async function forkStore(source: StoreT): Promise<StoreT> {
   // Use a different post path so the fork lives under a separate
   // localStorage key and doesn't trample the original's state.
-  const forked = await CommentStore.create(`/posts/fork-${Math.random()}`);
+  const forked = await CommentStore.create(`/posts/fork-${Math.random()}`, TEST_USER_ID);
   forked.mergeBytes(source.exportBytes());
   return forked;
 }
 
 test("concurrent thread adds: both survive after merge", async () => {
-  const a = await CommentStore.create("/posts/p");
+  const a = await CommentStore.create("/posts/p", TEST_USER_ID);
   const b = await forkStore(a);
 
   a.addThread("tA", ANCHOR_TEXT, 100);
@@ -381,7 +308,7 @@ test("concurrent thread adds: both survive after merge", async () => {
 });
 
 test("concurrent replies to the SAME thread: both survive", async () => {
-  const a = await CommentStore.create("/posts/p");
+  const a = await CommentStore.create("/posts/p", TEST_USER_ID);
   a.addThread("t1", ANCHOR_TEXT, 100);
   a.addReply("t1", reply("r0", "shared", 110));
 
@@ -401,7 +328,7 @@ test("concurrent replies to the SAME thread: both survive", async () => {
 });
 
 test("merge is idempotent: applying the same remote bytes twice is a no-op", async () => {
-  const a = await CommentStore.create("/posts/p");
+  const a = await CommentStore.create("/posts/p", TEST_USER_ID);
   a.addThread("t1", ANCHOR_TEXT, 100);
   a.addReply("t1", reply("r1", "hi", 110));
 
@@ -422,19 +349,19 @@ test("merge is commutative: merge(a,b) and merge(b,a) reach the same state", asy
   // All four stores must start from the shared seed (which they do via
   // CommentStore.create when storage is empty) for the merge to be a
   // proper "merge of two forks of a common ancestor."
-  const a = await CommentStore.create("/posts/a");
-  const b = await CommentStore.create("/posts/b");
+  const a = await CommentStore.create("/posts/a", TEST_USER_ID);
+  const b = await CommentStore.create("/posts/b", TEST_USER_ID);
   a.addThread("tA", ANCHOR_TEXT, 100);
   b.addThread("tB", ANCHOR_TEXT, 200);
 
   const aBytes = a.exportBytes();
   const bBytes = b.exportBytes();
 
-  const x = await CommentStore.create("/posts/x");
+  const x = await CommentStore.create("/posts/x", TEST_USER_ID);
   x.mergeBytes(aBytes);
   x.mergeBytes(bBytes);
 
-  const y = await CommentStore.create("/posts/y");
+  const y = await CommentStore.create("/posts/y", TEST_USER_ID);
   y.mergeBytes(bBytes);
   y.mergeBytes(aBytes);
 
@@ -445,7 +372,7 @@ test("concurrent resolve doesn't double-stamp; deletedAt also stays put", async 
   // Two devices independently resolve the same thread / delete the
   // same reply. After merge, the timestamp shouldn't get clobbered —
   // both operations are idempotent (guarded inside the mutate fns).
-  const a = await CommentStore.create("/posts/p");
+  const a = await CommentStore.create("/posts/p", TEST_USER_ID);
   a.addThread("t1", ANCHOR_TEXT, 100);
   a.addReply("t1", reply("r1", "hi", 110));
   a.addReply("t1", reply("r2", "world", 120));

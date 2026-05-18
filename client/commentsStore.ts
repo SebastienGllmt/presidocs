@@ -121,6 +121,15 @@ export type Reply = {
   body: string;
   createdAt: number;
   deletedAt?: number;
+  // Identity of the user who wrote this reply. Always set for replies
+  // created after login was added (v1 of auth); the system gates the UI
+  // on login so there is no anonymous path. Stored in the CRDT so that
+  // the future R2 sync + author-side aggregating viewer have everything
+  // they need (incl. email for follow-up) without a separate lookup.
+  authorId: string;       // `<provider>:<sub>` — matches Identity.userId
+  authorName: string;
+  authorEmail: string;
+  authorPicture?: string;
 };
 
 export type Thread = {
@@ -158,29 +167,15 @@ type CommentDoc = {
   };
 };
 
-// ---------- Identity + storage keys ----------
+// ---------- Storage keys ----------
 
-const READER_ID_KEY = "blog-reader-id";
-
-function getOrCreateReaderId(): string {
-  let id = localStorage.getItem(READER_ID_KEY);
-  if (id) return id;
-  // crypto.randomUUID is available in all evergreen browsers; the
-  // Math.random fallback is for very old contexts and never collides in
-  // practice for the comment system's scale.
-  id = (typeof crypto !== "undefined" && crypto.randomUUID)
-    ? crypto.randomUUID()
-    : `r-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
-  localStorage.setItem(READER_ID_KEY, id);
-  return id;
-}
-
-function newDocKey(postPath: string, readerId: string): string {
-  return `blog-comments:${postPath}:${readerId}.amrg`;
-}
-
-function legacyJsonKey(postPath: string): string {
-  return `blog-comments:${postPath}`;
+// Doc is keyed by the logged-in user's id (`<provider>:<sub>`). The
+// pre-auth scheme used a per-device random reader-id; that data, if any
+// still sits in localStorage from earlier testing, is now inaccessible
+// — auth is required to comment and the new key shape doesn't collide
+// with the old one, so old blobs sit harmlessly dormant.
+function docKey(postPath: string, userId: string): string {
+  return `blog-comments:${postPath}:user:${userId}.amrg`;
 }
 
 // ---------- Base64 (binary <-> string for localStorage) ----------
@@ -220,12 +215,10 @@ export class CommentStore {
     this.doc = initial;
   }
 
-  static async create(postPath: string): Promise<CommentStore> {
+  static async create(postPath: string, userId: string): Promise<CommentStore> {
     const automerge = await loadAutomerge();
-    const readerId = getOrCreateReaderId();
-    const key = newDocKey(postPath, readerId);
+    const key = docKey(postPath, userId);
 
-    // 1. New-format doc present? Load it.
     const b64 = localStorage.getItem(key);
     if (b64) {
       try {
@@ -236,51 +229,7 @@ export class CommentStore {
       }
     }
 
-    // 2. Legacy JSON doc present? Migrate it in-place. The legacy key
-    //    isn't reader-scoped — it predates identity — so we adopt it
-    //    under this reader's UUID. (Single-browser localStorage means
-    //    one logical user, so this is the right call.)
-    const legacyKey = legacyJsonKey(postPath);
-    const legacyRaw = localStorage.getItem(legacyKey);
-    if (legacyRaw) {
-      try {
-        const legacyThreads = JSON.parse(legacyRaw) as Array<{
-          id: string;
-          anchor: Anchor;
-          replies: Reply[];
-          createdAt: number;
-          resolvedAt?: number;
-        }>;
-        let migrated = automerge.load<CommentDoc>(getSeedBytes(automerge));
-        migrated = automerge.change(
-          migrated,
-          "migrate v1 JSON store",
-          (d) => {
-            for (const t of legacyThreads) {
-              const replies: { [id: string]: Reply } = {};
-              for (const r of t.replies) replies[r.id] = r;
-              d.threads[t.id] = {
-                anchor: t.anchor,
-                replies,
-                createdAt: t.createdAt,
-                ...(t.resolvedAt !== undefined && { resolvedAt: t.resolvedAt }),
-              };
-            }
-          },
-        );
-        const bytes = automerge.save(migrated);
-        localStorage.setItem(key, bytesToBase64(bytes));
-        localStorage.removeItem(legacyKey);
-        return new CommentStore(automerge, key, migrated);
-      } catch (err) {
-        console.warn(
-          "Failed to migrate v1 comments; starting fresh:",
-          err,
-        );
-      }
-    }
-
-    // 3. Nothing on disk — load the shared seed (see SEED_ACTOR comment).
+    // Nothing on disk — load the shared seed (see SEED_ACTOR comment).
     const empty = automerge.load<CommentDoc>(getSeedBytes(automerge));
     return new CommentStore(automerge, key, empty);
   }

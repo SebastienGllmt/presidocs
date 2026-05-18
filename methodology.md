@@ -25,6 +25,7 @@ Each top-level folder is one concern, so finding code is "pick the folder that m
 
 - `generate/` — offline pipeline that turns a post into audio + manifest (`bun run generate`)
 - `client/` — client-run JS code (ex: audio player)
+- `server/` — server-side helpers used by `index.ts` (currently: `server/auth/` for OAuth + sessions)
 - `shared/` — types/helpers used by both sides (e.g. common types / structures)
 - `posts/` — authored inputs (one HTML file per post + the shared PLS lexicon)
 - `generated/` — pipeline output (gitignored)
@@ -221,11 +222,11 @@ type CommentDoc = {
 ```
 The public `snapshot()` method converts both maps to arrays (replies sorted by `createdAt`) so the UI can keep iterating naturally.
 
-**Reader identity.** A UUID per browser, generated once and stashed in `localStorage` under `blog-reader-id`. Independent of post — it's a device identity, not a per-post token. The blob key in R2 will be `comments/<post>/<reader-id>.amrg` so each browser writes to its own slot. Once login lands, the user's account id replaces the UUID and the per-device docs merge into one logical user doc; the CRDT makes that merge a non-event.
+**Reader identity.** Provided by the [auth backend](#auth--login-serverauth): each logged-in user has a stable `<provider>:<sub>` userId (e.g. `google:1234567890`). The CommentStore is keyed on that id, so the same user's writes from different devices land in the same logical doc and merge cleanly via Automerge. The blob key in R2 will be `comments/<post>/<userId>.amrg`. There is no per-device identity layer and no anonymous fallback — login is required to comment, full stop
 
-**Persistence.** `Automerge.save(doc)` produces a `Uint8Array`; we base64-encode it into `localStorage` under `blog-comments:<path>:<reader-id>.amrg`. localStorage is string-only and snapshots are small (a hundred bytes per op), so the base64 inefficiency doesn't register; if comments ever grow huge we'd switch to IndexedDB (which stores binary natively).
+**Persistence.** `Automerge.save(doc)` produces a `Uint8Array`; we base64-encode it into `localStorage` under `blog-comments:<path>:user:<userId>.amrg`. localStorage is string-only and snapshots are small (a hundred bytes per op), so the base64 inefficiency doesn't register; if comments ever grow huge we'd switch to IndexedDB (which stores binary natively).
 
-**Author identity.** Still deliberately omitted in v1 (every reply renders as "Anonymous"); the `Reply` type leaves the field reserved.
+**Author identity.** Each `Reply` carries the author's `authorId` (`<provider>:<sub>`), `authorName`, `authorEmail`, and an optional `authorPicture` URL — populated at submit time from the logged-in identity. The UI renders avatar + display name on every reply; `authorEmail` is deliberately *not* rendered to other readers (only the blog author needs it, for follow-up by mail).
 
 ### UI
 
@@ -268,10 +269,68 @@ Two notes on what's deferred:
 - Garbage-collecting accumulated `resolvedAt` / `deletedAt` tombstones (the future server-sync sweep does this).
 - Draft persistence across reloads (drafts live in `this.drafts` in-memory, deliberately not in the CRDT).
 - Sub-region selection on graphics (drag-rectangle, SVG child clicks).
-- Author identity / login (every reply renders as "Anonymous"; `Reply` reserves the field).
 - **R2 sync (Phase 2)** — the CRDT layer is in place; the GET/PUT-with-If-Match loop and the author-side aggregating viewer come next.
 - Cross-document selections (selection must stay within one of: article body OR drawer).
 - Narrow-viewport UI for viewing existing threads.
+
+## Auth & login (`server/auth/`)
+
+Anonymous commenting isn't supported: the author wants to follow up on real questions by email, and there's no useful path from "Anonymous" to a deliverable address. Posting a comment or reply therefore requires logging in with Google or Microsoft first, and the reader's identity (name + verified email + avatar) attaches to every reply they write. Until the reader signs in, the comments column shows a "Sign in to comment — so I can reply by email." pane in place of the composer, with one button per provider.
+
+### Why Google + Microsoft (not GitHub, not magic links)
+
+The single requirement that picks the providers is: *the email we get back has to be deliverable.* That immediately rules out **GitHub** — users with "Keep my email address private" turned on report a primary email like `12345+username@users.noreply.github.com`, which is verified and unique to the user but cannot receive mail. A meaningful fraction of GitHub users have this set, and the follow-up requirement quietly fails for them.
+
+**Google + Microsoft** together cover the vast majority of corporate and university accounts:
+- Personal Gmail + any Google Workspace org (most universities + many companies).
+- Personal Outlook + any Entra ID tenant from any organization (M365 companies + many universities + the long tail that's increasingly hosted in M365).
+
+Note: The Microsoft client is registered against all possible Microsoft logins (not just personal emails)
+
+**SAML is transparent to us.** When a user at a SAML-SSO Workspace or Entra org clicks "Sign in," Google / Microsoft silently bounces them through their corporate IdP (Okta, Azure AD, whatever) and back. We only ever speak OAuth 2.0 / OIDC to Google or Microsoft — we never see a SAML assertion, never become a SAML SP, never join a federation.
+
+**Magic links** (enter email → click link in inbox) were considered as a third option that would cover the literal long tail including Shibboleth-only universities. Rejected for v1 to avoid the email-sending dependency (Resend / Postmark / SES). Can be added later as a third button without disturbing the OAuth code path.
+
+### Why arctic
+
+[`arctic`](https://arcticjs.dev/) is a small (no transitive deps), provider-agnostic OAuth 2.0 + OIDC helper. It handles just creating the authorization URL and verifiying the authorization code, leaving everything else (sessions, storage, UI, CSRF binding) to us. That asymmetric "library does one thing" boundary fits this project better than the alternatives
+
+### Userinfo from `/userinfo`, not from a decoded ID token
+
+Both providers return an ID token (a JWT) in the code-exchange response. A pedantic OIDC client would verify the JWT signature against the provider's JWKS, then trust the claims inline. We don't. Instead we take the access token from the same response, call the provider's standard `GET /userinfo` endpoint over TLS, and use the JSON body.
+
+The trust model is the same either way: in both flows we trust that we're talking to the real provider because we just completed an HTTPS handshake against `accounts.google.com` / `login.microsoftonline.com`. Doing the userinfo call costs one extra round trip; doing JWT verification costs a JWKS fetch + caching layer + algorithm allowlist. The round trip is much cheaper to maintain.
+
+One Microsoft-specific wrinkle: the OIDC `email` claim is sometimes blank for work accounts whose admin configured a non-mail UPN; in those cases `preferred_username` is the address. We fall back to it. Microsoft doesn't emit `email_verified` because Entra owns the address namespace — anything it returns is verified by definition.
+
+### Sessions: HMAC-signed cookie
+
+Sessions are stored entirely in a single `HttpOnly` cookie, format `<base64url(json)>.<base64url(hmac-sha256)>` — JWT-shaped but without the JOSE header (we only ever sign with one algorithm, so the header would be dead weight). Verification is constant-time. TTL is 400 days, which is the practical max — Chrome (since v104), Firefox, and Safari all clamp any cookie `Max-Age` beyond that to 400 days. Sliding-window refresh (re-mint on each authenticated request to keep active users logged in indefinitely) is a follow-up. The only revocation mechanism is rotating `SESSION_SECRET`, which invalidates every active session.
+
+**Why not a server-side session store** (R2 blob keyed by random session id, KV with a TTL, etc.). For comments specifically, the worst case of a stolen cookie is "someone posts as you for up to 400 days." That's not access to anything destructive — no admin panel to walk into, no money to move, no DMs to read. Paying one storage read per authenticated request to gain individual-session revocation isn't worth it at this risk level. If revocation ever does matter, every route handler in `server/auth/routes.ts` goes through `verifySessionToken(token)` exactly once — swap that implementation for a KV / R2 lookup and nothing else changes.
+
+### OAuth flow plumbing
+
+Per provider, the flow is:
+1. `GET /auth/<provider>` — generate `state` and a PKCE `code_verifier`, store both in short-lived (10 minute) `HttpOnly` cookies named `blog-oauth-state-<provider>` and `blog-oauth-verifier-<provider>`, then 302 to the provider's authorization endpoint.
+2. (user authenticates, possibly through their org's SAML IdP)
+3. `GET /auth/<provider>/callback` — verify the returned `state` matches the cookie's, exchange the code for tokens, hit `/userinfo`, mint the session cookie, 302 home.
+
+The state / verifier cookies are deliberately **bound to the provider** in their cookie names, so a stale callback from one provider can't be replayed against the other's in-flight flow. PKCE (`S256`) is on by default — arctic generates the verifier and challenge for us.
+
+`GET /auth/me` returns the public subset of the session (no `iat`/`exp`) as JSON, or `null` if not logged in. `POST /auth/logout` clears the cookie.
+
+### Cloudflare KV considered, not (yet) used
+
+KV would be useful for **rate-limiting** comment submissions (counter-style writes, eventually-consistent is fine) and possibly for **edge-cached aggregations** of all readers' comment blobs per post (faster than R2 list+get fan-out). Neither is a v1 concern, and KV's eventual consistency makes it the wrong store for the Automerge blobs themselves — R2's strong-consistency + conditional `PUT-with-If-Match` is what the [sync loop](#storage-layer-clientcommentsstorets) needs. Add KV when abuse or read-latency actually shows up, not before.
+
+### Excluded from v1
+
+- **GitHub provider** (re-introduces the unreachable-noreply-email problem).
+- **Magic-link fallback** for the Shibboleth-only long tail.
+- **Server-side session revocation** (would require switching `verifySessionToken` to a KV / R2 lookup).
+- **Mid-session identity refresh.** `/auth/me` is read once at boot; an expired cookie mid-session leaves the UI looking signed-in until reload. Harmless while comments are localStorage-only; will need fixing alongside R2 sync.
+- **ID token signature verification** (we trust TLS to the provider + the `/userinfo` round trip instead, see above).
 
 ## Terminology
 

@@ -38,6 +38,12 @@ import {
   type TextAnchor,
   type Thread,
 } from "./commentsStore.ts";
+import {
+  loadIdentity,
+  loginUrl,
+  signOut,
+  type Identity,
+} from "./identity.ts";
 
 type BlockInfo = {
   id: string;
@@ -161,14 +167,25 @@ class CommentSystem {
   // (manifest missing) we still work on the article alone.
   private drawerRoot: HTMLElement | null = null;
 
+  // Logged-in user, or null when not authenticated. The UI gates every
+  // comment-creation path on this being non-null. Loaded once at boot
+  // from /auth/me; not refreshed mid-session (an expired cookie at
+  // mid-session falls back to "still appears logged in locally," which is
+  // harmless given comments only write to localStorage in v1).
+  private identity: Identity | null = null;
+
   // The CRDT store owns persistence + merge semantics. `snapshot` is a
   // cached plain-JSON view of the store's threads, refreshed after every
   // mutation. The UI reads from `snapshot`; mutations route through the
-  // store. Stays null briefly during init while Automerge is dynamically
-  // imported — the action bar and other entry points check for store
-  // readiness before doing work.
+  // store. Stays null when not logged in — the store is keyed by user id,
+  // so we can't create it until identity is known.
   private store: CommentStore | null = null;
   private snapshot: Thread[] = [];
+
+  // Header in the column showing "Signed in as ..." or the login pane
+  // when not authenticated. Rendered once at init, re-rendered on
+  // identity change (currently only at boot).
+  private identityHeader: HTMLElement | null = null;
   // In-memory drafts — a freshly composed thread that the user hasn't
   // submitted yet. Promoted to the store on first reply, removed on
   // Cancel. Deliberately not in the CRDT: drafts shouldn't sync to a
@@ -225,16 +242,27 @@ class CommentSystem {
       obs.observe(document.body, { childList: true, subtree: false });
     }
 
-    // Spin up the CRDT-backed store. This is the only place we await
-    // Automerge's WASM load — once `create()` returns the store is fully
-    // hydrated (including any one-shot migration from the v1 JSON key)
-    // and all UI handlers can safely call its mutation methods.
-    this.store = await CommentStore.create(window.location.pathname);
-    this.snapshot = this.store.snapshot();
+    // Load identity first — the comment store is keyed on user id, so
+    // without a logged-in user there's nothing to load.
+    this.identity = await loadIdentity();
 
     this.mountColumn();
     this.mountActionBar();
     this.installGraphicTriggers();
+    this.renderIdentityHeader();
+
+    if (this.identity) {
+      // Spin up the CRDT-backed store. This is the only place we await
+      // Automerge's WASM load — once `create()` returns the store is
+      // fully hydrated and all UI handlers can safely call its mutation
+      // methods.
+      this.store = await CommentStore.create(
+        window.location.pathname,
+        this.identity.userId,
+      );
+      this.snapshot = this.store.snapshot();
+    }
+
     this.renderAll();
 
     document.addEventListener("selectionchange", () => this.onSelectionChange());
@@ -301,6 +329,80 @@ class CommentSystem {
     col.setAttribute("aria-label", "Comments");
     document.body.appendChild(col);
     this.column = col;
+
+    // The identity header sits above the cards. It lives outside the
+    // column's normal absolutely-positioned card flow so it doesn't get
+    // shoved around by `repositionCards`.
+    const header = document.createElement("div");
+    header.className = "cmt-identity";
+    col.appendChild(header);
+    this.identityHeader = header;
+  }
+
+  // Render the "Signed in as X" / "Sign in to comment" pane. Called once
+  // at boot; would be re-called on a future identity change (we'd need
+  // to add a re-init flow for that).
+  private renderIdentityHeader() {
+    const h = this.identityHeader;
+    if (!h) return;
+    h.innerHTML = "";
+    if (this.identity) {
+      const avatar = this.buildAvatar(this.identity.picture, this.identity.name ?? this.identity.email);
+      const name = document.createElement("span");
+      name.className = "cmt-identity-name";
+      name.textContent = this.identity.name ?? this.identity.email;
+      name.title = this.identity.email;
+      const out = document.createElement("button");
+      out.type = "button";
+      out.className = "cmt-identity-signout";
+      out.textContent = "Sign out";
+      out.addEventListener("click", (e) => {
+        e.stopPropagation();
+        signOut();
+      });
+      h.appendChild(avatar);
+      h.appendChild(name);
+      h.appendChild(out);
+    } else {
+      h.classList.add("cmt-identity-loggedout");
+      const label = document.createElement("p");
+      label.className = "cmt-identity-pitch";
+      label.textContent = "Sign in to comment — so I can reply by email.";
+      const buttons = document.createElement("div");
+      buttons.className = "cmt-identity-providers";
+      buttons.appendChild(this.buildProviderLink("google", "Sign in with Google"));
+      buttons.appendChild(this.buildProviderLink("microsoft", "Sign in with Microsoft"));
+      h.appendChild(label);
+      h.appendChild(buttons);
+    }
+  }
+
+  private buildProviderLink(provider: "google" | "microsoft", label: string): HTMLAnchorElement {
+    const a = document.createElement("a");
+    a.className = `cmt-identity-provider cmt-identity-provider-${provider}`;
+    a.href = loginUrl(provider);
+    a.textContent = label;
+    return a;
+  }
+
+  // Small round avatar. Falls back to a colored initial if no picture
+  // URL (Microsoft accounts often don't return one); also falls back if
+  // the image errors at load.
+  private buildAvatar(picture: string | null, name: string): HTMLElement {
+    const wrap = document.createElement("span");
+    wrap.className = "cmt-avatar";
+    wrap.setAttribute("aria-hidden", "true");
+    const initial = (name.trim()[0] ?? "?").toUpperCase();
+    wrap.dataset.initial = initial;
+    if (picture) {
+      const img = document.createElement("img");
+      img.src = picture;
+      img.alt = "";
+      img.referrerPolicy = "no-referrer";
+      img.addEventListener("error", () => img.remove());
+      wrap.appendChild(img);
+    }
+    return wrap;
   }
 
   // Master render: redraws cards, highlights, and indicators from scratch.
@@ -328,7 +430,10 @@ class CommentSystem {
     // longer drawn (the segments changed), so there'd be no way to bring
     // them back. Surfacing them unconditionally lets the user review and
     // decide whether to delete the now-orphaned thread.
-    this.column.innerHTML = "";
+    //
+    // Surgical removal (vs. column.innerHTML = "") so the identity header
+    // — also a child of the column — survives each render pass.
+    for (const card of this.cardEls.values()) card.remove();
     this.cardEls.clear();
     const all: Thread[] = [...this.snapshot, ...this.drafts];
     for (const thread of all) {
@@ -417,14 +522,22 @@ class CommentSystem {
 
     const meta = document.createElement("div");
     meta.className = "cmt-reply-meta";
+    const authorWrap = document.createElement("span");
+    authorWrap.className = "cmt-reply-author-wrap";
+    // Email is stored in the CRDT but deliberately not rendered to other
+    // readers — only the blog author (future feature) needs it. Avatar +
+    // name is the public face of each reply.
+    const displayName = reply.authorName || reply.authorEmail || "Unknown";
+    authorWrap.appendChild(this.buildAvatar(reply.authorPicture ?? null, displayName));
     const author = document.createElement("span");
     author.className = "cmt-reply-author";
-    author.textContent = "Anonymous";
+    author.textContent = displayName;
+    authorWrap.appendChild(author);
     const time = document.createElement("time");
     time.className = "cmt-reply-time";
     time.dateTime = new Date(reply.createdAt).toISOString();
     time.textContent = formatRelative(reply.createdAt);
-    meta.appendChild(author);
+    meta.appendChild(authorWrap);
     meta.appendChild(time);
     li.appendChild(meta);
 
@@ -519,10 +632,18 @@ class CommentSystem {
     submit.className = "cmt-reply-submit";
     submit.textContent = isDraft ? "Comment" : "Reply";
     const doSubmit = () => {
-      if (!this.store) return;
+      if (!this.store || !this.identity) return;
       const body = ta.value.trim();
       if (!body) return;
-      const reply: Reply = { id: uid(), body, createdAt: Date.now() };
+      const reply: Reply = {
+        id: uid(),
+        body,
+        createdAt: Date.now(),
+        authorId: this.identity.userId,
+        authorName: this.identity.name ?? this.identity.email,
+        authorEmail: this.identity.email,
+        ...(this.identity.picture && { authorPicture: this.identity.picture }),
+      };
       if (isDraft) {
         // Promote draft → persisted thread. Single Automerge change
         // would be tidier here, but the public store API has separate
@@ -599,7 +720,12 @@ class CommentSystem {
     }
     items.sort((a, b) => a.target - b.target);
 
-    let prevBottom = 0;
+    // The identity header sits at the top of the column in normal flow,
+    // but cards are absolutely positioned and would otherwise stack
+    // starting at column-top = 0. Start `prevBottom` past the header so
+    // the first card lands below it instead of behind it.
+    const headerHeight = this.identityHeader?.offsetHeight ?? 0;
+    let prevBottom = headerHeight > 0 ? headerHeight - CARD_GAP_PX : 0;
     for (const { card, target } of items) {
       const top = Math.max(target, prevBottom + CARD_GAP_PX);
       card.style.top = `${top}px`;
@@ -691,6 +817,13 @@ class CommentSystem {
   }
 
   private onSelectionChange() {
+    // No commenting without login — keep the action bar suppressed so
+    // text selection in the article doesn't promise a feature the user
+    // can't use. The login affordance lives in the column header.
+    if (!this.identity) {
+      this.hideActionBar();
+      return;
+    }
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
       this.hideActionBar();
@@ -930,19 +1063,24 @@ class CommentSystem {
 
   private installGraphicTriggers() {
     for (const [, el] of this.graphicsById) {
-      // The "+" button (visible on hover) → creates a new draft.
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "cmt-graphic-btn";
-      btn.setAttribute("aria-label", "Comment on this graphic");
-      btn.innerHTML =
-        '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
-        '<path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H8l-4 4V6a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
-      btn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this.addDraftForGraphic(el);
-      });
+      // The "+" button (visible on hover) → creates a new draft. Only
+      // mounted when logged in; without identity the comment-creation
+      // path is fully closed off (mirrors the action-bar gate above).
+      let btn: HTMLButtonElement | null = null;
+      if (this.identity) {
+        btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "cmt-graphic-btn";
+        btn.setAttribute("aria-label", "Comment on this graphic");
+        btn.innerHTML =
+          '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
+          '<path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H8l-4 4V6a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
+        btn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.addDraftForGraphic(el);
+        });
+      }
 
       // Indicator badge (always visible when >0 threads on this graphic).
       // Click = unhide any hidden cards for the graphic, then scroll to
@@ -976,7 +1114,7 @@ class CommentSystem {
 
       const cs = getComputedStyle(el);
       if (cs.position === "static") el.style.position = "relative";
-      el.appendChild(btn);
+      if (btn) el.appendChild(btn);
       el.appendChild(ind);
     }
   }

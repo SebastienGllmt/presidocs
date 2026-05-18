@@ -182,6 +182,12 @@
   font-size: 11px;
   color: var(--cmt-fg-muted);
 }
+.cmt-reply-author-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
 .cmt-reply-author { font-weight: 600; color: var(--cmt-fg); }
 .cmt-reply-text {
   margin: 0;
@@ -260,6 +266,113 @@
   border-color: var(--cmt-accent);
 }
 .cmt-reply-submit:hover { background: #0860c4; }
+
+/* ============================================================================
+   Identity header — sits at the top of the column. Two states:
+   - Logged in: small avatar + name + "Sign out" link.
+   - Logged out: short pitch + "Sign in with Google / Microsoft" buttons.
+   ============================================================================ */
+.cmt-identity {
+  pointer-events: auto;
+  background: var(--cmt-bg);
+  border: 1px solid var(--cmt-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  box-shadow: var(--cmt-shadow-soft);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cmt-identity-loggedout {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.cmt-identity-pitch {
+  margin: 0;
+  color: var(--cmt-fg-muted);
+  font-size: 12px;
+}
+.cmt-identity-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cmt-identity-signout {
+  font: 600 11px/1 inherit;
+  padding: 4px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--cmt-border);
+  background: #fff;
+  color: var(--cmt-fg-muted);
+  cursor: pointer;
+}
+.cmt-identity-signout:hover {
+  background: #eef0f3;
+  color: var(--cmt-fg);
+}
+.cmt-identity-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cmt-identity-provider {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--cmt-border);
+  font: 600 12px/1 inherit;
+  text-decoration: none;
+  color: var(--cmt-fg);
+  background: #fff;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.cmt-identity-provider:hover { background: #eef0f3; }
+.cmt-identity-provider-google { border-color: #d0d7de; }
+.cmt-identity-provider-microsoft { border-color: #d0d7de; }
+
+/* Round avatar. The image (when present) fills the circle; the
+   data-initial fallback is rendered via ::before so it shows through if
+   the <img> is missing or errors out and is removed by the JS handler. */
+.cmt-avatar {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #c7d2fe, #a5b4fc);
+  color: #1e1b4b;
+  font: 700 10px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  flex-shrink: 0;
+  overflow: hidden;
+  text-transform: uppercase;
+}
+.cmt-avatar::before {
+  content: attr(data-initial);
+}
+.cmt-avatar img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #fff;
+}
+/* Slightly larger avatar in the identity header (above the cards). */
+.cmt-identity > .cmt-avatar {
+  width: 28px;
+  height: 28px;
+  font-size: 12px;
+}
 
 /* ============================================================================
    Graphic trigger — small "+" button shown in the figure's top-right corner
