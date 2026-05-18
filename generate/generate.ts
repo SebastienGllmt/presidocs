@@ -228,18 +228,23 @@ if (!ttsFactory) {
 // holding all `<lexeme>`s). Order: common-terms first, then inline — so a
 // PLS engine that picks the last match per grapheme lets a post override
 // a common-terms entry.
+// We keep the shared and inline sources separate so the local-only set
+// can feed the cache identity (see below) while the merged set feeds the
+// TTS provider.
 const sharedPlsPath = join(dirname(htmlPath), "common-terms.pls");
 type PlsSource = { label: string; xml: string };
-const plsSources: PlsSource[] = [];
+const sharedPlsSources: PlsSource[] = [];
+const localPlsSources: PlsSource[] = [];
 if (await Bun.file(sharedPlsPath).exists()) {
-  plsSources.push({
+  sharedPlsSources.push({
     label: sharedPlsPath,
     xml: await Bun.file(sharedPlsPath).text(),
   });
 }
 inlinePlsBlocks.forEach((xml, i) => {
-  plsSources.push({ label: `inline:${htmlPath}#${i}`, xml });
+  localPlsSources.push({ label: `inline:${htmlPath}#${i}`, xml });
 });
+const plsSources: PlsSource[] = [...sharedPlsSources, ...localPlsSources];
 
 const lexemeBodyRegex = /<lexicon\b[^>]*>([\s\S]*?)<\/lexicon\s*>/;
 function mergeLexicons(sources: PlsSource[]): PlsLexicon {
@@ -271,6 +276,15 @@ if (lexicon) {
   console.log(`Loaded PLS lexicon from: ${lexicon.sources.join(", ")}`);
 }
 
+// Local-only lexicon for the cache identity. Excluding cross-post shared
+// sources (e.g. `common-terms.pls`) from the cache key means edits to
+// those files don't blow away every post's cache. The merged `lexicon`
+// above is still what the provider synthesizes against, so a fresh
+// synthesis still honors the latest shared pronunciations — only
+// already-cached segments keep their old ones until the cache is wiped.
+const localLexicon: PlsLexicon | null =
+  localPlsSources.length > 0 ? mergeLexicons(localPlsSources) : null;
+
 const rawTts = ttsFactory({
   voice,
   rate,
@@ -281,7 +295,9 @@ const rawTts = ttsFactory({
 // Wrap with a segment-level disk cache so edits to a single sentence only
 // re-synthesize that segment. The cache lives under `generated/.tts-cache/`
 // — shared across posts because segments are addressed by content
-// (provider + voice + rate + format + lexicon + text), not by post.
+// (provider + voice + rate + format + post-local lexicon + text), not by
+// post. Only the post-local lexicon goes into the key; see tts-cache.ts
+// for the rationale.
 // Mock runs bypass the cache: the silent-audio shortcut is already cheap,
 // and caching it would just waste disk on never-played placeholders.
 const cacheDir = join(projectRoot, "generated", ".tts-cache");
@@ -294,7 +310,7 @@ const cachedTts: CachedTtsProvider | null = mock
         voice,
         rate,
         format: workingFormat,
-        lexiconXml: lexicon?.xml ?? null,
+        localLexiconXml: localLexicon?.xml ?? null,
       },
     });
 const tts = cachedTts ?? rawTts;

@@ -18,7 +18,7 @@ const baseIdentity: TtsCacheIdentity = {
   voice: "Samantha",
   rate: 180,
   format: monoFmt,
-  lexiconXml: null,
+  localLexiconXml: null,
 };
 
 let cacheDir: string;
@@ -88,9 +88,9 @@ test("computeCacheKey differs by output format", () => {
   );
 });
 
-test("computeCacheKey differs by lexicon", () => {
+test("computeCacheKey differs by local lexicon", () => {
   expect(computeCacheKey(baseIdentity, "x")).not.toBe(
-    computeCacheKey({ ...baseIdentity, lexiconXml: "<lexicon/>" }, "x"),
+    computeCacheKey({ ...baseIdentity, localLexiconXml: "<lexicon/>" }, "x"),
   );
 });
 

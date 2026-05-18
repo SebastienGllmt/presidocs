@@ -1,16 +1,26 @@
 // Segment-level disk cache for TTS synthesis. Editing one sentence in a
 // post should invalidate one segment, not the whole chapter — and not the
 // whole post. The cache key is a sha256 over every input that influences
-// the synthesized bytes: provider name, voice, rate, output format, full
-// merged PLS lexicon, and the segment text itself. Anything not in the
-// key is assumed not to affect output.
+// the synthesized bytes: provider name, voice, rate, output format, the
+// post-LOCAL PLS lexicon, and the segment text itself. Anything not in
+// the key is assumed not to affect output.
+//
+// Why local-only and not the merged lexicon: editing a shared file like
+// `posts/common-terms.pls` would otherwise invalidate every cached
+// segment across every post. That's correct in the strict sense (the
+// merged lexicon did change) but pathologically expensive in practice —
+// the common file changes often during authoring, and most segments
+// don't reference the edited grapheme. The tradeoff: after editing
+// `common-terms.pls`, existing cache entries keep their old pronunciation
+// until manually wiped (`rm -rf generated/.tts-cache/`). Post-local
+// inline `<script type="application/pls+xml">` blocks still invalidate
+// the post's segments, because that's the scope the author is actively
+// iterating on.
 //
 // The cache lives at `generated/.tts-cache/<hash>.wav` and is shared
-// across posts. That's intentional: `common-terms.pls` makes a lot of
-// segments (e.g. boilerplate sentences using shared technical terms)
-// reusable across posts, and segments are addressed purely by content.
-// `generate/clean.ts` only touches `generated/<slug>/`, so it never
-// wipes the cache.
+// across posts. Segments are addressed purely by content, so two posts
+// that share a sentence share the cache entry. `generate/clean.ts` only
+// touches `generated/<slug>/`, so it never wipes the cache.
 
 import { mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -28,11 +38,14 @@ export interface TtsCacheIdentity {
   voice: string;
   rate: number;
   format: AudioFormat;
-  // The merged lexicon XML, or null if no lexicon is in effect. Goes into
-  // the key in full: changing a single `<lexeme>` must invalidate every
-  // segment, because we can't cheaply tell which segments used which
-  // grapheme. Coarse but correct, and the lexicon is small (KBs).
-  lexiconXml: string | null;
+  // The post-LOCAL lexicon XML (inline `<script type="application/pls+xml">`
+  // blocks merged together), or null if the post has no inline PLS.
+  // Goes into the key in full: changing a single `<lexeme>` in the
+  // post-local lexicon must invalidate every segment in this post,
+  // because we can't cheaply tell which segments used which grapheme.
+  // Cross-post shared lexicons (e.g. `common-terms.pls`) are deliberately
+  // excluded — see the file header for the rationale.
+  localLexiconXml: string | null;
 }
 
 export interface TtsCacheConfig {
@@ -45,14 +58,19 @@ export interface CachedTtsProvider extends TtsProvider {
 }
 
 // Bump when the key encoding changes in a backwards-incompatible way
-// (e.g. adding a new identity field). Old cache entries become unreachable
-// but aren't deleted — they age out naturally if the user prunes the dir.
-const KEY_VERSION = "v1";
+// (e.g. adding a new identity field, or changing what an existing field
+// represents). Old cache entries become unreachable but aren't deleted —
+// they age out naturally if the user prunes the dir.
+//
+// v2: lexicon field narrowed from "full merged lexicon" to "post-local
+// lexicon only". v1 entries used a key that mixed in `common-terms.pls`
+// and so are unreachable from v2 keys.
+const KEY_VERSION = "v2";
 
 export function computeCacheKey(identity: TtsCacheIdentity, text: string): string {
   // Explicit field order keeps the hash stable across JS engines that
   // might re-order object keys. JSON.stringify handles escaping for the
-  // free-form `voice`, `lexiconXml`, and `text` strings.
+  // free-form `voice`, `localLexiconXml`, and `text` strings.
   const canonical = {
     version: KEY_VERSION,
     providerName: identity.providerName,
@@ -61,7 +79,7 @@ export function computeCacheKey(identity: TtsCacheIdentity, text: string): strin
     sampleRate: identity.format.sampleRate,
     channels: identity.format.channels,
     bitsPerSample: identity.format.bitsPerSample,
-    lexiconXml: identity.lexiconXml,
+    localLexiconXml: identity.localLexiconXml,
     text,
   };
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");

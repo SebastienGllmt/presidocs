@@ -96,10 +96,12 @@ The cache operates per **segment** — the text between two `<mark>` boundaries 
 - Voice
 - Rate
 - Output audio format (sample rate, channels, bits/sample)
-- Full merged PLS lexicon XML (or `null` if none)
+- Local PLS lexicon XML (the post's inline `<script type="application/pls+xml">` blocks merged together, or `null` if none)
 - Segment text
 
-If any of these change, the corresponding entries miss and are re-synthesized. The lexicon goes in *in full* — changing one `<lexeme>` invalidates every segment in the post, which is coarse but correct (we can't cheaply tell which segments used which grapheme) and the lexicon is small.
+If any of these change, the corresponding entries miss and are re-synthesized. Note this means changing one inline `<lexeme>` invalidates every segment in *that post*, which is coarse but correct (we can't cheaply tell which segments used which grapheme) and the inline lexicon is small.
+
+**The cross-post shared `common-terms.pls` is deliberately excluded from the cache key**, even though the merged lexicon (common + inline) is still what the TTS provider synthesizes against. Including it would mean editing one entry in `common-terms.pls` invalidates every cached segment across every post (which is unreasonably expensive). The tradeoff: after editing `common-terms.pls`, you need to wipe any relevant cache manually.
 
 **Cache value** is the raw provider output bytes (working-format WAV), captured *before* trim / concat / encode. Those downstream ops are cheap and deterministic, so caching them would just bloat the cache without saving time.
 
