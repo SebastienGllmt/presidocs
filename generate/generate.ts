@@ -1,5 +1,5 @@
 // Extracts the inline narration script from a blog post HTML file, splits
-// each chunk at <mark name="..."/> boundaries, synthesizes one WAV per
+// each chapter at <mark name="..."/> boundaries, synthesizes one WAV per
 // segment via a pluggable TTS provider, concatenates segments into one
 // master track, and emits a manifest with absolute mark timings.
 //
@@ -36,6 +36,7 @@ import {
   type AudioPipeline,
 } from "./audio-pipeline.ts";
 import { ttsProviders, type PlsLexicon } from "./tts-providers.ts";
+import { wrapWithCache, type CachedTtsProvider } from "./tts-cache.ts";
 import { asMs, msToSeconds, type Milliseconds } from "../shared/time.ts";
 
 const argv = Bun.argv.slice(2);
@@ -83,46 +84,46 @@ await mkdir(outDir, { recursive: true });
 // `<script>` content is treated as RAWTEXT by the HTML parser: tags inside
 // are NOT parsed and entities are NOT decoded. That's what we want — the
 // narration and PLS payloads come out byte-identical to what the author
-// wrote (modulo streaming chunk boundaries, which we re-join).
+// wrote (modulo HTMLRewriter's streaming chunk boundaries, which we re-join).
 //
 // Two block types share this single pass:
-//   - `text/narration` — the spoken-script chunks, one per chapter
+//   - `text/narration` — the spoken-script for one chapter
 //   - `application/pls+xml` — inline pronunciation lexicon (optional, zero
 //     or more blocks; concatenated and merged with `common-terms.pls` at
 //     bootstrap)
 
-type NarrationChunk = { id: string; title: string; content: string };
+type NarrationChapter = { id: string; title: string; content: string };
 
-const chunks: NarrationChunk[] = [];
+const chapters: NarrationChapter[] = [];
 const inlinePlsBlocks: string[] = [];
 let anonCount = 0;
-let pendingChunk: { id: string; title: string; buf: string[] } | null = null;
+let pendingChapter: { id: string; title: string; buf: string[] } | null = null;
 let pendingPlsBuf: string[] | null = null;
 
 new HTMLRewriter()
   .on('script[type="text/narration"]', {
     element(el) {
       const id =
-        el.getAttribute("data-chunk-id") ??
+        el.getAttribute("data-chapter-id") ??
         el.getAttribute("id") ??
-        `chunk-${anonCount++}`;
-      const title = el.getAttribute("data-chunk-title") ?? id;
+        `chapter-${anonCount++}`;
+      const title = el.getAttribute("data-chapter-title") ?? id;
       // HTMLRewriter walks the tree in document order and serializes script
       // elements one at a time, so a single shared `pending` is safe.
-      pendingChunk = { id, title, buf: [] };
+      pendingChapter = { id, title, buf: [] };
       el.onEndTag(() => {
-        if (pendingChunk) {
-          chunks.push({
-            id: pendingChunk.id,
-            title: pendingChunk.title,
-            content: pendingChunk.buf.join(""),
+        if (pendingChapter) {
+          chapters.push({
+            id: pendingChapter.id,
+            title: pendingChapter.title,
+            content: pendingChapter.buf.join(""),
           });
-          pendingChunk = null;
+          pendingChapter = null;
         }
       });
     },
     text(t) {
-      pendingChunk?.buf.push(t.text);
+      pendingChapter?.buf.push(t.text);
     },
   })
   .on('script[type="application/pls+xml"]', {
@@ -141,19 +142,19 @@ new HTMLRewriter()
   })
   .transform(html);
 
-if (chunks.length === 0) {
+if (chapters.length === 0) {
   console.error(`No <script type="text/narration"> blocks found in ${htmlPath}`);
   process.exit(1);
 }
 
-console.log(`Found ${chunks.length} narration chunk(s) in ${htmlPath}`);
+console.log(`Found ${chapters.length} narration chapter(s) in ${htmlPath}`);
 if (inlinePlsBlocks.length > 0) {
   console.log(`Found ${inlinePlsBlocks.length} inline PLS block(s) in ${htmlPath}`);
 }
 
-// --- 2. Split each chunk at <mark> -------------------------------------------
+// --- 2. Split each chapter at <mark> -----------------------------------------
 //
-// The in-chunk format is plain text plus `<mark name="..."/>` boundaries —
+// The in-chapter format is plain text plus `<mark name="..."/>` boundaries —
 // no `<speak>` wrapper, no nested tags, no namespace. So we do not need an
 // XML parser; a single regex over `<mark name=...>` (self-closing or with
 // an explicit close tag, single or double quotes) gives the boundary
@@ -168,7 +169,7 @@ type Segment = { markName: string | null; text: string };
 
 const markRegex = /<mark\s+name\s*=\s*(?:"([^"]*)"|'([^']*)')\s*\/?\s*>(?:\s*<\/mark\s*>)?/g;
 
-function splitChunk(content: string): Segment[] {
+function splitChapter(content: string): Segment[] {
   const out: Segment[] = [];
   let currentMark: string | null = null;
   let lastEnd = 0;
@@ -270,12 +271,33 @@ if (lexicon) {
   console.log(`Loaded PLS lexicon from: ${lexicon.sources.join(", ")}`);
 }
 
-const tts = ttsFactory({
+const rawTts = ttsFactory({
   voice,
   rate,
   format: workingFormat,
   lexicon,
 });
+
+// Wrap with a segment-level disk cache so edits to a single sentence only
+// re-synthesize that segment. The cache lives under `generated/.tts-cache/`
+// — shared across posts because segments are addressed by content
+// (provider + voice + rate + format + lexicon + text), not by post.
+// Mock runs bypass the cache: the silent-audio shortcut is already cheap,
+// and caching it would just waste disk on never-played placeholders.
+const cacheDir = join(projectRoot, "generated", ".tts-cache");
+const cachedTts: CachedTtsProvider | null = mock
+  ? null
+  : wrapWithCache(rawTts, {
+      cacheDir,
+      identity: {
+        providerName: rawTts.name,
+        voice,
+        rate,
+        format: workingFormat,
+        lexiconXml: lexicon?.xml ?? null,
+      },
+    });
+const tts = cachedTts ?? rawTts;
 
 // Sanity-check that the provider's output format actually matches what the
 // pipeline expects. Catching this here is much friendlier than a downstream
@@ -312,33 +334,35 @@ for (const bin of new Set([...tts.requiredBinaries, ...pipeline.requiredBinaries
 console.log(`TTS: ${tts.name} (voice=${voice}, rate=${rate})`);
 console.log(`Encoding MP3 @ ${mp3Bitrate} mono ${sampleRate}Hz`);
 
-// --- 4. Process each chunk ---------------------------------------------------
+// --- 4. Process each chapter -------------------------------------------------
 //
-// Per-chunk audio files are emitted alongside the full track (useful for
-// cache-friendly regeneration: re-run on a single chunk and only that file
-// changes). For the playback experience we also splice all chunks into one
-// `full.<ext>` and emit absolute mark times + chapter ranges that match it.
+// Per-chapter audio files are emitted alongside the full track. They're not
+// what makes regeneration fast — the segment-level cache does that — but
+// they're useful for debugging and for any future workflow that wants to
+// serve individual chapter audio separately. For the playback experience we
+// also splice all chapters into one `full.<ext>` and emit absolute mark
+// times + chapter ranges that match it.
 //
 // Working-format buffers live in memory for the whole run; only delivery-
 // format bytes are written to disk.
 
-type ChunkArtifact = {
+type ChapterArtifact = {
   id: string;
   title: string;
   // Working-format buffer (lossless), kept for the final concat into `full`.
   buffer: Uint8Array;
   duration: Milliseconds;
   // `text` carries the spoken text that follows each mark (up to the next
-  // mark, or end of chunk). The drawer in the client renders this directly;
-  // it's already plain text because the in-chunk format is plain text.
+  // mark, or end of chapter). The drawer in the client renders this directly;
+  // it's already plain text because the in-chapter format is plain text.
   localMarks: { name: string; time: Milliseconds; text: string }[];
 };
 
-const artifacts: ChunkArtifact[] = [];
+const artifacts: ChapterArtifact[] = [];
 
-for (const chunk of chunks) {
-  const segments = splitChunk(chunk.content);
-  console.log(`  · ${chunk.id}: ${segments.length} segment(s)`);
+for (const chapter of chapters) {
+  const segments = splitChapter(chapter.content);
+  console.log(`  · ${chapter.id}: ${segments.length} segment(s)`);
 
   const segmentBufs: Uint8Array[] = [];
   const segmentDurations: Milliseconds[] = [];
@@ -359,8 +383,8 @@ for (const chunk of chunks) {
   const combined = pipeline.concat(segmentBufs);
 
   // Trim the leading silence so chapter seeks land on speech, not silence.
-  // Everything inside the chunk shifts earlier by the trimmed duration;
-  // mark 0 stays pinned to t=0 of the trimmed chunk (it now points to the
+  // Everything inside the chapter shifts earlier by the trimmed duration;
+  // mark 0 stays pinned to t=0 of the trimmed chapter (it now points to the
   // first phoneme rather than the silence that preceded it).
   const trimMs = mock ? asMs(0) : await pipeline.leadingSilenceMs(combined);
   const trimmed = trimMs > 0 ? await pipeline.trim(combined, trimMs) : combined;
@@ -368,14 +392,14 @@ for (const chunk of chunks) {
     console.log(`    trimmed ${trimMs}ms of leading silence`);
   }
 
-  // Encode + write the per-chunk delivery file. We do this even though the
-  // current player loads only `full.<ext>` because the per-chunk files are
-  // load-bearing for future partial-regen tooling (see methodology.md).
-  const chunkDelivered = await pipeline.encode(trimmed);
-  const chunkPath = join(outDir, `${chunk.id}${pipeline.deliveryExt}`);
-  await Bun.write(chunkPath, chunkDelivered);
+  // Encode + write the per-chapter delivery file. Not used by the current
+  // player (which loads only `full.<ext>`) but handy for debugging and any
+  // workflow that wants per-chapter audio served separately.
+  const chapterDelivered = await pipeline.encode(trimmed);
+  const chapterPath = join(outDir, `${chapter.id}${pipeline.deliveryExt}`);
+  await Bun.write(chapterPath, chapterDelivered);
 
-  // Compute mark times relative to the trimmed chunk's start.
+  // Compute mark times relative to the trimmed chapter's start.
   const localMarks: { name: string; time: Milliseconds; text: string }[] = [];
   let t = asMs(0);
   for (const [i, seg] of segments.entries()) {
@@ -390,32 +414,37 @@ for (const chunk of chunks) {
   }
 
   artifacts.push({
-    id: chunk.id,
-    title: chunk.title,
+    id: chapter.id,
+    title: chapter.title,
     buffer: trimmed,
     duration: asMs(t - trimMs),
     localMarks,
   });
 }
 
-// Concatenate every chunk in the working (lossless) format, then encode the
-// result for delivery. Doing the encode at the end (rather than per-chunk
-// and concatenating MP3s) avoids the brittleness of MP3 concatenation and
-// keeps cumulative encoder padding to a single occurrence per file.
+// Concatenate every chapter in the working (lossless) format, then encode
+// the result for delivery. Doing the encode at the end (rather than per
+// chapter and concatenating MP3s) avoids the brittleness of MP3 concatenation
+// and keeps cumulative encoder padding to a single occurrence per file.
 const fullBuf = pipeline.concat(artifacts.map((a) => a.buffer));
 const fullDelivered = await pipeline.encode(fullBuf);
 const fullPath = join(outDir, `full${pipeline.deliveryExt}`);
 await Bun.write(fullPath, fullDelivered);
 
-const chapters: { id: string; title: string; startTime: Milliseconds; endTime: Milliseconds }[] = [];
-const marks: { name: string; time: Milliseconds; chapter: string; text: string }[] = [];
+// `manifestChapters` / `manifestMarks` are the flattened entries that ship
+// in the manifest JSON — distinct from the parsed-input `chapters` array
+// (which holds the script text). The same chapter shows up in both, but
+// with different shapes: text content in `chapters`, timing in
+// `manifestChapters`.
+const manifestChapters: { id: string; title: string; startTime: Milliseconds; endTime: Milliseconds }[] = [];
+const manifestMarks: { name: string; time: Milliseconds; chapter: string; text: string }[] = [];
 let offset = asMs(0);
 for (const a of artifacts) {
   const start = offset;
   const end = asMs(offset + a.duration);
-  chapters.push({ id: a.id, title: a.title, startTime: start, endTime: end });
+  manifestChapters.push({ id: a.id, title: a.title, startTime: start, endTime: end });
   for (const m of a.localMarks) {
-    marks.push({
+    manifestMarks.push({
       name: m.name,
       time: asMs(start + m.time),
       chapter: a.id,
@@ -430,15 +459,20 @@ const manifest = {
   generatedAt: new Date().toISOString(),
   audio: `/generated/${slug}/full${pipeline.deliveryExt}`,
   duration: offset,
-  chapters,
-  marks,
+  chapters: manifestChapters,
+  marks: manifestMarks,
 };
 await Bun.write(join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2));
 
-console.log(`\nWrote ${chapters.length} chapter(s), ${marks.length} mark(s) to ${outDir}`);
+console.log(`\nWrote ${manifestChapters.length} chapter(s), ${manifestMarks.length} mark(s) to ${outDir}`);
 console.log(`  full duration: ${msToSeconds(manifest.duration).toFixed(2)}s`);
-for (const c of chapters) {
-  const count = marks.filter((m) => m.chapter === c.id).length;
+for (const c of manifestChapters) {
+  const count = manifestMarks.filter((m) => m.chapter === c.id).length;
   const lenSec = msToSeconds(asMs(c.endTime - c.startTime));
   console.log(`  ${c.id.padEnd(14)} ${lenSec.toFixed(2)}s   ${count} mark(s)   "${c.title}"`);
+}
+
+if (cachedTts) {
+  const { hits, misses } = cachedTts.stats;
+  console.log(`  TTS cache: ${hits} hit(s), ${misses} miss(es) (${cacheDir})`);
 }

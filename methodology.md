@@ -15,7 +15,7 @@ Key design decisions that shape the architecture:
   so authoring tools (humans or LLMs) edit one document, not a
   bundle. No other content input is allowed (note: multiple files are allowed to be served, but they have to be generated from the single input)
 - **Audio is generated offline**, then served as static assets. A `bun run generate` step turns the inline spoken script into MP3-shaped artifacts plus a JSON timing manifest. The runtime player never calls a TTS API.
-- **Chunked for cache-friendly regeneration.** Edit one section's script, regenerate only that chunk's audio to facilitate quick iteration of documents.
+- **Segment-level audio cache.** Edit one sentence and only that sentence is re-synthesized — the rest comes from cache. See [Audio caching](#audio-caching).
 - **Non-linear narration is a first-class case.** Presenters reference earlier slides; our highlight/scroll logic has to handle going backwards as gracefully as forwards.
 - **No light/dark toggle**: we will never support a dark-mode/light-mode switch, because we need to ensure generated visuals for charts, etc. appear correctly (too hard to do this for both modes)
 
@@ -52,11 +52,11 @@ We want our spoken text to be able to highlight different parts of the HTML docu
 
 To facilitate this, blog content can be marked with `id`s in the HTML (ex: `<p id="foo">`), and spoken text can refer to these IDs using SSML `<mark>` tags (ex: `<mark name="foo"/>`. See [spec][SSML-mark] for more).
 
-These `<mark>` tags in the audio are also used as the natural chunking points of the audio as well (both for audio generation purposes, but also to allow per-mark navigation of the spoken audio)
+These `<mark>` tags in the audio also act as natural splitting boundaries — they delimit the **segments** that are individually synthesized and individually cached (see [Audio caching](#audio-caching)), and they're the unit of per-mark navigation in the player.
 
 ### Chapters
 
-All SSML and spoken content in general lives inside `<script type="text/narration" data-chunk-id="unique-id" data-chunk-title="Visible Title">` blocks.
+All SSML and spoken content in general lives inside `<script type="text/narration" data-chapter-id="unique-id" data-chapter-title="Visible Title">` blocks.
 
 Usage of script blocks allows us to ensure that this text does not actually appear on the page (and instead, SSML/narration blocks are fed into generation tools to process)
 
@@ -69,14 +69,14 @@ These blocks each define a "chapter" for usage in audio narration (which allows 
 The pipeline for generating audio needs to take into account that different models have different requirements:
 1. The input format (some models support [SSML], some [PLS], some custom systems and some have no pronunciation hint support at all)
 2. The performance (some models are fast which are great for debugging, some are slow but higher quality. Additionally, some like `say` only work on Mac)
-3. The output format for the chunk (ex: `mp3`, `wav`)
+3. The output audio format produced (ex: `mp3`, `wav`)
 
 Therefore, we split these concerns into two steps:
 1. `TtsProvider`: synthesizes narrations into audio files (handles different models needing different inputs)
 2. `AudioPipeline`: takes audio files, and does any processing on them (ex: concat, change encoding) to be ready to serve (note: handles different models having different output formats, yet wanting one consistent audio format to serve to users). It supports
 - `silence`: insert silence as needed (ex: between marks if needed)
 - `duration`: gets the duration of the audio file
-- `concat`: combine audio chunks  (note: ideally lossless to avoid re-encoding causing audio loss and no disk round-trip, but this is format-specific)
+- `concat`: combine audio buffers (note: ideally lossless to avoid re-encoding causing audio loss and no disk round-trip, but this is format-specific)
 - `leadingSilenceMs`: how long the leading silence is in the audio (some audio-generating tools start with a lot of leading silence, making concatenation sound awkward)
 - `trim`: trim the start of an audio file (usually used to remove leading silence)
 - `encode`: encode to the final audio format served to the user
@@ -84,6 +84,28 @@ Therefore, we split these concerns into two steps:
 Every operation except `concat` is implemented as a shell-out to `ffmpeg` / `ffprobe`. `concat` stays as an in-memory byte-splice because ffmpeg's concat demuxer can't take multiple stdin pipes
 
 The final audio format we serve to users is `mp3` (64 kbps mono, benefiting from its small size, and the fact that audio quality loss is not meaningful on spoken audio).  We try to avoid re-encoding many times to avoid accumulated quality loss — concat operates on the working PCM and the final mp3 encode happens once at the end.
+
+## Audio caching
+
+Audio synthesis is slow (seconds to minutes per segment for LLM TTS models) and often paid per character. A typical authoring loop — tweak one sentence, regenerate — would otherwise re-synthesize the whole post on every iteration.
+
+The cache operates per **segment** — the text between two `<mark>` boundaries — not per chapter.
+
+**Cache key** is a `sha256` over every input that influences the synthesized bytes:
+- TTS provider name (`say`, `piper`, …)
+- Voice
+- Rate
+- Output audio format (sample rate, channels, bits/sample)
+- Full merged PLS lexicon XML (or `null` if none)
+- Segment text
+
+If any of these change, the corresponding entries miss and are re-synthesized. The lexicon goes in *in full* — changing one `<lexeme>` invalidates every segment in the post, which is coarse but correct (we can't cheaply tell which segments used which grapheme) and the lexicon is small.
+
+**Cache value** is the raw provider output bytes (working-format WAV), captured *before* trim / concat / encode. Those downstream ops are cheap and deterministic, so caching them would just bloat the cache without saving time.
+
+**Cache location** is `generated/.tts-cache/<hash>.wav`, shared across all posts. Segments are content-addressed, so two posts that share a sentence (or a common boilerplate line) share the cache entry. `generate/clean.ts` only touches `generated/<slug>/`, so cleaning a post never invalidates the shared cache — wipe `generated/.tts-cache/` by hand if you need to force re-synthesis.
+
+`--mock` runs bypass the cache entirely: the silent-audio shortcut is already trivially fast, and caching placeholder silence wastes disk.
 
 ## Audio Player
 
@@ -115,10 +137,17 @@ Key architectural things to make this work properly:
 
 ## Manifest format (`generated/<slug>/manifest.json`)
 
-- Times are **absolute milliseconds** in the master track (the player never needs to know about chunks)
+- Times are **absolute milliseconds** in the master track (the player never needs to know that the audio was assembled from per-chapter files)
 - `audio` is a path under `/generated/<slug>/`; Content-Type is inferred
 - The time of different marks is calculated taking into account trimming out silent audio (to avoid slowly going out of sync)
+## Terminology
 
+Two units of spoken content come up throughout this doc
+
+- **Chapter** — one `<script type="text/narration">` block in the post. Authored with `data-chapter-id` and `data-chapter-title` attributes. Maps 1:1 to a chapter in the audio player (chapter-skip lands here). Code type: `NarrationChapter`.
+- **Segment** — the text between two `<mark>` boundaries inside a chapter. This is the unit that gets handed to the TTS provider, the unit that the audio cache keys on, and the unit the player highlights/scrolls to. Code type: `Segment`, produced by `splitChapter`. A chapter contains many segments.
+
+The word **chunk** is deliberately *not* used as a user-facing concept (it's too generic to mean any one thing, and often already used in audio-processing contexts).
 
 ## Relation to other specifications
 
