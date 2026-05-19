@@ -45,6 +45,12 @@ export function setCommentsWasmSource(src: WasmSource): void {
   // Force a fresh init if `loadAutomerge` had already been called —
   // otherwise an earlier (default) init would still be in effect.
   _automerge = null;
+  // UNSUPPORTED: switching the WASM source mid-session. Any `Doc<T>`
+  // value already constructed via the previous init is bound to that
+  // WASM module's internal handle table; subsequent operations on it
+  // after a swap will throw with cryptic errors. Tests are the only
+  // caller and they always set the source before constructing any
+  // doc, so this isn't a problem today — just don't get clever.
 }
 
 let _automerge: Promise<Automerge> | null = null;
@@ -61,37 +67,58 @@ function loadAutomerge(): Promise<Automerge> {
   return _automerge;
 }
 
-// All fresh CommentDocs start from these bytes. Why a *shared seed*
-// instead of `Automerge.from({ threads: {} })` per device:
+// All fresh CommentDocs start from these *exact* bytes — generated once
+// (see below) and frozen as a constant. Every device that loads them
+// shares the same root Automerge change graph, so subsequent writes
+// merge as adds to a single `threads` map rather than as conflicting
+// re-creates of the field.
 //
-//   `Automerge.from({threads:{}}, {actor: X})` records "actor X
-//   initialized the `threads` field at time T". If device A and device
-//   B each do this independently, their resulting docs have two
-//   different assignments to the same field by different actors. When
-//   we then merge the two docs, Automerge picks one assignment to win
-//   and discards the other — so whichever side "loses" loses *all*
-//   their threads, because their `threads` object identity gets
-//   replaced by the other side's empty `{}`.
+// Why the constant (and not `Automerge.from({threads:{}}, {actor: X})`
+// per session): `Automerge.from` records a `time` field in the genesis
+// change, so two devices calling it produce byte-different seed blobs
+// with different op IDs for the same "create threads field" change.
+// When merged, Automerge sees two independent root assignments to the
+// same field and resolves the conflict by picking one — the loser's
+// entire `threads` map is silently replaced by the winner's (typically
+// empty) one. The author's aggregating viewer hit exactly this bug
+// before the fix: list + GET both succeeded, but the merged snapshot
+// dropped every reader's content.
 //
-// Loading the same seed bytes everywhere means every device shares the
-// same root Automerge object identity. Subsequent `.addThread` ops
-// mutate a *single* threads map (from Automerge's perspective), which
-// merges correctly.
+// REGENERATING THESE BYTES BREAKS COMPATIBILITY with every existing
+// blob on R2 / localStorage. The genesis op in the seed embeds a
+// timestamp via `Automerge.from(...)`, so even running the
+// regenerator twice in a row with the same actor id produces
+// different bytes and a different SEED_CHANGE_HASH; downstream
+// changes recorded against the old seed would lose their parent in
+// the new doc and Automerge.applyChanges would silently skip them
+// (no error — see methodology.md → "Schema evolution gotcha").
+// Don't regenerate unless you also intend to ship a migration
+// change per the Automerge docs' schema-migration pattern.
 //
-// The seed uses a fixed actor id so the bytes are deterministic — the
-// genesis transaction is logically "no one in particular". Per-device
-// actor ids are assigned by Automerge automatically when each device
-// loads the seed and starts writing.
-const SEED_ACTOR = "0000000000000000";
+// One-shot regen command (e.g. CommentDoc shape changes, you've
+// implemented the migration):
+//   bun -e 'import("@automerge/automerge/slim").then(async (am) => {
+//     await am.initializeWasm(await Bun.file("node_modules/@automerge/automerge/dist/automerge.wasm").arrayBuffer());
+//     const s = am.from({ threads: {}, replies: {} }, { actor: "0000000000000000" });
+//     const b = am.save(s); let r = "";
+//     for (let i = 0; i < b.length; i++) r += String.fromCharCode(b[i]);
+//     console.log(btoa(r));
+//   });'
+const SEED_BYTES_B64 =
+  "hW9Kg1cN6wgAdQEIAAAAAAAAAAABDi3iQnW6anGaIFPMkopg6j6BTdhcwIDQlKNyJId8WdMGAQIDAhMCIwZAAlYCBxURIQIjAjQBQgJWAoABAn8AfwF/An/norDQBn8Afwd+B3JlcGxpZXMHdGhyZWFkcwIAAgECAgACAAIAAA==";
+
+// Hash of the single genesis change inside SEED_BYTES_B64 (computed
+// once via Automerge.decodeChange and pinned here). The sync layer
+// excludes this hash when computing "what to upload" — the seed is
+// shared by every device by construction and never needs to live in
+// any user's R2 folder. Pinning the constant means the sync layer
+// doesn't have to crack open the seed at runtime.
+export const SEED_CHANGE_HASH =
+  "0e2de24275ba6a719a2053cc928a60ea3e814dd85cc080d094a37224877c59d3";
+
 let _seedBytes: Uint8Array | null = null;
-function getSeedBytes(automerge: Automerge): Uint8Array {
-  if (!_seedBytes) {
-    const seed = automerge.from<CommentDoc>(
-      { threads: {} },
-      { actor: SEED_ACTOR },
-    );
-    _seedBytes = automerge.save(seed);
-  }
+function getSeedBytes(_automerge: Automerge): Uint8Array {
+  if (!_seedBytes) _seedBytes = base64ToBytes(SEED_BYTES_B64);
   return _seedBytes;
 }
 
@@ -155,16 +182,41 @@ export function visibleReplies(thread: Thread): Reply[] {
 }
 
 // ---------- CRDT doc shape (internal) ----------
+//
+// Schema is deliberately *flat*: threads and replies are sibling
+// top-level maps, both keyed by globally-unique ids. Replies carry a
+// `threadId` pointing back at their parent. The shape is what makes
+// the CRDT "magical" merging actually work for our use case — see
+// methodology.md → Comments → Storage layer → "Flat schema" for the
+// full rationale. Short version:
+//   - All writes (creating threads, adding replies) land at unique
+//     paths by construction, so the CRDT's "concurrent adds to
+//     different map keys never conflict" property does all the work.
+//   - There's no nested-mutation case where two clients independently
+//     "create the same parent object," which is the one case CRDTs
+//     can't resolve cleanly (loser's whole subtree gets dropped).
+//   - The per-reply storage granularity also makes incremental
+//     server sync a natural future evolution: we send a reply as
+//     the unit of change, not a whole thread.
+
+// Threads only carry their own immutable-after-create fields plus a
+// per-thread mutable `resolvedAt`. Replies live in a separate map,
+// not nested here.
+type StoredThread = {
+  anchor: Anchor;
+  createdAt: number;
+  resolvedAt?: number;
+};
+
+// Internal storage of a reply — extends the public `Reply` with the
+// `threadId` pointer needed for the flat map. `snapshot()` strips
+// `threadId` back out when assembling per-thread reply lists, so
+// consumers of the public type never see this field.
+type StoredReply = Reply & { threadId: string };
 
 type CommentDoc = {
-  threads: {
-    [id: string]: {
-      anchor: Anchor;
-      replies: { [id: string]: Reply };
-      createdAt: number;
-      resolvedAt?: number;
-    };
-  };
+  threads: { [id: string]: StoredThread };
+  replies: { [replyId: string]: StoredReply };
 };
 
 // ---------- Storage keys ----------
@@ -205,7 +257,38 @@ export class CommentStore {
   // Marked private so callers can't mutate the doc directly — every
   // change goes through one of the named mutation methods, which keeps
   // op names useful in `Automerge.getHistory(doc)` for debugging.
+  //
+  // INVARIANT: `doc` only ever contains *this user's* writes. Other
+  // readers' blobs (loaded by the author-side aggregator) live in
+  // `others` and are read-only — they're factored into `snapshot()`
+  // but NEVER written back via `exportBytes()`, so the author's R2
+  // blob doesn't bloat into a superset of everyone else's content.
   private doc: Doc<CommentDoc>;
+
+  // Read-only docs from other readers, keyed by their userId.
+  // Populated only by `mergeOther`, called from the author-only
+  // aggregator. `snapshot()` merges `doc` with all entries here for
+  // display; `exportBytes()` ignores them.
+  private readonly others = new Map<string, Doc<CommentDoc>>();
+
+  // Optional callback fired after every mutation (after persist()).
+  // The sync layer wires its `requestSync()` here so every local
+  // change kicks off a server push. Stays null when running offline /
+  // in tests.
+  onChange: (() => void) | null = null;
+
+  // Memoization: snapshot() and getAllLocalChanges() are both pure
+  // functions of (this.doc, this.others) and (this.doc), respectively.
+  // We invalidate both on every mutation / merge so we only pay
+  // their costs (Automerge clone+merge, getAllChanges+decodeChange
+  // per change) when something has actually changed. Pre-cache,
+  // snapshot was O(K others) per render and getAllLocalChanges was
+  // O(N local changes) on every push — both ran far more often than
+  // they needed to.
+  private cachedSnapshot: Thread[] | null = null;
+  private cachedLocalChanges:
+    | Array<{ hash: string; bytes: Uint8Array }>
+    | null = null;
 
   private constructor(
     private readonly automerge: Automerge,
@@ -229,7 +312,7 @@ export class CommentStore {
       }
     }
 
-    // Nothing on disk — load the shared seed (see SEED_ACTOR comment).
+    // Nothing on disk — load the shared seed (see SEED_BYTES_B64).
     const empty = automerge.load<CommentDoc>(getSeedBytes(automerge));
     return new CommentStore(automerge, key, empty);
   }
@@ -239,12 +322,48 @@ export class CommentStore {
   // Returns a JSON snapshot: threads as an array, each thread's replies
   // as an array sorted by createdAt. The snapshot is *plain JS* — safe
   // to hand to render code, no Automerge proxies to worry about.
+  //
+  // When `others` is non-empty (author viewing all readers' blobs), the
+  // snapshot is computed from a transient merge of `doc` + every other
+  // doc. Automerge merges are O(n) in the change count, so for K
+  // readers we pay K merges per snapshot — fine at our scale (single-
+  // digit threads per post). If snapshot ever shows up in a flame
+  // graph, cache the merged doc and invalidate on doc / others changes.
+  //
+  // CRITICAL: `Automerge.merge(local, remote)` mutates local's state
+  // and marks it "outdated" (see implementation.js → progressDocument).
+  // If we merged into `this.doc` directly, the next `change()` call
+  // would throw "Attempting to change an outdated document". Clone
+  // first so the original stays writable; the clone is throwaway.
+  // Skip the clone on the reader path (no `others`) for the obvious
+  // savings.
   snapshot(): Thread[] {
-    const js = this.automerge.toJS(this.doc) as CommentDoc;
+    if (this.cachedSnapshot !== null) return this.cachedSnapshot;
+    let merged: Doc<CommentDoc> = this.doc;
+    if (this.others.size > 0) {
+      merged = this.automerge.clone(this.doc);
+      for (const other of this.others.values()) {
+        merged = this.automerge.merge(merged, other);
+      }
+    }
+    const js = this.automerge.toJS(merged) as CommentDoc;
+
+    // Group replies by their parent threadId so the per-thread
+    // assembly below is O(1) per thread. The threadId field is
+    // internal — strip it back out so the public `Reply` shape stays
+    // clean for UI consumers.
+    const repliesByThread = new Map<string, Reply[]>();
+    for (const stored of Object.values(js.replies)) {
+      const { threadId, ...reply } = stored;
+      const arr = repliesByThread.get(threadId);
+      if (arr) arr.push(reply);
+      else repliesByThread.set(threadId, [reply]);
+    }
+
     const out: Thread[] = [];
     for (const id of Object.keys(js.threads)) {
       const t = js.threads[id]!;
-      const replies = Object.values(t.replies).sort(
+      const replies = (repliesByThread.get(id) ?? []).sort(
         (a, b) => a.createdAt - b.createdAt,
       );
       out.push({
@@ -255,9 +374,13 @@ export class CommentStore {
         ...(t.resolvedAt !== undefined && { resolvedAt: t.resolvedAt }),
       });
     }
-    // Stable order by createdAt for the rare callers that don't sort
-    // themselves by anchor position.
-    return out.sort((a, b) => a.createdAt - b.createdAt);
+    // Replies not matched to any thread (e.g. the author replied to a
+    // foreign thread but hasn't merged the foreign blob in yet, or the
+    // referenced thread was deleted) are silently dropped from the
+    // snapshot — they're still in the doc, so they'll surface again
+    // once their thread is visible. No need to handle them here.
+    this.cachedSnapshot = out.sort((a, b) => a.createdAt - b.createdAt);
+    return this.cachedSnapshot;
   }
 
   // ---------- Mutations ----------
@@ -268,17 +391,21 @@ export class CommentStore {
       // see a stable reference; we never mutate anchor afterwards.
       d.threads[threadId] = {
         anchor: structuredClone(anchor),
-        replies: {},
         createdAt,
       };
     });
   }
 
+  // Always succeeds, regardless of whether the thread is in our own
+  // doc, in another reader's blob (visible via the aggregator), or
+  // even unknown right now (the reply just doesn't surface until its
+  // thread does). The flat replies map means we never have to "find
+  // the parent" to add the reply, which is what makes
+  // author-on-foreign-thread replies work without the
+  // create-the-same-parent CRDT conflict.
   addReply(threadId: string, reply: Reply): void {
     this.mutate("add reply", (d) => {
-      const t = d.threads[threadId];
-      if (!t) return;
-      t.replies[reply.id] = { ...reply };
+      d.replies[reply.id] = { ...reply, threadId };
     });
   }
 
@@ -296,22 +423,27 @@ export class CommentStore {
 
   deleteReply(threadId: string, replyId: string, deletedAt: number): void {
     this.mutate("delete reply", (d) => {
-      const t = d.threads[threadId];
-      if (!t) return;
-      const r = t.replies[replyId];
+      const r = d.replies[replyId];
       if (!r) return;
       // Tombstone is immutable once set — re-stamping would invent a
       // bogus "later delete" event during CRDT merge and confuse any
       // future audit / undo flow that keys off the original timestamp.
       if (r.deletedAt !== undefined) return;
       r.deletedAt = deletedAt;
-      // Atomic auto-resolve: if no visible replies remain, the thread is
-      // a dead record — bundle the resolve into the same op so a future
-      // server sync gets a coherent "this whole thread is gone."
-      const liveCount = Object.values(t.replies).filter(
-        (rr) => rr?.deletedAt === undefined,
-      ).length;
-      if (liveCount === 0 && t.resolvedAt === undefined) {
+      // Atomic auto-resolve: if no visible replies remain on a thread
+      // *we own*, the thread is a dead record on our side — bundle the
+      // resolve into the same op. Skip when the thread isn't in our
+      // doc (foreign thread, owned by another reader) — we don't have
+      // authority to resolve it; tombstoning the reply is enough.
+      const t = d.threads[threadId];
+      if (!t || t.resolvedAt !== undefined) return;
+      let liveCount = 0;
+      for (const candidate of Object.values(d.replies)) {
+        if (candidate.threadId !== threadId) continue;
+        if (candidate.deletedAt !== undefined) continue;
+        liveCount++;
+      }
+      if (liveCount === 0) {
         t.resolvedAt = deletedAt;
       }
     });
@@ -327,24 +459,96 @@ export class CommentStore {
     return this.automerge.save(this.doc);
   }
 
-  // Merge a remote doc (deserialized from bytes) into the local doc.
-  // Automerge's merge is commutative and idempotent: applying the same
-  // remote bytes twice is the same as once, and `merge(a, b)` is the
-  // same logical state as `merge(b, a)`. Phase 2's conflict-retry loop
-  // (on a 412 from R2) will GET the fresh bytes, call this, then save
-  // back. Persists immediately so the post-merge state survives a
-  // crash.
+  // Merge a remote copy of *this user's own* doc into local — used by
+  // tests + the localStorage path (where we serialize/deserialize the
+  // whole doc, not individual changes). Internally decomposes into
+  // individual changes and routes through `applyOwnChanges` so the
+  // server-protocol path and the local-state path share one
+  // implementation. Persists immediately. Does NOT fire onChange —
+  // this is a sync-driven merge, not a user write.
   mergeBytes(remoteBytes: Uint8Array): void {
     const remoteDoc = this.automerge.load<CommentDoc>(remoteBytes);
-    this.doc = this.automerge.merge(this.doc, remoteDoc);
+    this.applyOwnChanges(this.automerge.getAllChanges(remoteDoc));
+  }
+
+  // Merge another *reader's* full saved doc into the read-only
+  // composite — convenience wrapper around `applyOtherChanges`. Used
+  // by tests; the production aggregator uses `applyOtherChanges`
+  // directly with per-change bytes.
+  mergeOther(userId: string, remoteBytes: Uint8Array): void {
+    const remoteDoc = this.automerge.load<CommentDoc>(remoteBytes);
+    this.applyOtherChanges(userId, this.automerge.getAllChanges(remoteDoc));
+  }
+
+  // ---------- Per-change sync surface ----------
+  //
+  // These are the methods the new (B) sync layer actually uses. They
+  // operate on individual Automerge change-bytes (the unit
+  // `Automerge.getChanges` / `applyChanges` work with), so the wire
+  // protocol can store one change per R2 object without ever needing
+  // the server to understand the doc.
+
+  // Apply a batch of changes to our own doc. Used by the sync layer
+  // on hydrate (fetching changes from the server that other devices
+  // of ours uploaded). Does NOT fire onChange — these changes are
+  // already on the server; re-pushing would loop.
+  applyOwnChanges(changes: Uint8Array[]): void {
+    if (changes.length === 0) return;
+    [this.doc] = this.automerge.applyChanges(this.doc, changes);
+    this.cachedSnapshot = null;
+    this.cachedLocalChanges = null;
     this.persist();
+  }
+
+  // Apply a batch of changes to a specific other-user's doc. Used by
+  // the author-only aggregator. Lazily initializes the other-doc
+  // from the shared seed on first call — having both sides start
+  // from the same seed is what makes the merge in `snapshot()`
+  // conflict-free.
+  applyOtherChanges(userId: string, changes: Uint8Array[]): void {
+    let otherDoc = this.others.get(userId);
+    if (!otherDoc) {
+      otherDoc = this.automerge.load<CommentDoc>(
+        getSeedBytes(this.automerge),
+      );
+    }
+    if (changes.length > 0) {
+      [otherDoc] = this.automerge.applyChanges(otherDoc, changes);
+    }
+    this.others.set(userId, otherDoc);
+    // Only the merged-view cache depends on `others`; local-changes
+    // is computed from `this.doc` alone and stays valid.
+    this.cachedSnapshot = null;
+  }
+
+  // Returns every change in our doc, paired with its hash. The sync
+  // layer uses this to decide what to upload (set-diff against the
+  // hashes it knows are already on the server). Hashes are derived
+  // via `Automerge.decodeChange` — a pure function of the bytes —
+  // so we cache the (bytes, hash) list and invalidate on every
+  // mutation. Without the cache, every push call re-decodes the
+  // entire history.
+  getAllLocalChanges(): Array<{ hash: string; bytes: Uint8Array }> {
+    if (this.cachedLocalChanges !== null) return this.cachedLocalChanges;
+    const out: Array<{ hash: string; bytes: Uint8Array }> = [];
+    for (const bytes of this.automerge.getAllChanges(this.doc)) {
+      const hash = this.automerge.decodeChange(bytes).hash;
+      out.push({ hash, bytes });
+    }
+    this.cachedLocalChanges = out;
+    return out;
   }
 
   // ---------- Internals ----------
 
   private mutate(action: string, fn: (d: CommentDoc) => void): void {
     this.doc = this.automerge.change(this.doc, action, fn);
+    this.cachedSnapshot = null;
+    this.cachedLocalChanges = null;
     this.persist();
+    // Notify the sync layer (if any) AFTER persist completes — even if
+    // the network push fails the next reload picks up where we left off.
+    this.onChange?.();
   }
 
   private persist(): void {

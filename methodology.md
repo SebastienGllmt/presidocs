@@ -203,30 +203,101 @@ Standalone `<svg>`/`<img>`/`<canvas>` are deferred: `<img>` is a void element, `
 
 Comments live in an **Automerge document** (CRDT) rather than a plain JSON array. The store module owns the document; `comments.ts` is purely a UI layer reading snapshots and routing mutations through the store API.
 
-**Why a CRDT given how little concurrency we have today.** In v1 there's almost no concurrent-write surface — each `(post, reader)` pair gets its own R2 blob, so two writers on the same blob is rare even after sync lands (it only happens when one reader uses two devices). The CRDT is here to make the *future* trivial: Phase 2's R2 sync becomes `merge + save + PUT-with-If-Match` instead of a hand-rolled op log, and if "readers see each other" is ever a feature we want, the merge is already correct. Picking up the CRDT mental model now also forces the data shape to be merge-friendly (maps not lists, tombstones not deletions) — that's mostly what shaped the design decisions one section above.
+**Why a CRDT given how little concurrency we have today.** Each `(post, reader)` pair gets their own folder of change-objects in R2, so two writers stepping on each other's content is rare — it happens only when one reader uses two devices. The CRDT keeps that case trivial: the sync loop is `LIST + GET + applyChanges` against content-addressed change hashes, and the author-side aggregating viewer is `for each reader: applyChanges(...)` — both fall out of Automerge's commutativity for free. Picking the CRDT mental model up front also forced the data shape to be merge-friendly (maps not lists, tombstones not deletions) — that's mostly what shaped the design decisions one section above.
 
 **Why Automerge over Yjs / json-joy.** Automerge's plain-object mutation API (`change(doc, "op name", d => { d.threads[id].replies[rid] = {...} })`) maps almost 1:1 onto the v1 `Thread`/`Reply` types, so the refactor was a port not a rewrite. Yjs's `Y.Map`/`Y.Array` wrappers would have been imposed on every read path for a comments use case that doesn't need any of Yjs's rich-text power. The Automerge WASM core is <1MB and loads on first interaction only so it doesn't bloat the initial JS bundle. Standards-wise, neither Yjs nor Automerge is a "spec" in the IETF sense — there's no portable CRDT format, so we'd have picked one library no matter what. Automerge's [JSON-CRDT paper](https://arxiv.org/abs/1608.03960) is the closest thing to a published formal model.
 
-**Doc shape.** The internal document keeps threads and replies as maps (not arrays) so two devices adding records concurrently never tussle over list positions:
+**Doc shape — deliberately flat.** Threads and replies are *sibling* top-level maps, both keyed by globally-unique ids; each reply carries a `threadId` pointer back at its parent rather than living inside it:
 ```ts
 type CommentDoc = {
   threads: {
     [id: string]: {
       anchor: Anchor,
-      replies: { [id: string]: Reply },  // map; sorted on render by createdAt
       createdAt: number,
       resolvedAt?: number,
     }
-  }
+  },
+  replies: {
+    [replyId: string]: Reply & { threadId: string }
+  },
 }
 ```
-The public `snapshot()` method converts both maps to arrays (replies sorted by `createdAt`) so the UI can keep iterating naturally.
+`snapshot()` does one bucketing pass over `replies` (grouping by `threadId`) and joins each bucket into its parent thread for display.
 
-**Reader identity.** Provided by the [auth backend](#auth--login-serverauth): each logged-in user has a stable `<provider>:<sub>` userId (e.g. `google:1234567890`). The CommentStore is keyed on that id, so the same user's writes from different devices land in the same logical doc and merge cleanly via Automerge. The blob key in R2 will be `comments/<post>/<userId>.amrg`. There is no per-device identity layer and no anonymous fallback — login is required to comment, full stop
+**Why flat — efficient sync.** The unit of human action and the unit of server change should match. The flat shape makes a reply the atomic change unit: adding one is `d.replies[newId] = {...}` — a write to a brand-new key in a top-level map. This lines up directly with how server sync wants to think about updates.
+
+The server is — and must remain — **dumb storage**. It treats every uploaded byte sequence as opaque: clients `PUT` bytes, clients `GET` bytes, all CRDT logic (merging, change-graph reasoning, conflict resolution) happens client-side via `Automerge.applyChanges` / `Automerge.getAllChanges`. The Worker never runs Automerge. That's the architectural rule: it's what lets the comment system survive a malicious / buggy / different-version server without diverging the underlying data, and it's what makes "comment merging is correct" a *library guarantee* rather than something we'd have to re-verify whenever the server changed.
+
+**One R2 object per Automerge change.** The wire protocol is per-change, not per-blob. Each change a client produces (the unit `Automerge.getAllChanges(doc)` returns) lives at `comments/<post>/<userId>/<changeHash>.bin`, where `<changeHash>` is the content hash Automerge already computes for every change. Content-addressed, globally unique, deduplicating by construction (the same change uploaded twice produces the same key and the same bytes; the server short-circuits with `already_present`).
+
+This makes sync **pure set-diff over hashes** — no etag dance, no `If-Match`, no 412 retry loop. The complete sync logic:
+
+```
+hydrate:
+  serverHashes = LIST  /comments?post=X&user=<self>
+  for hash in serverHashes \ localHashes:
+    bytes = GET  /comments?post=X&user=<self>&change=<hash>
+    Automerge.applyChanges(myDoc, [bytes])
+  push:
+    for change in localChanges where change.hash ∉ serverHashes:
+      PUT  /comments?post=X&user=<self>&change=<change.hash>  body=change.bytes
+
+aggregate (author only):
+  users = LIST  /comments?post=X
+  for user in users where user != self:
+    serverHashes = LIST  /comments?post=X&user=<user>
+    for hash in serverHashes \ knownHashes[user]:
+      bytes = GET  /comments?post=X&user=<user>&change=<hash>
+      Automerge.applyChanges(otherDoc[user], [bytes])
+```
+
+Two devices uploading concurrently never collide: each writes to its own change-hash-keyed URL, both succeed, both objects exist. Zero-delta page loads cost a single LIST per user (returns the same hashes you already have → no GETs). A full-blob alternative (instead of having action be its own unit) would eat this complexity in the sync layer instead — `If-Match` / 412-refetch-merge-retry / etag bookkeeping / a promise chain for serialization, all there because the resource becomes mutable. Having each action be its own object means its change-objects are immutable, so the entire concurrency-control state machine just disappears.
+
+**What we deliberately rule out — even as a future direction — is running Automerge on the server** (load → applyChanges → save). That would forfeit server-dumbness for marginal protocol elegance and is exactly the centralization the CRDT model was meant to avoid. If client A's saved doc has a structure the server's Automerge version doesn't understand, the server must remain able to shuffle the bytes around regardless.
+
+**On GC.** Each change object lives forever — there's no per-change deletion. That's not waste in the CRDT model: tombstones are how "deletion" works at the data layer (a deleted reply is a `deletedAt` field, not an absence), so the change history needs to be retained to merge correctly across all readers. The R2-object multiplication is a *storage-layout* concern, not a semantic one. At our expected volume — single-digit comments per reader per post — accumulation is trivial. At much larger scale, a periodic **compactor** can replace many small change-objects with one canonical "base" object containing the same content (`Automerge.save` of the whole doc as one blob); this is a storage reshape, not deletion. Optional, future, not blocking.
+
+**Why flat — fine-grained updates.** A nice secondary win: this is exactly the shape Automerge's modeling guide recommends. From the docs:
+
+> "As a general principle with Automerge, you should make state updates at the most fine-grained level possible. Don't replace an entire object if you're only modifying one property of that object; just assign that one property instead."
+
+Adding a "reply" now lands at a unique key in a top-level map that every device shares via the seed — concurrent adds to different keys merge for free without any conflict-resolution at all. Having a nested schema (`threads[T].replies[id]`) forces the worst possible shape for the merge: when two devices independently set `d.threads[T] = {...}` (e.g. an author "materializing" a foreign thread before adding a reply), Automerge has to pick one assignment as the visible value via its multi-value-register policy. The losing value isn't *deleted* per se (Automerge keeps track of conflicts for youj to resolve them), but designing around assuming everything conflicts is usually not the right approach. The flat schema sidesteps the whole register-with-conflicts dance by ensuring every add is to a brand-new unique key, where nothing needs resolving in the first place.
+
+**Shared seed.** All `CommentDoc`s start from an identical 127-byte Automerge blob hardcoded as `SEED_BYTES_B64` in `commentsStore.ts`. The seed exists to give every device the same root change history for both the `threads` and `replies` fields — without it, each device would call `Automerge.from({threads:{}, replies:{}}, ...)` independently, producing different timestamps in the genesis change and therefore separate "create threads" / "create replies" ops with different op IDs. On merge, Automerge resolves the resulting same-key conflict by surfacing one assignment as the visible value (the other lives on in `Automerge.getConflicts`). The hardcoded seed sidesteps the whole thing by making every device genuinely share the same genesis ops — there's nothing to resolve. This is the workaround the Automerge docs themselves recommend (§"Setting up an initial document structure"), almost verbatim. **Regenerating the seed bytes breaks compatibility with every existing blob** — the regen one-liner is in the source comment, but it's never to be run casually.
+
+**Schema evolution gotcha.** Changing the shape of `CommentDoc` (adding a new top-level map, renaming a field) requires regenerating the seed, which produces a new `SEED_CHANGE_HASH`. Every existing R2 change-object was authored against the *old* seed as its parent, so the new doc's change graph has no path to those parents. `Automerge.applyChanges` does not raise an error in this case — it **silently skips** changes whose dependencies aren't present. Operationally that means old comments disappear from the app's view, with no log line, no exception, nothing to debug from. If we ever need to evolve `CommentDoc`, the recovery path is the migration-change pattern from the Automerge docs (§"Schema migration"): produce a pinned migration change that depends on the old seed's tip and asserts the new schema's shape, ship it as a second hardcoded blob, and have every reader apply it once on first load before any per-(post, user) changes are touched. Until then: don't change `CommentDoc`'s shape.
+
+**Reader identity.** Provided by the [auth backend](#auth--login-serverauth): each logged-in user has a stable `<provider>:<sub>` userId (e.g. `google:1234567890`). The CommentStore is keyed on that id, so the same user's writes from different devices land in the same logical doc and merge cleanly via Automerge. The R2 blob key is `comments/<post>/<userId>.amrg`. There is no per-device identity layer and no anonymous fallback — login is required to comment, full stop.
 
 **Persistence.** `Automerge.save(doc)` produces a `Uint8Array`; we base64-encode it into `localStorage` under `blog-comments:<path>:user:<userId>.amrg`. localStorage is string-only and snapshots are small (a hundred bytes per op), so the base64 inefficiency doesn't register; if comments ever grow huge we'd switch to IndexedDB (which stores binary natively).
 
 **Author identity.** Each `Reply` carries the author's `authorId` (`<provider>:<sub>`), `authorName`, `authorEmail`, and an optional `authorPicture` URL — populated at submit time from the logged-in identity. The UI renders avatar + display name on every reply; `authorEmail` is deliberately *not* rendered to other readers (only the blog author needs it, for follow-up by mail).
+
+### Sync (`client/commentsSync.ts`, `client/commentsAggregator.ts`)
+
+Sync to R2 is per-change set-diff over content-addressed Automerge change hashes. The store handles local-only concerns (mutate, persist to localStorage, snapshot); the sync layer wraps it with network round-trips that are simple enough to fit on one screen.
+
+**Boot** — `sync.hydrate()`:
+1. `LIST /comments?post=X&user=<self>` → array of change hashes the server has for us
+2. Set-diff against the hashes of changes already in our local doc → list of hashes to fetch
+3. Parallel `GET` for each, `store.applyOwnChanges(bytes[])` to apply
+4. Record everything the server has (union of remote + local) as `serverKnownHashes`
+5. Trigger one `requestSync()` to push any local changes the server doesn't have (catches the case where a previous session crashed mid-push, or where the user wrote before `onChange` was wired)
+
+**Write** — every store mutation fires `store.onChange`, which the sync layer points at `requestSync()`. The push:
+1. `store.getAllLocalChanges()` → all (hash, bytes) pairs in our doc
+2. Filter to those whose hash isn't in `serverKnownHashes` (initialized with `SEED_CHANGE_HASH` — the shared seed never needs to be uploaded)
+3. Parallel `PUT` for each new change; on success, add its hash to `serverKnownHashes`
+
+Concurrency is handled by content addressing: each change object lives at its own hash-keyed URL, so two devices uploading at the same moment write to two different URLs — both succeed, no conflict at the protocol layer, no `If-Match` / 412 retry / etag bookkeeping. A single in-flight `pushing` flag with a `dirty` rerun is the only state machine in the sync layer; it exists to coalesce a burst of writes into one batched push, not to handle conflicts.
+
+**Author aggregating viewer** — when `isAuthorOfCurrentPost(identity)` returns true, `aggregateOtherReaders` runs after hydrate. For each non-self user it does the same set-diff dance: `LIST /comments?post=X&user=<u>`, fetch any change hashes we haven't already pulled for that user, `store.applyOtherChanges(u, bytes[])`. The store keeps each user's loaded doc in a separate `others` map (NOT merged into `this.doc`), so:
+- `snapshot()` reads from `merge(doc, ...others)` — the author sees everyone's comments.
+- `getAllLocalChanges()` returns only changes from `doc` — the author's R2 folder doesn't bloat with other readers' content.
+
+Per-user per-page-load cost: 1 LIST, plus 1 GET per new change for that user. **Zero-delta loads cost just the LISTs** — if a reader hasn't added anything since last visit, no GETs at all. Per-user-pull failures are logged and skipped rather than aborting the whole aggregation.
+
+**Not real-time.** Other readers' new comments only show up on the next page load. A polling refresh (or a server-pushed SSE) would slot in here without touching the store or the per-user sync loop — deferred to v2.
 
 ### UI
 
@@ -254,8 +325,8 @@ Three ways a thread can leave the UI, with very different semantics:
 The same logic applies symmetrically to threads (Resolve) and replies (Delete) — different user-facing actions, same architectural pattern. Deleting the *last* visible reply on a thread additionally sets `thread.resolvedAt`, so the server sync issues both reply-level DELETEs and a thread-level DELETE; a zero-reply thread is a dead record server-side anyway, so the extra request is harmless.
 
 Two notes on what's deferred:
-- **"Never synced → remove immediately."** Once networking lands, items will gain a `syncedAt` field set after a successful server write. At that point Delete/Resolve on an item that's still local-only could skip the tombstone and remove outright. In v1 there's no `syncedAt`, so everything tombstones — slightly more work than necessary but ready for the future without a data migration.
-- **Tombstone GC.** In v1 (no networking) tombstones accumulate in localStorage forever. At the scale of "comments on one blog post" this is kilobytes, not megabytes, and reloading the page never re-surfaces them, so the user doesn't notice. The eventual server-sync sweep will GC them.
+- **"Never synced → remove immediately."** Replies don't yet carry a `syncedAt` field set after a successful server write. With one, Delete/Resolve on an item that's never reached R2 could skip the tombstone and remove outright. Today everything tombstones uniformly — slightly more work than necessary but the doc shape is already merge-friendly so adding `syncedAt` later won't need a migration.
+- **Tombstone GC.** Tombstones accumulate in localStorage indefinitely — and they're each their own R2 change-object once uploaded. That's correct in CRDT terms (the tombstone IS the deletion; dropping it would un-delete the reply on next merge from a peer who still has the original). A future compactor (see the GC paragraph in the Storage layer) can replace many small change-objects with one canonical `Automerge.save` blob, which preserves the same logical state while shrinking the object count. Not implemented yet; the kilobyte accumulation at our scale doesn't justify the effort.
 
 ### Responsive
 
@@ -266,10 +337,11 @@ Two notes on what's deferred:
 
 - Reply threading beyond a flat list per anchor.
 - Resolve undo (resolutions are one-way until server sync exists to round-trip).
-- Garbage-collecting accumulated `resolvedAt` / `deletedAt` tombstones (the future server-sync sweep does this).
+- Garbage-collecting accumulated `resolvedAt` / `deletedAt` tombstones (no server-side delete sweep yet — see the [tombstone-GC note above](#lifecycle-hide-vs-resolve)).
 - Draft persistence across reloads (drafts live in `this.drafts` in-memory, deliberately not in the CRDT).
 - Sub-region selection on graphics (drag-rectangle, SVG child clicks).
-- **R2 sync (Phase 2)** — the CRDT layer is in place; the GET/PUT-with-If-Match loop and the author-side aggregating viewer come next.
+- **Real-time refresh for the author viewer** — readers' new comments only appear on the next page load. A polling or SSE refresh is a follow-up; the [sync layer](#sync-clientcommentssyncts-clientcommentsaggregatorts) is already structured so a periodic re-aggregate slots in without touching the store.
+- **Server-side per-reply length validation.** The 32 KB blob cap + 8 KB per-PUT delta + 10/min rate limit are enforced in the Worker; per-reply 5000-char limits are client-side UX only. Strict server enforcement would require shipping Automerge into the Worker bundle (~700 KB) to parse the doc; the byte budgets above cover the same threat envelope at zero bundle cost.
 - Cross-document selections (selection must stay within one of: article body OR drawer).
 - Narrow-viewport UI for viewing existing threads.
 
@@ -320,17 +392,164 @@ The state / verifier cookies are deliberately **bound to the provider** in their
 
 `GET /auth/me` returns the public subset of the session (no `iat`/`exp`) as JSON, or `null` if not logged in. `POST /auth/logout` clears the cookie.
 
-### Cloudflare KV considered, not (yet) used
-
-KV would be useful for **rate-limiting** comment submissions (counter-style writes, eventually-consistent is fine) and possibly for **edge-cached aggregations** of all readers' comment blobs per post (faster than R2 list+get fan-out). Neither is a v1 concern, and KV's eventual consistency makes it the wrong store for the Automerge blobs themselves — R2's strong-consistency + conditional `PUT-with-If-Match` is what the [sync loop](#storage-layer-clientcommentsstorets) needs. Add KV when abuse or read-latency actually shows up, not before.
-
 ### Excluded from v1
 
 - **GitHub provider** (re-introduces the unreachable-noreply-email problem).
 - **Magic-link fallback** for the Shibboleth-only long tail.
 - **Server-side session revocation** (would require switching `verifySessionToken` to a KV / R2 lookup).
-- **Mid-session identity refresh.** `/auth/me` is read once at boot; an expired cookie mid-session leaves the UI looking signed-in until reload. Harmless while comments are localStorage-only; will need fixing alongside R2 sync.
+- **Mid-session identity refresh.** `/auth/me` is read once at boot; an expired cookie mid-session leaves the UI looking signed-in until reload. Writes still hit localStorage immediately (so no data loss), but the per-write PUT to R2 silently 401s until the user reloads and re-auths. Low-impact at the current 400-day TTL but a real footgun to clean up before any meaningfully shorter session expiry.
 - **ID token signature verification** (we trust TLS to the provider + the `/userinfo` round trip instead, see above).
+
+## Per-post author metadata (`server/postMeta.ts`)
+
+Authorship is **per-post**, not site-wide. Each post HTML declares its author in a head meta tag:
+
+```html
+<meta name="author-email" content="you@example.com">
+```
+
+The server resolves "who is the author of this post?" by looking up the request's `?post=` path in an in-memory map and comparing the result to the session's verified email.
+
+### Why email and not userId
+
+The Cloudflare-canonical move would be to store the author's stable `<provider>:<sub>` userId (e.g. `google:1234567890`) rather than an email — userIds don't change when the user updates their primary address at the provider, and they're never used as a contact channel so they don't attract spam.
+
+We picked email anyway, because:
+- **The author already knows their email.** Looking up your `sub` requires signing in once and reading `/auth/me`; pasting your email in a meta tag doesn't.
+
+The spam concern is mitigated by the build pipeline: the meta tag exists in **source** HTML (the author edits it there; the generator reads it there) but is **stripped from the served HTML** during the build process (crawlers hitting prod see no `author-email` tag). The server-side author lookup doesn't depend on the tag being in the served response — it reads the source HTML at build time (via `server/postMeta.generated.ts`) or dev startup (via `server/postMeta.dev.ts`), so dropping it from the response is purely cosmetic.
+
+The same strip step also removes other source-only tags from served HTML — see [Build-time HTML strip](#build-time-html-strip-generatestrip-served-htmlts).
+
+### Email-verified check
+
+The author check requires `session.emailVerified === true`. Without that gate, an attacker who controls an OAuth app with weak email verification (or one that accepts user-supplied emails without verification) could log in with the author's email and be treated as author.
+- Google sets `email_verified` based on its own verification
+- Microsoft doesn't emit the field (we treat that as verified)
+
+### Dev + prod parity
+
+- In dev builds, `posts/*.html` is the source of truth
+- In prod builds, we use only the generated files (`wrangler dev` works without a build step)
+
+## Deploy architecture
+
+Production runs on **Cloudflare Workers + R2**. **Bun** is restricted to dev-time (the iterative server in `index.ts`, the bundler) and the offline tools (`bun run generate`). Bun never runs in production; Workers never runs in dev. The two runtimes share the same TypeScript handlers because the auth code in `server/auth/` was deliberately written against `Request` (not `Bun.BunRequest`) and uses `node:crypto` (works on Workers under the `nodejs_compat` flag) — so the same exported handlers mount under `Bun.serve` in dev and under a Worker `fetch` entrypoint in prod.
+
+### Why Workers (and not Bun on a VPS)
+
+The blog backend is small, write-rare, and read-by-author-only — a profile that fits Workers' "stateless function + bindings" model cleanly. The Cloudflare primitives that fall out for free are precisely the ones we want for [hardening](#hardening) the comment surface:
+- **R2 binding** — `env.COMMENTS.get(key)` / `put(key, body)` directly, no S3 SDK or signed-URL plumbing.
+- **Workers Rate Limiting API** — sliding-window per-key limits as a binding; no KV counters or in-process LRU to maintain.
+- **Cloudflare Turnstile** — soft-escalation to a CAPTCHA when a user trips the rate limit, better UX than a hard 429.
+- **Edge body-size limits + DDoS shielding** — applied before our code runs.
+
+### Static vs dynamic content
+
+**R2 is reserved for truly dynamic content — content that's written at runtime in response to user actions.** Today that's exactly one thing: per-user comment Automerge blobs. Everything else — the article HTML, the bundled JS/CSS, the pre-rendered MP3s + their narration manifests, the Automerge WASM core the client lazy-loads — ships as a **static asset bundled into `dist/`** and served by the Worker's `ASSETS` binding (edge-cached, no Worker invocation per request, no per-read cost).
+
+The split-line is "does this change in response to a user request?", not "did some build step produce it." Audio is generated by `bun run generate`, but for any given commit the bytes are fixed — that's static. Comments change every time a reader submits one — that's dynamic.
+
+This works until per-deploy total assets approach Cloudflare's Static Assets limits (per-file ≤ 25 MB, ≤ 20k files / ~20 GB per deployment). For a single-author blog at 64 kbps mono mp3 (~480 KB/minute), that's hundreds of hours of audio before we'd need to revisit. If the limit is ever in sight, move the audio to R2 *and only the audio*; the comment R2 plumbing is unaffected.
+
+### Runtime split
+
+| Concern | Dev (local) | Prod (Cloudflare) |
+|---|---|---|
+| HTTP server | `bun --hot index.ts` | Worker `fetch` handler (`worker.ts`) |
+| Frontend bundle | Bun's HTML import (`import index from "./index.html"`) | `bun build` → `dist/`, served by the `ASSETS` binding |
+| Auth routes | mounted in the `Bun.serve` routes object | same exported handlers from `server/auth/routes.ts`, mounted in the Worker `fetch` |
+| Comments | same `handleCommentsRequest` handler from `server/comments/routes.ts`, mounted on `Bun.serve` and backed by an fs-adapter under `generated/.comments-dev/` | same handler, mounted on the Worker `fetch` and backed by an R2 adapter, enforcing the [author-only visibility rules](#hardening) |
+| Generated audio + manifest | served from `generated/` via `serveFromDir` | copied into `dist/generated/` by `generate/copy-static.ts`, served by the `ASSETS` binding |
+| Automerge WASM | served from `node_modules` via `/assets/automerge.wasm` route | copied into `dist/assets/automerge.wasm`, served by the `ASSETS` binding |
+| OAuth redirects | `http://localhost:3000/auth/<provider>/callback` | `https://<your-domain>/auth/<provider>/callback` — both URIs registered at each provider |
+
+### Deploy unit
+
+One Worker per project — no separate Pages site. Cloudflare's **Static Assets** feature (GA 2024) lets a Worker bind to a built artifact directory and serve static files transparently, falling back to the `fetch` handler for everything else. Sketch of `wrangler.toml`:
+```toml
+main = "worker.ts"
+compatibility_flags = ["nodejs_compat"]
+assets = { directory = "./dist", binding = "ASSETS" }
+[[r2_buckets]]
+binding = "COMMENTS"
+bucket_name = "blog-comments"
+```
+Build: `bun run build`. Deploy: `wrangler deploy`. Two commands.
+
+The Pages-with-Functions alternative was considered and rejected: it's a second deploy target and a second routing model for no benefit when one Worker can do both. Pages is preferable only when you want git-push-to-deploy from GitHub without a Worker config.
+
+### Copying static artifacts into `dist/` (`generate/copy-static.ts`)
+
+`bun build` only knows about the HTML/JS/CSS module graph. The other static artifacts that need to be served — per-post audio + narration manifests under `generated/`, and the Automerge WASM the comments client lazy-loads — have to be copied into `dist/` separately. `generate/copy-static.ts` does this as the step between `bun build` and the HTML strip:
+
+- `generated/<slug>/manifest.json` + `generated/<slug>/*.mp3` → `dist/generated/<slug>/`
+- `node_modules/@automerge/automerge/dist/automerge.wasm` → `dist/assets/automerge.wasm`
+
+Build-internal files under `generated/` are deliberately excluded: the `.tts-cache/` buckets, the dev-only `.comments-dev/` fs-adapter blobs, and the per-slug `cache-keys.json` GC index. Idempotent; safe to re-run.
+
+### Build-time HTML strip (`generate/strip-served-html.ts`)
+
+The post HTML in `posts/` is the *authoring* artifact — it carries everything a human or LLM needs to edit one document end-to-end: visible article content, the offline-generator inputs (PLS lexicons, narration scripts), and the per-post author email. Most of that is dead weight at the reader's runtime: the player loads pre-rendered audio from the manifest (not from inline narration), the TTS lexicon is only used by `bun run generate`, and the author email is only used by the server-side author check (which reads source HTML, not served HTML).
+
+The last step of `bun run build` rewrites every HTML file under `dist/` in place, removing:
+- `<meta name="author-email" ...>` — spam mitigation.
+- `<script type="text/narration" ...>...</script>` — generation-only.
+- `<script type="application/pls+xml">...</script>` — generation-only.
+
+**Dev doesn't strip.** `bun --hot index.ts` serves the full source HTML on localhost. Stripping in dev would require a Bun HTML-loader plugin; not worth the friction for content that no scraper sees.
+
+### Secrets
+
+All OAuth client secrets and `SESSION_SECRET` live in Cloudflare's encrypted secret store (`wrangler secret put ...`), *not* in `wrangler.toml`. Names line up with the dev `.env`, so the route handlers read the same `process.env.*` / `env.*` regardless of runtime.
+
+### Why not KV
+
+Cloudflare's **Workers Rate Limiting API** does the same job with substantially less code we have to own:
+
+| | With KV | With Workers Rate Limiting API |
+|---|---|---|
+| Storage | We design a key scheme (e.g. `rl:<userId>:<minute-bucket>`) | Cloudflare-managed, no keys |
+| Increment + check | We `get`, `+1`, `put`, compare to threshold | One call: `await limiter.limit({ key })` returns `{success}` |
+| Window math | We pick fixed buckets or implement a sliding window ourselves | Sliding window built in |
+| Concurrent increments | KV's eventual consistency means two simultaneous increments can both read the pre-increment value and race | Handled by Cloudflare's distributed counter |
+| Declaration | none | one block in `wrangler.toml` |
+
+There's no real win KV offers back. KV would also be a poor fit for the comment change-objects themselves — content-addressed immutable objects benefit from R2's strong read-after-write consistency (a client that just `PUT`'d a change should immediately see it on `LIST`); KV's up-to-60-second propagation would create the appearance of lost writes whenever a client pulled right after pushing.
+
+So KV ends up with no use case that something else doesn't do better.
+
+### Hardening
+
+R2 access is gated by the Worker (the bucket itself is private). Every request goes through `server/comments/routes.ts`:
+
+| Operation | URL | Allowed when |
+|---|---|---|
+| List users for a post | `GET /comments?post=X` | session present AND session is the post's author |
+| List change hashes for a (post, user) | `GET /comments?post=X&user=Y` | session present AND (`session.userId === Y` OR session is the post's author) |
+| Fetch one change | `GET /comments?post=X&user=Y&change=Z` | same as above |
+| Upload one change | `PUT /comments?post=X&user=Y&change=Z` | session present AND `session.userId === Y` (and not in `BLOCKED_USERS`) |
+
+"Session is the post's author" means the session's verified email matches the post's `<meta name="author-email">` tag — see [Per-post author metadata](#per-post-author-metadata-serverpostmetats). Readers can read and overwrite only their own change-objects (needed for cross-device sync); the author of a post can read everyone's change-objects; nobody else sees anything. The author has no special PUT power — they only ever write to their own folder.
+
+Validation runs on every PUT:
+
+| Check | Limit | What it bounds |
+|---|---|---|
+| Body size | `MAX_CHANGE_BYTES = 8 KB` | One Automerge change typically lands under 1 KB after compression, even with the 5000-char reply max; 8 KB is well above any single legitimate change. |
+| Rate limit | 10 PUTs / 60s per `userId` (`wrangler.toml`) | Throttles sustained writes — change-objects are immutable and content-addressed, so an attacker can't reuse a key to inject content, but they can still pile up new ones without this. |
+| Block list | `BLOCKED_USERS` env var (comma-separated `<provider>:<sub>`) | Listed users' PUTs return a 200 but never touch the store. No R2 ops, no rate-limit budget burned. Update via `wrangler secret put BLOCKED_USERS`. |
+| Per-reply text length | 5000 chars | **Client-side UX only** — strict server-side enforcement would require shipping Automerge into the Worker bundle (~700 KB) to parse the change. The 8 KB per-change cap covers the same threat envelope at zero bundle cost. |
+
+Stacked together: a max-rate attacker on a fresh account can write at most 10 changes/min × 8 KB = 80 KB/min into their own folder, can't touch anyone else's content (auth check), and once you add them to `BLOCKED_USERS` their next PUT silently goes nowhere. The bucket-wide blast radius per attacker is bounded by storage cost — pennies per month in the absolute worst case.
+
+### Excluded from v1
+
+- **Separate API and asset deployments** (Pages + Worker). One Worker with the assets binding covers both.
+- **Cloudflare KV** — see above.
+- **Durable Objects** — overkill at this scale. The per-user R2 blob already serializes that user's writes; we don't need an actor model on top.
+- **Turnstile / CAPTCHA** — wired in only when rate limits actually start tripping for legit users. The hooks (a 429-with-challenge path) can be added in a few lines later.
+- **Audit log** of every PUT. Cheap insurance, but not load-bearing until something goes wrong.
 
 ## Terminology
 

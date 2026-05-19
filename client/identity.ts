@@ -9,10 +9,26 @@
 export type Identity = {
   userId: string;                       // `<provider>:<sub>`
   email: string;
+  emailVerified: boolean;
   name: string | null;
   picture: string | null;
   provider: "google" | "microsoft";
 };
+
+// Authorship is per-post, encoded in the page's `<meta name="author-email">`
+// tag. Returns true if the logged-in user's verified email matches that
+// tag. Used purely as a UI hint — the server independently enforces
+// the same comparison on every author-only operation.
+export function isAuthorOfCurrentPost(identity: Identity | null): boolean {
+  if (!identity) return false;
+  if (!identity.emailVerified) return false;
+  const meta = document.querySelector<HTMLMetaElement>(
+    'meta[name="author-email"]',
+  );
+  const authorEmail = meta?.content.trim().toLowerCase();
+  if (!authorEmail) return false;
+  return identity.email.trim().toLowerCase() === authorEmail;
+}
 
 let _identity: Identity | null | undefined = undefined;
 

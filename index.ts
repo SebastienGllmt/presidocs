@@ -9,6 +9,9 @@ import {
   whoami,
   logout,
 } from "./server/auth/routes.ts";
+import { handleCommentsRequest } from "./server/comments/routes.ts";
+import { fsAdapter } from "./server/comments/fsAdapter.ts";
+import { loadDevPostMetaIndex } from "./server/postMeta.dev.ts";
 
 const projectRoot = import.meta.dir;
 
@@ -21,6 +24,18 @@ const AUTOMERGE_WASM_PATH = join(
   projectRoot,
   "node_modules/@automerge/automerge/dist/automerge.wasm",
 );
+
+// Dev-mode CommentBlobStore: writes blobs to disk under generated/
+// so the same `server/comments/routes.ts` handlers exercised in prod
+// (with R2) run unchanged here. The directory is inside `generated/`
+// because that's already in .gitignore.
+const commentsDevStore = fsAdapter(join(projectRoot, "generated", ".comments-dev"));
+
+// Per-post author index — scans posts/*.html at startup. The Worker
+// uses a build-time-generated static map; this is the dev equivalent
+// so a new post is picked up after a server restart (no build step
+// required).
+const postMetaIndex = await loadDevPostMetaIndex(join(projectRoot, "posts"));
 
 // Serve files from a fixed subdirectory of the project — used for the
 // generated audio + manifest files which Bun's bundler doesn't manage.
@@ -59,6 +74,16 @@ const server = Bun.serve({
     "/auth/microsoft/callback": microsoftCallback,
     "/auth/me": whoami,
     "/auth/logout": { POST: logout },
+    // Comments R2 proxy — same handler as the Worker, but backed by a
+    // filesystem adapter in dev. No rate limiting locally (the Workers
+    // Rate Limiting API doesn't exist in Bun); per-post author is
+    // resolved from posts/*.html `<meta name="author-email">`.
+    "/comments": (req) =>
+      handleCommentsRequest(req, {
+        store: commentsDevStore,
+        postMeta: postMetaIndex,
+        rateLimiter: null,
+      }),
   },
   development: { hmr: true, console: true },
   fetch() {

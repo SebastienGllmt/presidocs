@@ -235,7 +235,11 @@ export function getSessionFromRequest(req: Request): Session | null {
 
 // `GET /auth/me` — returns the public subset of the session as JSON, or
 // `null` if not logged in. The client renders the login button when this
-// is null and the user's name/avatar when it isn't.
+// is null and the user's name/avatar when it isn't. Whether this user
+// is the *current post's* author is computed client-side by comparing
+// `email` against the post's `<meta name="author-email">` tag (per-post,
+// not site-wide — see `server/postMeta.ts`). The server independently
+// enforces the same check on every author-only operation.
 export function whoami(req: Request): Response {
   const session = getSessionFromRequest(req);
   if (!session) {
@@ -247,6 +251,7 @@ export function whoami(req: Request): Response {
   return Response.json({
     userId: session.userId,
     email: session.email,
+    emailVerified: session.emailVerified,
     name: session.name ?? null,
     picture: session.picture ?? null,
     provider: session.provider,

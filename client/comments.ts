@@ -42,8 +42,14 @@ import {
   loadIdentity,
   loginUrl,
   signOut,
+  isAuthorOfCurrentPost,
   type Identity,
 } from "./identity.ts";
+import { CommentSync } from "./commentsSync.ts";
+import {
+  aggregateOtherReaders,
+  newAggregatorState,
+} from "./commentsAggregator.ts";
 
 type BlockInfo = {
   id: string;
@@ -182,6 +188,11 @@ class CommentSystem {
   private store: CommentStore | null = null;
   private snapshot: Thread[] = [];
 
+  // Owns the network push/pull for the logged-in user's blob. Lives
+  // alongside the store so a single mutation triggers persist (in the
+  // store) and a server PUT (here). Null when not logged in.
+  private sync: CommentSync | null = null;
+
   // Header in the column showing "Signed in as ..." or the login pane
   // when not authenticated. Rendered once at init, re-rendered on
   // identity change (currently only at boot).
@@ -256,10 +267,48 @@ class CommentSystem {
       // Automerge's WASM load — once `create()` returns the store is
       // fully hydrated and all UI handlers can safely call its mutation
       // methods.
-      this.store = await CommentStore.create(
-        window.location.pathname,
-        this.identity.userId,
-      );
+      const postPath = window.location.pathname;
+      this.store = await CommentStore.create(postPath, this.identity.userId);
+
+      // Wire up the network sync. `onChange` is set BEFORE `hydrate`
+      // so a user write that lands during the initial GET also queues
+      // a push (it'll serialize behind hydrate on the sync layer's
+      // internal chain). Wiring after hydrate caused a real bug: a
+      // first-ever comment submitted in the ~ms window of the initial
+      // pull would persist to localStorage but never reach the server,
+      // since `onChange` was null at mutation time and `hydrate` itself
+      // only pulled — never pushed back any pre-existing local state.
+      this.sync = new CommentSync(this.store, postPath, this.identity.userId);
+      this.store.onChange = () => this.sync?.requestSync();
+      try {
+        await this.sync.hydrate();
+      } catch (err) {
+        // A missing/failed pull is non-fatal — we still have the
+        // localStorage snapshot to render from. The post-hydrate
+        // requestSync (inside hydrate itself) will surface any
+        // persistent push error in the console.
+        console.warn("comment hydrate failed:", err);
+      }
+
+      // Author-only: also pull every other reader's blob and merge into
+      // the read-only composite so the snapshot includes everyone. Done
+      // after hydrate so the first render still shows the author's own
+      // comments even if a slow reader fan-out is in flight. Background-
+      // refresh-on-poll is a v2 follow-up. Authorship is per-post —
+      // derived by comparing the session email to the page's
+      // `<meta name="author-email">` tag (`isAuthorOfCurrentPost`).
+      if (isAuthorOfCurrentPost(this.identity)) {
+        const aggState = newAggregatorState();
+        aggregateOtherReaders(
+          this.store,
+          postPath,
+          this.identity.userId,
+          aggState,
+        )
+          .then(() => this.refreshSnapshotAndRender())
+          .catch((err) => console.warn("aggregate failed:", err));
+      }
+
       this.snapshot = this.store.snapshot();
     }
 

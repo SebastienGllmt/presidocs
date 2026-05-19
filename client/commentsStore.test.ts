@@ -368,6 +368,225 @@ test("merge is commutative: merge(a,b) and merge(b,a) reach the same state", asy
   expect(x.snapshot()).toEqual(y.snapshot());
 });
 
+// ---- Cross-actor / cross-blob scenarios -------------------------------
+//
+// These tests model two or more *separate users* — each with their own
+// CommentStore, never having forked from each other — interacting via
+// the aggregator path the blog author uses in production. They exist
+// specifically to pin down architectural decisions that were previously
+// gotten wrong (and not caught by the merge tests above, which all
+// share a common ancestor via `forkStore`):
+//
+//   - Independently-created stores can merge without losing content.
+//     The earlier bug here: each device called Automerge.from(...)
+//     locally with different timestamps, producing different genesis
+//     ops for the `threads` field; on merge, Automerge resolved the
+//     conflict by picking one assignment and silently dropping the
+//     loser's *entire* threads map. The fix: a hardcoded shared seed
+//     so every device starts from the same bytes. Test #1 below pins
+//     down the contract.
+//
+//   - The author can reply to a reader's thread without dropping the
+//     reader's content. The earlier bug here: addReply materialized
+//     the foreign thread into the author's own doc, which conflicted
+//     with the reader's create on `threads[T]` → loser's whole
+//     replies sub-map was dropped. The fix: flat replies map keyed by
+//     replyId, so every add lands at a unique path that the CRDT can
+//     merge for free. Test #2 below pins down the contract.
+
+test("independently-created stores' threads both survive cross-merge (shared seed contract)", async () => {
+  // Two stores created from scratch — they share NOTHING except the
+  // hardcoded seed. This is the realistic production case for the
+  // aggregator: two users on different devices, never having
+  // interacted before. Without the shared seed, each side's "create
+  // threads" op would conflict on merge and one side's threads would
+  // silently vanish.
+  const a = await CommentStore.create("/posts/p", "google:user-a");
+  const b = await CommentStore.create("/posts/p", "google:user-b");
+
+  a.addThread("tA", ANCHOR_TEXT, 100);
+  a.addReply("tA", reply("rA1", "A's reply", 110));
+
+  b.addThread("tB", ANCHOR_TEXT, 200);
+  b.addReply("tB", reply("rB1", "B's reply", 210));
+
+  // The author aggregates both readers' blobs via mergeOther (the
+  // aggregator path), the same way the comments client does in prod.
+  const author = await CommentStore.create("/posts/p", "google:author");
+  author.mergeOther("google:user-a", a.exportBytes());
+  author.mergeOther("google:user-b", b.exportBytes());
+
+  const snap = author.snapshot();
+  expect(snap.map((t) => t.id).sort()).toEqual(["tA", "tB"]);
+  // Critically: BOTH threads survived, with their respective replies.
+  const byId = new Map(snap.map((t) => [t.id, t]));
+  expect(byId.get("tA")!.replies.map((r) => r.id)).toEqual(["rA1"]);
+  expect(byId.get("tB")!.replies.map((r) => r.id)).toEqual(["rB1"]);
+});
+
+test("author can reply to a reader's foreign thread without dropping the reader's reply", async () => {
+  // The bug-regression test. Previously, addReply materialized the
+  // foreign thread in the author's doc — which collided with the
+  // reader's create-thread op on merge, and the loser's whole replies
+  // sub-map (which contained the reader's reply) was silently
+  // dropped. With the flat schema, addReply just stores
+  // d.replies[id] = { ...reply, threadId } in the author's blob,
+  // which is a write at a brand-new key in a shared map (via seed) —
+  // CRDT-mergeable for free, no conflict.
+  const reader = await CommentStore.create("/posts/p", "google:reader");
+  reader.addThread("t1", ANCHOR_TEXT, 100);
+  reader.addReply("t1", reply("r-reader", "the reader's question", 110));
+
+  const author = await CommentStore.create("/posts/p", "google:author");
+  author.mergeOther("google:reader", reader.exportBytes());
+
+  // Sanity: the foreign thread + its reply are visible to the author
+  // before they reply (aggregator working).
+  const before = author.snapshot();
+  expect(before.length).toBe(1);
+  expect(before[0]!.replies.map((r) => r.id)).toEqual(["r-reader"]);
+
+  // Author replies to the foreign thread.
+  author.addReply("t1", reply("r-author", "the author's reply", 200));
+
+  // Both replies must appear in the author's view. Pre-fix this
+  // assertion would fail with only one reply (the reader's having
+  // been silently dropped by the CRDT merge).
+  const after = author.snapshot();
+  expect(after.length).toBe(1);
+  expect(after[0]!.replies.map((r) => r.id).sort()).toEqual([
+    "r-author",
+    "r-reader",
+  ]);
+});
+
+test("author replying to multiple foreign threads doesn't bleed content across them", async () => {
+  // Two independent readers, each with their own thread + reply.
+  // Author replies on both. Each thread should have exactly its
+  // owner's reply plus the author's, with no cross-contamination
+  // (no "the reply meant for thread A also appears on thread B").
+  const readerA = await CommentStore.create("/posts/p", "google:readerA");
+  readerA.addThread("tA", ANCHOR_TEXT, 100);
+  readerA.addReply("tA", reply("rA-orig", "A's question", 110));
+
+  const readerB = await CommentStore.create("/posts/p", "google:readerB");
+  readerB.addThread("tB", ANCHOR_TEXT, 200);
+  readerB.addReply("tB", reply("rB-orig", "B's question", 210));
+
+  const author = await CommentStore.create("/posts/p", "google:author");
+  author.mergeOther("google:readerA", readerA.exportBytes());
+  author.mergeOther("google:readerB", readerB.exportBytes());
+
+  author.addReply("tA", reply("rA-author", "reply to A", 300));
+  author.addReply("tB", reply("rB-author", "reply to B", 310));
+
+  const snap = author.snapshot();
+  const byId = new Map(snap.map((t) => [t.id, t]));
+  expect(byId.get("tA")!.replies.map((r) => r.id).sort()).toEqual([
+    "rA-author",
+    "rA-orig",
+  ]);
+  expect(byId.get("tB")!.replies.map((r) => r.id).sort()).toEqual([
+    "rB-author",
+    "rB-orig",
+  ]);
+});
+
+test("author's foreign reply round-trips through their own blob (save/load)", async () => {
+  // Simulates the realistic prod cycle: author replies, their blob is
+  // PUT to R2, on the next page load their blob comes back via
+  // hydrate + the reader's blob comes back via the aggregator. The
+  // foreign reply must still be present and attached to the right
+  // thread after the round-trip.
+  const reader = await CommentStore.create("/posts/p", "google:reader");
+  reader.addThread("t1", ANCHOR_TEXT, 100);
+  reader.addReply("t1", reply("r-reader", "hi", 110));
+
+  const author1 = await CommentStore.create("/posts/p", "google:author");
+  author1.mergeOther("google:reader", reader.exportBytes());
+  author1.addReply("t1", reply("r-author", "hi back", 200));
+
+  const authorBlobBytes = author1.exportBytes();
+
+  // Reload: new store, hydrate from saved bytes, re-aggregate reader.
+  const author2 = await CommentStore.create(
+    "/posts/p-reloaded",
+    "google:author",
+  );
+  author2.mergeBytes(authorBlobBytes);
+  author2.mergeOther("google:reader", reader.exportBytes());
+
+  const snap = author2.snapshot();
+  expect(snap.length).toBe(1);
+  expect(snap[0]!.replies.map((r) => r.id).sort()).toEqual([
+    "r-author",
+    "r-reader",
+  ]);
+});
+
+test("reader never sees the author's reply on their own thread (one-way visibility)", async () => {
+  // Encodes the deliberate asymmetry: the author can see + reply on
+  // readers' threads (aggregator), but the reader doesn't pull the
+  // author's blob, so the author's reply never appears in their view.
+  // This is the right semantics for our use case — the author follows
+  // up by email, not via the comment thread.
+  const reader = await CommentStore.create("/posts/p", "google:reader");
+  reader.addThread("t1", ANCHOR_TEXT, 100);
+  reader.addReply("t1", reply("r-reader", "hi", 110));
+
+  const author = await CommentStore.create("/posts/p", "google:author");
+  author.mergeOther("google:reader", reader.exportBytes());
+  author.addReply("t1", reply("r-author", "private follow-up", 200));
+
+  // Reader's view (their own blob, no aggregator) still shows only
+  // their own reply. Nothing the author did leaked back.
+  const readerSnap = reader.snapshot();
+  expect(readerSnap.length).toBe(1);
+  expect(readerSnap[0]!.replies.map((r) => r.id)).toEqual(["r-reader"]);
+});
+
+test("author on two devices both reply to the same foreign thread — both author replies survive", async () => {
+  // Multi-device author case: author on device 1 replies, syncs to
+  // R2; device 2 hydrates from that, re-aggregates the foreign
+  // reader, and also replies; both replies + the reader's reply must
+  // be visible on both devices after a full sync round.
+  const reader = await CommentStore.create("/posts/p", "google:reader");
+  reader.addThread("t1", ANCHOR_TEXT, 100);
+  reader.addReply("t1", reply("r-reader", "question", 110));
+
+  const author1 = await CommentStore.create("/posts/p", "google:author");
+  author1.mergeOther("google:reader", reader.exportBytes());
+  author1.addReply("t1", reply("r-author1", "from device 1", 200));
+
+  // Device 2: fresh store path, hydrate from device 1's blob (the
+  // cross-device sync), then re-aggregate the reader.
+  const author2 = await CommentStore.create(
+    "/posts/p-device2",
+    "google:author",
+  );
+  author2.mergeBytes(author1.exportBytes());
+  author2.mergeOther("google:reader", reader.exportBytes());
+  author2.addReply("t1", reply("r-author2", "from device 2", 210));
+
+  // Device 2 sees all three replies.
+  const snap2 = author2.snapshot();
+  expect(snap2.length).toBe(1);
+  expect(snap2[0]!.replies.map((r) => r.id).sort()).toEqual([
+    "r-author1",
+    "r-author2",
+    "r-reader",
+  ]);
+
+  // Sync back: device 1 picks up device 2's reply.
+  author1.mergeBytes(author2.exportBytes());
+  const snap1 = author1.snapshot();
+  expect(snap1[0]!.replies.map((r) => r.id).sort()).toEqual([
+    "r-author1",
+    "r-author2",
+    "r-reader",
+  ]);
+});
+
 test("concurrent resolve doesn't double-stamp; deletedAt also stays put", async () => {
   // Two devices independently resolve the same thread / delete the
   // same reply. After merge, the timestamp shouldn't get clobbered —

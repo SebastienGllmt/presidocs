@@ -7,11 +7,15 @@
     "dev": "bun --hot index.ts",
     "start": "bun index.ts",
     "generate": "bun generate/generate.ts",
-    "clean": "bun generate/clean.ts"
+    "clean": "bun generate/clean.ts",
+    "build": "bun generate/post-meta.ts && bun build ./index.html ./posts/*.html --outdir ./dist --target browser && bun generate/copy-static.ts && bun generate/strip-served-html.ts",
+    "deploy": "bun run build && wrangler deploy"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260511.1",
     "@types/bun": "latest",
-    "fast-xml-parser": "^5.7.3"
+    "fast-xml-parser": "^5.7.3",
+    "wrangler": "^4.90.0"
   },
   "peerDependencies": {
     "typescript": "^5"
