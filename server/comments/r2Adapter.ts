@@ -6,11 +6,15 @@ import {
   changeHashFromKey,
   changeKey,
   postPrefix,
+  resolutionKey,
+  resolutionPrefix,
+  threadIdFromResolutionKey,
   userIdFromKey,
   userPrefix,
   type ChangeListEntry,
   type CommentChangeStore,
   type PutChangeResult,
+  type ResolutionListEntry,
 } from "./store.ts";
 
 export function r2Adapter(bucket: R2Bucket): CommentChangeStore {
@@ -68,6 +72,37 @@ export function r2Adapter(bucket: R2Bucket): CommentChangeStore {
         if (id) users.push(id);
       }
       return users;
+    },
+
+    async getResolution(post, threadId) {
+      const obj = await bucket.get(resolutionKey(post, threadId));
+      if (!obj) return null;
+      const buf = await obj.arrayBuffer();
+      return new Uint8Array(buf);
+    },
+
+    async putResolution(post, threadId, bytes): Promise<void> {
+      // Overwrite-by-default; resolutions are mutable single-writer
+      // blobs (the post author writes; concurrent author devices
+      // produce near-identical bytes, last-write-wins is fine).
+      await bucket.put(resolutionKey(post, threadId), bytes, {
+        httpMetadata: { contentType: "application/json" },
+      });
+    },
+
+    async listResolutions(post): Promise<ResolutionListEntry[]> {
+      const result = await bucket.list({ prefix: resolutionPrefix(post) });
+      const out: ResolutionListEntry[] = [];
+      for (const obj of result.objects) {
+        const threadId = threadIdFromResolutionKey(obj.key);
+        if (!threadId) continue;
+        out.push({
+          threadId,
+          size: obj.size,
+          uploaded: obj.uploaded,
+        });
+      }
+      return out;
     },
   };
 }

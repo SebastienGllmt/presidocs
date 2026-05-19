@@ -21,13 +21,18 @@ import {
   logout,
 } from "./server/auth/routes.ts";
 import { handleCommentsRequest } from "./server/comments/routes.ts";
+import { handleResolutionsRequest } from "./server/comments/resolutionsRoutes.ts";
 import { r2Adapter } from "./server/comments/r2Adapter.ts";
 import { createPostMetaIndex } from "./server/postMeta.ts";
 import { POST_AUTHORS } from "./server/postMeta.generated.ts";
+import { createPostVersionIndex } from "./server/postVersions.ts";
+import { POST_VERSIONS } from "./server/postVersions.generated.ts";
+import { handlePostVersionRequest } from "./server/postVersionsRoute.ts";
 
 // Built once at module load — the map is static for the lifetime of
 // the Worker (regenerated only when a new build is deployed).
 const postMetaIndex = createPostMetaIndex(POST_AUTHORS);
+const postVersionsIndex = createPostVersionIndex(POST_VERSIONS);
 
 export default {
   async fetch(
@@ -53,6 +58,19 @@ export default {
         store: r2Adapter(env.COMMENTS),
         postMeta: postMetaIndex,
         rateLimiter: env.RATE_LIMITER,
+      });
+    }
+    if (path === "/resolutions") {
+      return handleResolutionsRequest(req, {
+        store: r2Adapter(env.COMMENTS),
+        postMeta: postMetaIndex,
+        rateLimiter: env.RATE_LIMITER,
+      });
+    }
+    if (path === "/post-version") {
+      return handlePostVersionRequest(req, {
+        postVersions: postVersionsIndex,
+        postMeta: postMetaIndex,
       });
     }
 

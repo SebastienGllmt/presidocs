@@ -10,8 +10,11 @@ import {
   logout,
 } from "./server/auth/routes.ts";
 import { handleCommentsRequest } from "./server/comments/routes.ts";
+import { handleResolutionsRequest } from "./server/comments/resolutionsRoutes.ts";
 import { fsAdapter } from "./server/comments/fsAdapter.ts";
 import { loadDevPostMetaIndex } from "./server/postMeta.dev.ts";
+import { loadDevPostVersionIndex } from "./server/postVersions.dev.ts";
+import { handlePostVersionRequest } from "./server/postVersionsRoute.ts";
 
 const projectRoot = import.meta.dir;
 
@@ -36,6 +39,14 @@ const commentsDevStore = fsAdapter(join(projectRoot, "generated", ".comments-dev
 // so a new post is picked up after a server restart (no build step
 // required).
 const postMetaIndex = await loadDevPostMetaIndex(join(projectRoot, "posts"));
+
+// Per-post version index — current SHA-256 of source HTML (computed
+// fresh at dev startup so a saved edit picks up immediately) plus
+// any history persisted to posts/versions.json by the build script.
+const postVersionsIndex = await loadDevPostVersionIndex(
+  join(projectRoot, "posts"),
+  join(projectRoot, "posts", "versions.json"),
+);
 
 // Serve files from a fixed subdirectory of the project — used for the
 // generated audio + manifest files which Bun's bundler doesn't manage.
@@ -83,6 +94,17 @@ const server = Bun.serve({
         store: commentsDevStore,
         postMeta: postMetaIndex,
         rateLimiter: null,
+      }),
+    "/resolutions": (req) =>
+      handleResolutionsRequest(req, {
+        store: commentsDevStore,
+        postMeta: postMetaIndex,
+        rateLimiter: null,
+      }),
+    "/post-version": (req) =>
+      handlePostVersionRequest(req, {
+        postVersions: postVersionsIndex,
+        postMeta: postMetaIndex,
       }),
   },
   development: { hmr: true, console: true },

@@ -383,6 +383,16 @@ export class CommentStore {
     return this.cachedSnapshot;
   }
 
+  // True iff the thread lives in *our own* doc (we created it as the
+  // original commenter), as opposed to a foreign thread we only see
+  // via the author-side aggregator. Used by the UI to decide whether
+  // a Resolve action should write back through `resolveThread()`
+  // (own-thread → CommentStore) or through the per-post resolutions
+  // store (foreign-thread → author action).
+  ownsThread(threadId: string): boolean {
+    return (this.doc as CommentDoc).threads[threadId] !== undefined;
+  }
+
   // ---------- Mutations ----------
 
   addThread(threadId: string, anchor: Anchor, createdAt: number): void {

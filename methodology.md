@@ -276,6 +276,23 @@ Adding a "reply" now lands at a unique key in a top-level map that every device 
 
 **Author identity.** Each `Reply` carries the author's `authorId` (`<provider>:<sub>`), `authorName`, `authorEmail`, and an optional `authorPicture` URL — populated at submit time from the logged-in identity. The UI renders avatar + display name on every reply; `authorEmail` is deliberately *not* rendered to other readers (only the blog author needs it, for follow-up by mail).
 
+### Draft persistence (`client/draftsStorage.ts`)
+
+Drafts — unsubmitted threads + their in-progress textarea contents — are kept *out* of the CRDT (no cross-device sync, no aggregating-viewer leakage of half-typed thoughts) but persisted to **localStorage** under `blog-drafts:<path>:user:<userId>` so a page reload or accidental tab close doesn't blow away an in-progress comment. Two pieces of state pair with each draft:
+
+- The `Thread` object itself (id, anchor, empty `replies`, `createdAt`) — same shape as a saved thread, just never handed to the CRDT.
+- A separate `draftBodies: Map<threadId, string>` of the current textarea contents, updated on every `input` event from the composer.
+
+`persistDrafts()` runs after each draft-touching mutation (create / cancel / promote / keystroke) and serializes both pieces as one JSON array of `{ thread, body }` entries. localStorage is synchronous and the payload is small (hundreds of bytes per draft), so debouncing the per-keystroke write isn't worth the complexity.
+
+**Why localStorage, not the CRDT.** The whole point of "draft" is that it's *the user's private uncommitted thinking*. Putting it in the CRDT would (a) sync it to the user's other devices the moment they start typing, which is surprising when they intended to compose on this device; (b) bloat the comment blob with content the user might cancel anyway; (c) become visible to the author via the aggregating viewer the moment they polled, which is a real privacy regression. localStorage is exactly the scope we want: this browser, this user, this post — no further.
+
+**Why a separate file (not the CRDT's localStorage blob).** Re-using `commentsStore`'s `Automerge.save` blob for drafts would mean drafts get applied as Automerge ops, which is exactly the cross-device behavior we're trying to avoid. A standalone key keeps the two persistence stories cleanly separable: erasing one doesn't touch the other; a future migration on either format leaves the other alone.
+
+**Restoration.** On boot — after identity is loaded but before the first `renderAll` — `DraftsStorage.load()` reads back the JSON array and pushes each `Thread` into `this.drafts` and each body into `this.draftBodies`. The first render then builds composer cards for them just as if they'd been created mid-session; the textarea's initial value comes from the body map. No flicker, no "drafts pop in late."
+
+**Anchor validity isn't re-checked on load.** A draft authored against an earlier version of the post still renders even if the underlying segments have changed — the card stacks at its anchor's last-known position (or at page bottom if the block is gone), with the original `quote` preserved in the anchor preview. This matches the orphan-and-flag philosophy used for saved threads: better to surface the user's work and let them decide than to silently drop it. The simpler fallback (drop stale drafts at load time) was rejected for the same reason.
+
 ### Sync (`client/commentsSync.ts`, `client/commentsAggregator.ts`)
 
 Sync to R2 is per-change set-diff over content-addressed Automerge change hashes. The store handles local-only concerns (mutate, persist to localStorage, snapshot); the sync layer wraps it with network round-trips that are simple enough to fit on one screen.
@@ -300,13 +317,71 @@ Concurrency is handled by content addressing: each change object lives at its ow
 
 Per-user per-page-load cost: 1 LIST, plus 1 GET per new change for that user. **Zero-delta loads cost just the LISTs** — if a reader hasn't added anything since last visit, no GETs at all. Per-user-pull failures are logged and skipped rather than aborting the whole aggregation.
 
-**Not real-time.** Other readers' new comments only show up on the next page load. A polling refresh (or a server-pushed SSE) would slot in here without touching the store or the per-user sync loop — deferred to v2.
+**Visibility-gated polling.** A `CommentPolling` controller wraps the boot-time hydrate/aggregate path and re-runs it on a 60-second cadence while the tab is `document.visibilityState === "visible"`. When the tab goes hidden the timer is cancelled outright — there's no point pulling fresh comments the user isn't looking at — and on becoming visible again we trigger an immediate poll if more than the interval has elapsed since the last one (so a user returning after a long absence doesn't have to wait for the next 60-second mark). The single-flight guard inside the controller coalesces overlapping requests, so a slow network can't stack concurrent hydrate sweeps.
+
+### Author-resolution (`client/resolutionsStore.ts`, `server/comments/resolutionsRoutes.ts`)
+
+The blog author can mark *any* thread as resolved — including foreign threads written by other readers. This is structurally different from a commenter resolving their own thread:
+
+- Commenters write `thread.resolvedAt` into their own `CommentDoc` via the existing flat-map path.
+- The author can't write into a foreign commenter's doc (each per-user blob is owned by that user; the auth layer rejects cross-user PUTs).
+- We also can't have the author "materialize" the foreign thread into their own `CommentDoc` and set `resolvedAt` there — that hits the multi-value-register conflict the [storage layer notes](#why-flat--fine-grained-updates) warn about (two devices assigning to the same `threads[T]` key produces a register with two visible values; nested ops only attach to one).
+
+The way out is a separate per-post namespace that's *not* a CRDT at all:
+
+```
+resolutions/<post>/<threadId>.json
+```
+
+One mutable JSON blob per resolved thread. The body is opaque to the server (`{ threadId, resolvedAt, resolverId, resolverName }` — a few hundred bytes). Single-writer per post (only the post author has PUT permission), so there's no merge problem — last-write-wins is harmless when the only writer is one identity across one or two devices producing near-identical bytes.
+
+**Visibility model:**
+
+| Operation | URL | Allowed when |
+|---|---|---|
+| List resolved threadIds for a post | `GET /resolutions?post=X` | any logged-in user |
+| Fetch one resolution body | `GET /resolutions?post=X&thread=T` | any logged-in user |
+| Write a resolution | `PUT /resolutions?post=X&thread=T` | session present AND session is the post's author |
+
+Reads are open to all logged-in users so the original commenter can pull the resolution that hides *their own* thread. Other readers technically receive the LIST/GET too, but the `threadId`s are opaque random strings; without the corresponding CRDT thread (which lives only in its commenter's private blob), the resolution is meaningless to a third party. This is what lets us avoid making the author's full personal comments blob public — a much larger information surface.
+
+**Client integration:**
+- `ResolutionStore` keeps a `Map<threadId, ResolutionEnvelope>` in sync with the server, persisted to localStorage so reloads don't refetch every entry.
+- `hydrate()` is pure pull (LIST → diff-fetch by upload timestamp) and runs on boot and on every polling tick alongside the per-user `sync.hydrate()` and the author aggregator.
+- `resolve()` PUTs the envelope, updates the local cache, fires `onChange` → re-render. Failures are logged, not surfaced — same pattern as comment sync.
+- The render-path predicate `threadIsResolved(thread)` unifies the two sources: `thread.resolvedAt !== undefined` (self-resolve) OR `resolutions.isResolved(thread.id)` (author-resolve). Either hides the card and unwraps the highlight.
+
+**Resolve-button routing.** The Resolve button only shows when there's somewhere meaningful for the click to go:
+- Own thread (commenter): routes to `CommentStore.resolveThread()` — the existing self-resolve path.
+- Foreign thread + user is the post author: routes to `ResolutionStore.resolve()`.
+- Foreign thread + user is *not* the post author: button is suppressed (would otherwise be a no-op).
+
+`CommentStore.ownsThread(threadId)` lets the UI tell which case applies — it returns true iff `threadId` exists in *our own* `doc.threads`, false for threads we only see via the author aggregator's `others` map.
+
+**Why not Automerge for the resolutions blob.** Resolutions don't need CRDT merge: the writer set is one logical actor (the post author across their devices), the data per thread is one short envelope, and we don't track per-field history. A plain JSON blob with last-write-wins is the right shape; using Automerge would mean shipping a second seed, a second `applyChanges` sync loop, and per-change content addressing for nothing.
+
+### Document version (`client/postVersion.ts`, `server/postVersionsRoute.ts`)
+
+Each post has a content hash — SHA-256 of the source HTML bytes — that the build script bumps every time the source changes. The hash powers two distinct surfaces:
+
+1. **Commenter "doc changed" banner.** On boot, the client fetches the post's `currentHash` and compares it to `localStorage["blog-doc-version:<post>"]`. If the user has been here before AND the hash differs, a banner appears in the comments column: "The post has been updated since your last visit. Some comments may no longer apply." This is the explanation for two things that would otherwise be confusing: stale anchors on a thread the reader posted weeks ago, and threads that vanished because the author resolved them. We bump the last-seen value immediately on first render so a reload clears the banner.
+2. **Author-only version history.** When the same endpoint sees a request from the post's author, it also returns the chronological list of past hashes (most recent first, with `builtAt` ISO timestamps). The author sees an expandable "Document versions (N)" panel in the comments column.
+
+**Hash + history storage:**
+- Source: `posts/<slug>.html` raw bytes.
+- Hash: `SHA-256` (browser-native; same `crypto.subtle.digest` available in Workers and Node, identical bytes).
+- History: `posts/versions.json` (committed to git). The build script `generate/post-versions.ts` reads each post, computes its current hash, and *prepends* a new entry to `versions.json` for any post whose hash differs from its most-recent recorded one. Idempotent — running `bun run build` twice without editing a post is a no-op.
+- Same script also writes `server/postVersions.generated.ts` (an importable static map) for the Worker bundle.
+
+**Dev parity:** `server/postVersions.dev.ts` recomputes the current hash from the source files at startup (so a fresh edit shows up without rerunning `bun run build`), and reads history from `posts/versions.json`. If the dev-computed current hash doesn't match the most-recent entry in `versions.json` (the author edited but hasn't built), we synthesize an in-memory "now" entry at the head of the history so the panel reflects the actual on-disk state. Not persisted — the build script remains the only writer.
+
+**Visibility:** `GET /post-version?post=X` returns `{ currentHash, history? }`. Both fields require login (the post-version concept is comment-adjacent; pre-login readers don't need either signal). `history` is only included when the session is the post's author — every other logged-in user gets `currentHash` alone.
 
 ### UI
 
 - **Selection → floating action bar.** A "Comment" pill appears above any selection inside a commentable root. Clicking it creates a draft card in the column, scrolls to it, and focuses its textarea.
 - **Cards column** spans the document height. Each card is within it, so cards scroll with the page naturally. `repositionCards()` aligns each card's top with its anchor's `getBoundingClientRect().top + scrollY`, then walks in sort order pushing later cards down by at least `CARD_GAP_PX` so they don't overlap. It runs on scroll, resize, and after every render.
-- **Drafts vs threads.** A *draft* is an unsubmitted thread held in `this.drafts` (in-memory only — drafts deliberately don't go into the CRDT, so they never sync to a server or the user's other devices until committed). Its card looks the same as a saved one but is framed with a blue border; the composer's "Cancel" discards the entire draft, "Comment" promotes it (registering the thread and the reply). After the first reply lands the thread lives in the CRDT and subsequent typing in the same card just appends replies. Each card owns its own textarea, so drafts never collide with each other and the old "you have unsaved work" draft-protection logic isn't needed.
+- **Drafts vs threads.** A *draft* is an unsubmitted thread held in `this.drafts`. Drafts deliberately don't go into the CRDT, so they never sync to a server or to the user's other devices — but they DO persist to localStorage via `draftsStorage.ts` so closing the tab mid-compose doesn't lose the work (see [Draft persistence](#draft-persistence-clientdraftsstoragets)). The card looks the same as a saved one but is framed with a blue border; the composer's "Cancel" discards the entire draft, "Comment" promotes it (registering the thread and the reply). After the first reply lands the thread lives in the CRDT and subsequent typing in the same card just appends replies. Each card owns its own textarea, so drafts never collide with each other and the old "you have unsaved work" draft-protection logic isn't needed.
 - **Cross-linking** between card and anchor: clicking a highlight scrolls its card into view and pulses it; clicking a card (anywhere outside its buttons / textarea) scrolls the article to the anchor and pulses the highlight.
 - **Highlight color** is soft blue (`rgba(88, 166, 255, 0.22)`), deliberately not yellow — narration already paints the active sentence yellow/orange, and a sentence that's both being read and commented needs to be visually unambiguous. Nested highlight spans (overlapping threads) naturally compose to a darker blue, which reads as "denser commentary here."
 - **Layout reservation.** When the column is visible (≥1100px viewport) `body { padding-right: 360px }` shifts the centered article left so the column has a clean gutter to live in. The narration dock stays viewport-centered and so no longer sits dead-center under the article when the column is showing; that visual mismatch is mild enough to ignore for v1.
@@ -318,7 +393,8 @@ Three ways a thread can leave the UI, with very different semantics:
 | | Trigger | UI effect | Storage effect | How to undo |
 |---|---|---|---|---|
 | **Hide** | "Hide" button on a non-stale saved card | Card removed; highlight stays | None (session-only `hiddenCardIds` Set) | Click the highlight, or reload |
-| **Resolve** | "Resolve" button on any saved card (incl. stale) | Card removed; highlight removed | `resolvedAt` timestamp set on the thread; record stays in localStorage | Not in v1 — permanent |
+| **Self-resolve** | "Resolve" button on a saved card the user owns | Card removed; highlight removed | `resolvedAt` timestamp set on the thread; record stays in localStorage | Not in v1 — permanent |
+| **Author-resolve** | "Resolve" button on a foreign saved card, when the user is the post author | Card removed everywhere (also vanishes for the original commenter on their next poll) | Per-post resolution blob written to `resolutions/<post>/<threadId>.json`; the commenter's snapshot honors it via the combined `threadIsResolved()` check | Not in v1 — permanent |
 | **Delete reply** | "x" on each reply | Reply removed; thread auto-resolves when last visible reply is gone | `deletedAt` timestamp set on the reply (and `resolvedAt` on the thread if it's the last one); both stay in localStorage | Not in v1 — permanent |
 
 **Why three?** Hide is a casual "I'm done looking at this for now." Resolve is the decisive "this is addressed, get rid of it." Reply-delete is for fixing typos / removing individual replies. Conflating them would force every dismissal to feel either too cavalier (one-click delete-everything) or too cautious (confirm-every-time).
@@ -333,20 +409,60 @@ Two notes on what's deferred:
 
 ### Responsive
 
-- **≥1100px:** column visible alongside the article.
-- **<1100px:** column hidden entirely (not enough horizontal room without overlapping content). The action bar and selection capture still work, so comments can be authored — they just won't render as cards until the user widens the window. A mobile-friendly bottom sheet / toggle is a follow-up.
+- **≥1100px (column mode):** column visible alongside the article. Highlight clicks navigate to the matching card (scroll + pulse). A *second* consecutive click on the same highlight (or graphic indicator) hides that card — equivalent to clicking the card's Hide button, but driven from the article side. The state is tracked in `lastFocusedThreadId`, which is reset whenever a click brings a previously-hidden card back (so an unhide-then-rehide doesn't happen in one click), whenever a different anchor is clicked, and whenever the focused card disappears between renders. This makes the highlight a single primitive for "show me / hide me again" rather than a one-way navigation gesture.
+- **<1100px (popover mode):** the column's permanent surfaces (identity header, version banner, history panel, stacked cards) are hidden. Threads render into the DOM as before, but only the one tagged `data-mobile-active="true"` is visible — as a fixed-position overlay (`left/right: 12px`). The popover is **anchored to the tapped element**: at the moment the user taps, `computeMobilePopoverPosition` measures the anchor's `getBoundingClientRect()` and writes inline `top`/`bottom`/`max-height` so the popover appears immediately below the anchor (or above it if there's more room there). The reserved bottom region tracks `--narrate-dock-height` so the popover stays above the player dock no matter how tall it is. The computed position is stashed in `activeMobilePosition` and re-applied after every `renderAll` — a poll-driven re-render rebuilds the card element, so without re-applying the popover would snap to the CSS default. Always writing inline `top` *and* `bottom` (one explicit, one `auto`) is deliberate: a stale `top` left over from a previous desktop `repositionCards` would otherwise win over CSS specificity and force the card to stretch into a tall, mostly-empty box. Tapping a highlight or graphic indicator promotes that thread to active; tapping the *same* anchor a second time toggles it closed; tapping a *different* highlight switches the popover to its thread. Tap-outside still works as a backup dismiss. Drafts created via the action-bar Comment pill are immediately surfaced as the active popover. Multi-thread anchors still resolve to a single popover (the first thread); a stacked-popover or swipe-between flow can land later without further architectural changes.
+- **Hide-all comments**: floating button top-right (mobile-only, desktop hides it via media query). Top placement is deliberate — the bottom is dense on mobile, with the narrator's "Listen" pill and the player dock competing for the same space. Pressing flattens every highlight, suppresses graphic indicators, hides the column, and dismisses the active popover. The toggle is persisted to localStorage so the choice survives reloads — useful both as a mobile distraction-free reading mode and as a desktop screenshot-clean mode. The underlying state (drafts, hidden cards, snapshot) is untouched - it just suppresses visual surfaces.
+
+A still-open mobile gap is the sign-in flow. The column is hidden, so the identity header (with its provider buttons) is unreachable on mobile. The action-bar Comment pill is suppressed when not logged in, which means a mobile reader has no obvious affordance to authenticate. Plausible fixes: a "Sign in" state when logged out, or an inline mini-pane when the user taps Comment without a session. Deferred.
+
+### Future direction: Web Push notifications
+
+The core motivation of the whole auth-gated comment system — "the author wants to follow up on real questions" — currently terminates in the author's verified email and a polling viewer. There is no active notification to the author that a comment landed; they have to revisit posts or check the aggregator manually. Outbound email would close that loop but introduces a paid third-party dependency (Resend / Postmark / SES — Cloudflare has Email Routing for *receiving* mail but no outbound send API). **Web Push** is the Cloudflare-native alternative: the entire flow stays inside the Workers + R2 model already in use.
+
+**What it solves:** when a reader submits a comment, the author's browser (or installed PWA) gets an OS-level notification with the post title and a snippet, even if they're not currently on the site. Same architecture can later notify a commenter when the author replies to their thread; same plumbing, different sender/recipient direction.
+
+**Why Web Push fits the Cloudflare-only constraint.** The Web Push protocol ([RFC 8030](https://datatracker.ietf.org/doc/html/rfc8030)) is just HTTP. The "push services" are run by browser vendors (FCM for Chrome / Edge, Mozilla autopush for Firefox, Apple Push for Safari) — they're free, no signup, no API keys, and the only credentials we need are a self-generated **VAPID** key pair to authenticate the *sender* (us) to those services. Workers can speak this protocol directly via `crypto.subtle` (ECDSA P-256 for the VAPID JWT, AES-128-GCM + HKDF for the payload encryption). No SDK with transitive deps, no separate hosted service.
+
+**End-to-end shape:**
+
+1. **Setup (one-time, build-time).** Generate a VAPID key pair (`crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" })`). Public key → embedded as a build-time constant in `client/`; private key → `wrangler secret put VAPID_PRIVATE_KEY`. The `sub` claim of every VAPID JWT is a `mailto:` URI for the operator (browser push services require it for abuse contact).
+
+2. **Subscription (client, author-only).** When a logged-in user who is the author of *any* post lands on a page where they haven't yet granted notification permission, the comments column surfaces an "Enable notifications" button (gated identically to the existing aggregator surface — same `isAuthor` signal). On click:
+   - Register a service worker (`/sw.js`, served from `dist/`).
+   - `registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: VAPID_PUBLIC_KEY })` → yields a `PushSubscription` (an endpoint URL + two encryption keys, all JSON-serializable).
+   - `PUT /push-subscriptions?user=<self>` with the subscription envelope. Stored under `push-subscriptions/<userId>/<subscriptionId>.json` in R2. Multiple subscriptions per user is normal (one per device / browser); we keep them all.
+
+3. **Trigger (server, on comment write).** The existing `PUT /comments?post=X&user=Y&change=Z` handler doesn't change its accept/reject logic. After a successful write, it does a fire-and-forget lookup: `if postMeta.authorOf(X) !== Y, fan-out a push to every subscription under the author's userId`. The fan-out uses `ctx.waitUntil(...)` so the response to the commenter isn't blocked on the (potentially slow) push services. A failed push (HTTP 404 / 410 from the push service = subscription gone) deletes that subscription object so we don't keep retrying it.
+   - The payload is intentionally tiny: `{ post, threadId, snippet, commenterName }` — enough for the SW to render a useful notification, nothing the author couldn't already see in the column. Crucially we *don't* try to ship the Automerge change here; the SW just hits the page to load it on click.
+
+4. **Render (service worker).** `self.addEventListener("push", (e) => e.waitUntil(self.registration.showNotification(title, options)))` — `title` is the post title, `body` is `${commenterName}: ${snippet}`, `data.url` deep-links to the post (and ideally to the specific thread via a URL fragment). `notificationclick` opens that URL in a focused tab.
+
+**What about the commenter side?** Symmetric: a commenter who's enabled notifications subscribes the same way; the trigger on author-side writes (`session.userId === postAuthor`) fans out to commenters whose `Reply.authorId` appears in any visible thread on the post. The fan-out target set is computed by reading the per-user R2 blobs the author already has access to via the aggregator. Worth its own follow-up — the v1 of Web Push would just be author-direction.
+
+**Rate limiting and abuse.** A subscription endpoint is opaque (long random URL the browser issued — not user-controllable), so there's no spoofing surface. The only abuse vector is one logged-in commenter spamming `PUT /comments` and force-firing pushes to the author; the existing 10-PUT-per-60s rate limit already covers this. We do NOT want to start sending pushes from anywhere except a successful comment write — making push a side-effect of an already-rate-limited endpoint keeps the threat envelope unchanged.
+
+**Limitations to call out before building this.**
+- **Author has to opt in once per device.** Notification permission is browser-scoped and can't be granted server-side.
+- **Safari iOS** requires the site be installed to the home screen as a PWA before Web Push works at all. Desktop Safari does work without PWA install.
+- **Subscriptions expire.** Browsers can rotate the push endpoint silently (e.g., on a long absence, or a major version upgrade). The 404/410 GC step is mandatory — without it, the R2 folder slowly fills with dead subscriptions and every comment fans out to all of them.
+- **No silent pushes.** `userVisibleOnly: true` is mandatory in Chromium; the SW MUST show a notification on every push. We can't use this channel for "quiet sync" — that's still the polling layer's job.
+- **One Worker, one bundle.** The VAPID JWT signing and the AES-GCM payload encryption are ~100 lines of code (no library required), but they DO use `crypto.subtle` in ways that take some care to get right. A standalone `server/push/` module mirrors `server/comments/` and is testable in isolation.
+
+**Why not just replace polling with SSE/websocket and re-render on push.** Two different surfaces with two different SLAs. SSE/websocket only fires while the tab is open — it doesn't surface "a comment landed at 2am" the next morning, which is the actual ask. Web Push is OS-level and works while the browser is closed. The polling layer also stays useful for "the page is open, show me new replies as they arrive without me reloading" — both can coexist (a Web Push handler could even broadcast to open tabs to skip the next poll, but that's a bonus, not the point).
+
+**Status: not implemented.** This section exists so the decision space is captured before any code is written. If we go ahead, the implementation lands in `server/push/`, `client/pushSubscribe.ts`, and `client/sw.js`, with the trigger plumbed into the existing comment-PUT path.
 
 ### Excluded from v1
 
 - Reply threading beyond a flat list per anchor.
-- Resolve undo (resolutions are one-way until server sync exists to round-trip).
+- Resolve undo (resolutions are one-way until a delete-resolution endpoint is added).
 - Garbage-collecting accumulated `resolvedAt` / `deletedAt` tombstones (no server-side delete sweep yet — see the [tombstone-GC note above](#lifecycle-hide-vs-resolve)).
-- Draft persistence across reloads (drafts live in `this.drafts` in-memory, deliberately not in the CRDT).
 - Sub-region selection on graphics (drag-rectangle, SVG child clicks).
-- **Real-time refresh for the author viewer** — readers' new comments only appear on the next page load. A polling or SSE refresh is a follow-up; the [sync layer](#sync-clientcommentssyncts-clientcommentsaggregatorts) is already structured so a periodic re-aggregate slots in without touching the store.
+- **Server-push (SSE / websocket) instead of polling.** The current polling cadence is good enough at single-author scale; SSE would slot in by replacing `CommentPolling` without touching the stores.
 - **Server-side per-reply length validation.** The 32 KB blob cap + 8 KB per-PUT delta + 10/min rate limit are enforced in the Worker; per-reply 5000-char limits are client-side UX only. Strict server enforcement would require shipping Automerge into the Worker bundle (~700 KB) to parse the doc; the byte budgets above cover the same threat envelope at zero bundle cost.
 - Cross-document selections (selection must stay within one of: article body OR drawer).
-- Narrow-viewport UI for viewing existing threads.
+- **Sign-in flow on mobile** — the identity header (and its provider buttons) is hidden in popover mode. A reader who's never signed in has no obvious affordance to start that flow.
+- **Web Push notifications** to the author on new comments. Design captured in [Future direction: Web Push notifications](#future-direction-web-push-notifications); not built.
 
 ## Auth & login (`server/auth/`)
 
@@ -421,6 +537,8 @@ We picked email anyway, because:
 - **The author already knows their email.** Looking up your `sub` requires signing in once and reading `/auth/me`; pasting your email in a meta tag doesn't.
 
 The spam concern is mitigated by the build pipeline: the meta tag exists in **source** HTML (the author edits it there; the generator reads it there) but is **stripped from the served HTML** during the build process (crawlers hitting prod see no `author-email` tag). The server-side author lookup doesn't depend on the tag being in the served response — it reads the source HTML at build time (via `server/postMeta.generated.ts`) or dev startup (via `server/postMeta.dev.ts`), so dropping it from the response is purely cosmetic.
+
+**Client-side author detection** can't read the stripped tag in prod, so it instead reads the server-computed `isAuthor` boolean returned by `GET /post-version?post=X`. Every author-only client surface (the aggregator, the resolve-foreign-thread button, the version history panel) gates on this single signal. The post-version endpoint is fetched once at boot before any author-only decisions are made; failure to fetch defaults to non-author, matching the safe-degrade behavior elsewhere.
 
 The same strip step also removes other source-only tags from served HTML — see [Build-time HTML strip](#build-time-html-strip-generatestrip-served-htmlts).
 
@@ -502,6 +620,18 @@ The last step of `bun run build` rewrites every HTML file under `dist/` in place
 
 **Dev doesn't strip.** `bun --hot index.ts` serves the full source HTML on localhost. Stripping in dev would require a Bun HTML-loader plugin; not worth the friction for content that no scraper sees.
 
+### Analytics (Cloudflare Web Analytics)
+
+To know which posts are getting traffic, the build step also injects Cloudflare's **Web Analytics** beacon into every HTML file under `dist/`. Web Analytics is Cloudflare's cookieless, privacy-focused page-view counter — it's a single `<script defer>` tag that reports a beacon to `static.cloudflareinsights.com` on each page load; per-page view counts then show up in the Cloudflare dashboard under the bound domain.
+
+**Why Web Analytics, not Analytics Engine.** Analytics Engine is the lower-level Workers-side write-arbitrary-events product — useful if we ever want to log "comment posted" or "listened past chapter 3," but overkill for the immediate question "which post is getting the most views." Web Analytics answers that out of the box with no Worker code and no schema to maintain.
+
+**Configuration.** A single env var, `CF_ANALYTICS_TOKEN`, set in the build environment (Bun auto-loads `.env`). The token is public — it ends up in served HTML — so it's *configuration*, not a secret, and lives in `.env` next to non-sensitive build-time settings rather than in Cloudflare's secret store. If the var is unset (e.g., a contributor running `bun run build` locally), injection is skipped silently and the dist HTML is unchanged.
+
+**Injection mechanism.** Done inside the existing post-build step (`generate/strip-served-html.ts`) via `shared/injectAnalytics.ts`. We piggy-back on the HTML strip pass rather than walking dist/ a second time — same `HTMLRewriter` instance per file, one read + one write. The injector appends the beacon `<script>` at the end of `<head>` and refuses to add a duplicate if the beacon URL is already present (idempotent under re-runs of the build step).
+
+**Dev doesn't inject.** Same rationale as the strip step: localhost views aren't meaningful in the analytics dashboard, and skipping the network call to `cloudflareinsights.com` keeps dev tooling offline-friendly. If the dev/prod difference is ever a problem, the env var works on both — set `CF_ANALYTICS_TOKEN` in your local `.env` and the Bun server's dev HTML would need a Bun plugin to inject (see strip's "Dev doesn't strip" note).
+
 ### Secrets
 
 All OAuth client secrets and `SESSION_SECRET` live in Cloudflare's encrypted secret store (`wrangler secret put ...`), *not* in `wrangler.toml`. Names line up with the dev `.env`, so the route handlers read the same `process.env.*` / `env.*` regardless of runtime.
@@ -532,6 +662,10 @@ R2 access is gated by the Worker (the bucket itself is private). Every request g
 | List change hashes for a (post, user) | `GET /comments?post=X&user=Y` | session present AND (`session.userId === Y` OR session is the post's author) |
 | Fetch one change | `GET /comments?post=X&user=Y&change=Z` | same as above |
 | Upload one change | `PUT /comments?post=X&user=Y&change=Z` | session present AND `session.userId === Y` (and not in `BLOCKED_USERS`) |
+| List resolved threadIds for a post | `GET /resolutions?post=X` | session present (any logged-in user) |
+| Fetch one resolution body | `GET /resolutions?post=X&thread=T` | session present (any logged-in user) |
+| Write a resolution | `PUT /resolutions?post=X&thread=T` | session present AND session is the post's author |
+| Read post version + (author-only) history | `GET /post-version?post=X` | session present; `history` field only populated for the post's author |
 
 "Session is the post's author" means the session's verified email matches the post's `<meta name="author-email">` tag — see [Per-post author metadata](#per-post-author-metadata-serverpostmetats). Readers can read and overwrite only their own change-objects (needed for cross-device sync); the author of a post can read everyone's change-objects; nobody else sees anything. The author has no special PUT power — they only ever write to their own folder.
 
@@ -570,6 +704,7 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 - **EPUB 3 Media Overlays** ([spec][EPUB]): Media Overlays pair text fragments with audio clips via SMIL
 - **SMIL 3** ([spec][SMIL3]): the host language behind Media Overlays
 - **W3C Sync Media for Publications (Lite)** ([spec][SyncMedia]): HTML-first alternative to Media Overlays
+- **Media Session API** ([spec][MediaSession]): browser-native API for surfacing media metadata (title, artwork) on the OS lock screen / notification shade and handling system play/pause/skip controls (headphone clicks, hardware media keys, Bluetooth remotes). Would slot in around the existing Shikwasa player — set `navigator.mediaSession.metadata` once the manifest loads, register `setActionHandler('play' | 'pause' | 'seekto' | 'previoustrack' | 'nexttrack', ...)` to route system events into our existing controls, and update `setPositionState` from the same rAF tick that already drives the progress bar. Chapter skip lines up naturally with `previoustrack`/`nexttrack`. No build-time work — pure runtime additions to `client/narrator.ts`.
 
 ### Considered, not used
 
@@ -590,6 +725,7 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 [PLS]: https://www.w3.org/TR/pronunciation-lexicon/
 [SSML]: https://www.w3.org/TR/speech-synthesis11/
 [SSML-mark]: https://www.w3.org/TR/speech-synthesis11/#S3.3.2
+[MediaSession]: https://www.w3.org/TR/mediasession/
 
 <!-- For LLMs: local copies of the specs above.
 [EPUB]: ./specs/EPUB3-spec.html
@@ -602,5 +738,6 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 [PLS]: ./specs/PronunciationLexicon-spec.html
 [SSML]: ./specs/SSML-spec.html
 [SSML-mark]: ./specs/SSML-spec.html (section 3.3.2)
+[MediaSession]: ./specs/MediaSession-spec.html
 -->
 

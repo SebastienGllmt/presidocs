@@ -8,10 +8,14 @@ import {
   changeHashFromKey,
   changeKey,
   postPrefix,
+  resolutionKey,
+  resolutionPrefix,
+  threadIdFromResolutionKey,
   userPrefix,
   type ChangeListEntry,
   type CommentChangeStore,
   type PutChangeResult,
+  type ResolutionListEntry,
 } from "./store.ts";
 
 function safeResolve(rootDir: string, key: string): string {
@@ -78,6 +82,45 @@ export function fsAdapter(rootDir: string): CommentChangeStore {
         throw err;
       }
       return entries.filter((e) => e.isDirectory()).map((e) => e.name);
+    },
+
+    async getResolution(post, threadId) {
+      const path = safeResolve(rootDir, resolutionKey(post, threadId));
+      try {
+        const buf = await readFile(path);
+        return new Uint8Array(buf);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw err;
+      }
+    },
+
+    async putResolution(post, threadId, bytes): Promise<void> {
+      const path = safeResolve(rootDir, resolutionKey(post, threadId));
+      await mkdir(dirname(path), { recursive: true });
+      // Overwrite: last-write-wins. Resolutions are single-writer per
+      // post (the author); two author devices racing produce
+      // near-identical bytes anyway.
+      await writeFile(path, bytes);
+    },
+
+    async listResolutions(post): Promise<ResolutionListEntry[]> {
+      const dir = safeResolve(rootDir, resolutionPrefix(post));
+      let entries;
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+        throw err;
+      }
+      const out: ResolutionListEntry[] = [];
+      for (const ent of entries) {
+        if (!ent.isFile() || !ent.name.endsWith(".json")) continue;
+        const threadId = ent.name.slice(0, -".json".length);
+        const s = await stat(join(dir, ent.name));
+        out.push({ threadId, size: s.size, uploaded: s.mtime });
+      }
+      return out;
     },
   };
 }

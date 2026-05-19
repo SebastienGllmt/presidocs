@@ -42,7 +42,6 @@ import {
   loadIdentity,
   loginUrl,
   signOut,
-  isAuthorOfCurrentPost,
   type Identity,
 } from "./identity.ts";
 import { CommentSync } from "./commentsSync.ts";
@@ -50,6 +49,16 @@ import {
   aggregateOtherReaders,
   newAggregatorState,
 } from "./commentsAggregator.ts";
+import { CommentPolling } from "./commentsPolling.ts";
+import { ResolutionStore } from "./resolutionsStore.ts";
+import type { ResolutionEnvelope } from "./resolutionsApi.ts";
+import {
+  fetchPostVersion,
+  getLastSeenVersion,
+  setLastSeenVersion,
+  type PostVersionResponse,
+} from "./postVersion.ts";
+import { DraftsStorage } from "./draftsStorage.ts";
 
 type BlockInfo = {
   id: string;
@@ -73,6 +82,18 @@ const GRAPHIC_ROOT_TAGS = new Set(["FIGURE"]);
 // Cards stack with this much vertical space between them when collision-
 // avoidance pushes a later card past its preferred anchor-aligned top.
 const CARD_GAP_PX = 8;
+
+// Below this viewport width the column doesn't fit alongside the
+// article. We switch to a popover model: cards are rendered into the
+// column DOM as usual, but CSS hides them by default and only the
+// `data-mobile-active`-tagged card pops up as a fixed overlay.
+const MOBILE_BREAKPOINT_PX = 1099;
+
+// Persisted user toggle: when on, all highlights / graphic indicators
+// are visually suppressed and the popover model is disabled. Same
+// key on both desktop and mobile so a user who hides on mobile sees
+// the same view on desktop.
+const HIGHLIGHTS_HIDDEN_KEY = "blog-comments-highlights-hidden";
 
 function uid(): string {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -193,15 +214,90 @@ class CommentSystem {
   // store) and a server PUT (here). Null when not logged in.
   private sync: CommentSync | null = null;
 
+  // Per-foreign-user known-hash cache used by the aggregator. Hoisted
+  // to a class field (was a local in the original boot block) so the
+  // polling loop can reuse the same state across refreshes — without
+  // it every poll would re-GET every change-object for every reader
+  // instead of just the new ones.
+  private aggState = newAggregatorState();
+
+  // Visibility-gated periodic polling. Re-runs hydrate (own user) and
+  // the aggregator (author only) on a fixed interval while the tab is
+  // focused. Null when not logged in.
+  private polling: CommentPolling | null = null;
+
+  // Per-post resolutions doc — author-only writes, all-logged-in
+  // reads. Threads marked as resolved here are filtered out of the
+  // render alongside threads with their own resolvedAt timestamp.
+  // Hydrate-and-poll like the CommentStore. Null when not logged in.
+  private resolutions: ResolutionStore | null = null;
+
+  // Document-version state. The current SHA-256 of the post HTML
+  // and (for the author) the history of past hashes. Set once on
+  // boot; the "your comments may no longer apply" banner is rendered
+  // when the previously-stored last-seen hash differs from the
+  // server's currentHash.
+  private docVersion: PostVersionResponse | null = null;
+  private previousVersionHash: string | null = null;
+  private versionBannerEl: HTMLElement | null = null;
+  private versionHistoryEl: HTMLElement | null = null;
+
+  // Below the mobile breakpoint, cards render as fixed-position
+  // overlays (popovers) rather than as a stacked column. Tracked
+  // via a `MediaQueryList` listener so a window resize across the
+  // breakpoint flips the layout live.
+  private isMobile = false;
+  // Mobile-only: id of the thread/draft currently displayed as the
+  // popover. Null when nothing is open. Switches on highlight /
+  // graphic-indicator tap and on draft creation; cleared on
+  // tap-outside.
+  private activeCardId: string | null = null;
+  // Mobile-only: viewport-relative position chosen for the popover
+  // at the moment the user opened it. Re-applied after every render
+  // (a poll-driven `renderAll` rebuilds the card element and would
+  // otherwise drop the inline styles). Stays in viewport coordinates
+  // — the popover is `position: fixed` so it deliberately doesn't
+  // scroll with the anchor.
+  private activeMobilePosition: {
+    top?: string;
+    bottom?: string;
+    maxHeight: string;
+  } | null = null;
+  // Floating button (mobile-only) that toggles visibility of all
+  // highlights + indicators + popovers. State mirrored on
+  // `body.cmt-highlights-hidden`.
+  private hideAllFab: HTMLButtonElement | null = null;
+  private highlightsHidden = false;
+
+  // Desktop-only: id of the thread most recently focused via a
+  // highlight or graphic-indicator click. A second consecutive click
+  // on the same anchor toggles its card hidden. Reset on explicit
+  // Hide/Resolve/Cancel, on clicks that brought a hidden card back
+  // (so the user gets one tap to navigate before the next would
+  // re-hide), and on focusing a different anchor.
+  private lastFocusedThreadId: string | null = null;
+
   // Header in the column showing "Signed in as ..." or the login pane
   // when not authenticated. Rendered once at init, re-rendered on
   // identity change (currently only at boot).
   private identityHeader: HTMLElement | null = null;
-  // In-memory drafts — a freshly composed thread that the user hasn't
-  // submitted yet. Promoted to the store on first reply, removed on
-  // Cancel. Deliberately not in the CRDT: drafts shouldn't sync to a
-  // server (or to the user's other devices) until the user commits.
+  // Drafts — a freshly composed thread that the user hasn't submitted
+  // yet. Promoted to the store on first reply, removed on Cancel.
+  // Deliberately not in the CRDT: drafts shouldn't sync to a server
+  // (or to the user's other devices) until the user commits. They DO
+  // persist to localStorage so closing the tab doesn't lose work; see
+  // `draftsStorage` and `draftBodies` below for the per-textarea
+  // body-of-typing buffer that pairs with each draft thread.
   private drafts: Thread[] = [];
+  // In-progress textarea contents for each draft, keyed by thread id.
+  // Updated on every keystroke (via the `input` event) and persisted
+  // alongside `drafts`. Carries through reloads so the user sees their
+  // half-typed comment when they come back.
+  private draftBodies = new Map<string, string>();
+  // Persistence handle for `drafts` + `draftBodies`. Null until identity
+  // is loaded — the storage key embeds the userId so we can't construct
+  // it before login, matching how `CommentStore` is scoped.
+  private draftsStorage: DraftsStorage | null = null;
   // Thread ids whose card the user has temporarily hidden via "Cancel".
   // Session-only (deliberately not persisted) — a reload brings every
   // card back, so you can't accidentally lose track of comments by
@@ -259,8 +355,22 @@ class CommentSystem {
 
     this.mountColumn();
     this.mountActionBar();
+    this.mountHideAllFab();
     this.installGraphicTriggers();
     this.renderIdentityHeader();
+
+    // Track mobile mode via a MediaQueryList. The `change` event
+    // fires whenever the viewport crosses the breakpoint (resize,
+    // orientation change, devtools-toggle, …). On crossing we drop
+    // any active popover (it'd be visually nonsense in the column
+    // layout) and re-run layout.
+    const mql = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`);
+    this.isMobile = mql.matches;
+    mql.addEventListener("change", (e) => {
+      this.isMobile = e.matches;
+      if (!this.isMobile) this.setActiveCard(null);
+      this.repositionCards();
+    });
 
     if (this.identity) {
       // Spin up the CRDT-backed store. This is the only place we await
@@ -269,6 +379,17 @@ class CommentSystem {
       // methods.
       const postPath = window.location.pathname;
       this.store = await CommentStore.create(postPath, this.identity.userId);
+
+      // Drafts persist to localStorage under a (post, user) key so a
+      // half-typed comment survives reloads. Loaded synchronously since
+      // localStorage reads are cheap; the in-memory Thread + body
+      // structures are restored before the first render so the cards
+      // appear immediately rather than popping in after.
+      this.draftsStorage = new DraftsStorage(postPath, this.identity.userId);
+      for (const entry of this.draftsStorage.load()) {
+        this.drafts.push(entry.thread);
+        if (entry.body) this.draftBodies.set(entry.thread.id, entry.body);
+      }
 
       // Wire up the network sync. `onChange` is set BEFORE `hydrate`
       // so a user write that lands during the initial GET also queues
@@ -290,26 +411,50 @@ class CommentSystem {
         console.warn("comment hydrate failed:", err);
       }
 
+      // Document version + server-authoritative author flag. Fetched
+      // here (before the aggregator decision) because `docVersion.
+      // isAuthor` is what every author-only branch downstream gates
+      // on. Failures degrade gracefully — `isAuthorMode()` defaults
+      // to false, suppressing aggregator + author-resolve + history.
+      await this.initDocVersion(postPath);
+
       // Author-only: also pull every other reader's blob and merge into
       // the read-only composite so the snapshot includes everyone. Done
       // after hydrate so the first render still shows the author's own
-      // comments even if a slow reader fan-out is in flight. Background-
-      // refresh-on-poll is a v2 follow-up. Authorship is per-post —
-      // derived by comparing the session email to the page's
-      // `<meta name="author-email">` tag (`isAuthorOfCurrentPost`).
-      if (isAuthorOfCurrentPost(this.identity)) {
-        const aggState = newAggregatorState();
+      // comments even if a slow reader fan-out is in flight.
+      if (this.isAuthorMode()) {
         aggregateOtherReaders(
           this.store,
           postPath,
           this.identity.userId,
-          aggState,
+          this.aggState,
         )
           .then(() => this.refreshSnapshotAndRender())
           .catch((err) => console.warn("aggregate failed:", err));
       }
 
+      // Resolutions store: parallel to CommentStore but per-post
+      // (not per-user). Hydrate before the first render so any
+      // already-resolved threads stay hidden on boot rather than
+      // flickering in and then out on the first poll. Re-renders
+      // are wired through the same path as comment mutations.
+      this.resolutions = new ResolutionStore(postPath);
+      this.resolutions.onChange = () => this.refreshSnapshotAndRender();
+      try {
+        await this.resolutions.hydrate();
+      } catch (err) {
+        console.warn("resolutions hydrate failed:", err);
+      }
+
       this.snapshot = this.store.snapshot();
+
+      // Start the polling loop. Each tick re-runs the same hydrate +
+      // aggregate (if author) the boot path just ran, so foreign
+      // writes that landed while we were idle appear without a
+      // reload. The poll callback is the only thing that re-renders
+      // post-boot; the store's onChange wiring still handles
+      // local-mutation re-renders synchronously.
+      this.polling = new CommentPolling(() => this.pollOnce(postPath));
     }
 
     this.renderAll();
@@ -366,6 +511,322 @@ class CommentSystem {
       gCounter++;
     }
     this.blocksByContext.set(context, blocks);
+  }
+
+  // ===== Document version =====
+
+  // Server-authoritative "is the current user the post's author?"
+  // signal. Sourced from the /post-version response so the answer
+  // works in prod (where the source-only <meta name="author-email">
+  // tag is stripped from served HTML and a DOM-based check would
+  // return false). False until docVersion has been fetched; if the
+  // fetch fails we stay non-author, which is the safe default.
+  private isAuthorMode(): boolean {
+    return this.docVersion?.isAuthor ?? false;
+  }
+
+  // One-shot at boot: fetch the post's current hash + (author-only)
+  // history, compare to the last hash this user saw, and mount the
+  // banner / history UI accordingly. Failures degrade gracefully —
+  // a missing endpoint or rejected response just means no banner.
+  private async initDocVersion(postPath: string) {
+    const version = await fetchPostVersion(postPath);
+    if (!version) return;
+    this.docVersion = version;
+
+    const lastSeen = getLastSeenVersion(postPath);
+    // Banner only when the user has been here before AND the hash
+    // changed. First-ever visits don't show the banner (there's
+    // nothing to compare against).
+    if (lastSeen && lastSeen !== version.currentHash) {
+      this.previousVersionHash = lastSeen;
+    }
+    // Bump last-seen immediately — the banner gets one render-cycle
+    // of visibility, the user notices, and on next reload it's gone.
+    // Persisting on dismiss-only would risk users missing the
+    // banner if they re-open the page in two tabs.
+    setLastSeenVersion(postPath, version.currentHash);
+
+    this.renderVersionUI();
+  }
+
+  // (Re-)mount the banner + history elements. Idempotent — wipes
+  // and replaces. Cards live in the same column but in absolute
+  // positioning, so the inserted-after-header pattern doesn't
+  // disturb their layout (we account for the inserted heights in
+  // `repositionCards`).
+  private renderVersionUI() {
+    if (!this.column) return;
+    this.versionBannerEl?.remove();
+    this.versionBannerEl = null;
+    this.versionHistoryEl?.remove();
+    this.versionHistoryEl = null;
+
+    let insertAfter: Element | null = this.identityHeader;
+
+    if (this.previousVersionHash && this.docVersion) {
+      const banner = document.createElement("div");
+      banner.className = "cmt-version-banner";
+      banner.setAttribute("role", "status");
+
+      const text = document.createElement("p");
+      text.className = "cmt-version-banner-text";
+      text.textContent =
+        "The post has been updated since your last visit. " +
+        "Some comments may no longer apply.";
+      banner.appendChild(text);
+
+      const dismiss = document.createElement("button");
+      dismiss.type = "button";
+      dismiss.className = "cmt-version-banner-dismiss";
+      dismiss.setAttribute("aria-label", "Dismiss");
+      dismiss.textContent = "×";
+      dismiss.addEventListener("click", (e) => {
+        e.stopPropagation();
+        banner.remove();
+        this.versionBannerEl = null;
+        this.repositionCards();
+      });
+      banner.appendChild(dismiss);
+
+      insertAfter!.after(banner);
+      insertAfter = banner;
+      this.versionBannerEl = banner;
+    }
+
+    if (this.docVersion?.history && this.docVersion.history.length > 0) {
+      const details = document.createElement("details");
+      details.className = "cmt-version-history";
+
+      const summary = document.createElement("summary");
+      summary.className = "cmt-version-history-summary";
+      const count = this.docVersion.history.length;
+      summary.textContent = `Document versions (${count})`;
+      details.appendChild(summary);
+
+      const list = document.createElement("ol");
+      list.className = "cmt-version-history-list";
+      for (const entry of this.docVersion.history) {
+        const li = document.createElement("li");
+        li.className = "cmt-version-history-item";
+        const time = document.createElement("time");
+        time.dateTime = entry.builtAt;
+        time.textContent = new Date(entry.builtAt).toLocaleString();
+        const hash = document.createElement("code");
+        hash.className = "cmt-version-history-hash";
+        hash.textContent = entry.hash.slice(0, 8);
+        hash.title = entry.hash;
+        const isCurrent = entry.hash === this.docVersion.currentHash;
+        if (isCurrent) li.classList.add("cmt-version-history-current");
+        li.appendChild(time);
+        li.appendChild(document.createTextNode(" "));
+        li.appendChild(hash);
+        if (isCurrent) {
+          const tag = document.createElement("span");
+          tag.className = "cmt-version-history-tag";
+          tag.textContent = "current";
+          li.appendChild(document.createTextNode(" "));
+          li.appendChild(tag);
+        }
+        list.appendChild(li);
+      }
+      details.appendChild(list);
+
+      insertAfter!.after(details);
+      this.versionHistoryEl = details;
+    }
+
+    this.repositionCards();
+  }
+
+  // ===== Mobile popover + hide-all FAB =====
+
+  // Set/clear the "currently visible popover" on mobile. A no-op on
+  // desktop — the column layout shows every non-hidden card anyway.
+  // Also unhides the card if the user had previously dismissed it
+  // via "Hide", since on mobile there's no other way to bring it
+  // back than tapping the highlight.
+  private setActiveCard(threadId: string | null): void {
+    if (this.activeCardId) {
+      const prev = this.cardEls.get(this.activeCardId);
+      if (prev) {
+        prev.removeAttribute("data-mobile-active");
+        this.clearMobileCardPosition(prev);
+      }
+    }
+    this.activeCardId = threadId;
+    this.activeMobilePosition = null;
+    if (!threadId) return;
+    if (this.hiddenCardIds.has(threadId)) {
+      this.hiddenCardIds.delete(threadId);
+      // Card was skipped on the previous render; rebuild so it
+      // actually exists in `cardEls` before we tag it active.
+      this.renderAll();
+    }
+    const card = this.cardEls.get(threadId);
+    if (!card) return;
+    card.setAttribute("data-mobile-active", "true");
+    // Compute the popover's placement against the tapped anchor's
+    // current rect. Done before focus() because focusing a textarea
+    // on iOS pops the soft keyboard, which shrinks the visual
+    // viewport and would otherwise corrupt the rect math.
+    this.activeMobilePosition = this.computeMobilePopoverPosition(threadId);
+    this.applyMobileCardPosition(card);
+    // Auto-focus the textarea so the user can start typing
+    // immediately — matches the desktop draft-focus behavior.
+    const ta = card.querySelector<HTMLTextAreaElement>(".cmt-reply-input");
+    ta?.focus();
+  }
+
+  // Clear any inline positioning we wrote on a card. Called when a
+  // card is dropped from active — leaving stale inline `top` etc.
+  // around would conflict with the next render (and with the
+  // desktop-column layout if the user resizes the viewport).
+  private clearMobileCardPosition(card: HTMLElement): void {
+    card.style.top = "";
+    card.style.bottom = "";
+    card.style.maxHeight = "";
+  }
+
+  // Apply `activeMobilePosition` to the given card. Always sets BOTH
+  // top and bottom so a stale value from a different render mode
+  // (e.g. an inline `top` left over from desktop `repositionCards`)
+  // is overwritten, not partially shadowed by CSS.
+  private applyMobileCardPosition(card: HTMLElement): void {
+    const pos = this.activeMobilePosition;
+    if (!pos) {
+      // Fallback to the CSS default (bottom-sheet at bottom: 80px).
+      this.clearMobileCardPosition(card);
+      return;
+    }
+    if (pos.top !== undefined) {
+      card.style.top = pos.top;
+      card.style.bottom = "auto";
+    } else if (pos.bottom !== undefined) {
+      card.style.bottom = pos.bottom;
+      card.style.top = "auto";
+    }
+    card.style.maxHeight = pos.maxHeight;
+  }
+
+  // Decide where to anchor the popover relative to the tapped
+  // element. Prefer placing it *below* the anchor (matches Google
+  // Docs / native iOS contextual popovers); flip to above if there's
+  // more usable room there. Both placements respect the bottom-end
+  // dock area (so the popover doesn't get hidden behind the player)
+  // and the viewport's top margin. Returns null if we can't resolve
+  // an anchor element — caller falls back to the CSS default.
+  private computeMobilePopoverPosition(threadId: string): {
+    top?: string;
+    bottom?: string;
+    maxHeight: string;
+  } | null {
+    const thread = this.snapshot.find((t) => t.id === threadId)
+      ?? this.drafts.find((t) => t.id === threadId);
+    if (!thread) return null;
+
+    let anchorEl: HTMLElement | null = null;
+    if (thread.anchor.kind === "text") {
+      anchorEl = document.querySelector<HTMLElement>(
+        `.cmt-highlight[data-thread-id="${CSS.escape(threadId)}"]`,
+      );
+      if (!anchorEl) {
+        const firstSeg = thread.anchor.segments[0];
+        if (firstSeg) {
+          anchorEl = this.blocksById.get(firstSeg.id)?.element ?? null;
+        }
+      }
+    } else {
+      anchorEl = this.graphicsById.get(thread.anchor.id) ?? null;
+    }
+    if (!anchorEl) return null;
+
+    const rect = anchorEl.getBoundingClientRect();
+    const viewportH = window.innerHeight;
+    const GAP = 8;
+    const TOP_MARGIN = 16;
+    // Reserve room at the bottom for the narrator's "Listen" pill
+    // plus player dock area. The dock's measured height is published
+    // by narrator.ts as `--narrate-dock-height`; we read it back
+    // here so the reservation tracks the actual dock size.
+    const dockHeightStr = getComputedStyle(document.documentElement)
+      .getPropertyValue("--narrate-dock-height").trim();
+    const dockHeight = dockHeightStr ? parseFloat(dockHeightStr) : 0;
+    const BOTTOM_RESERVE = (Number.isFinite(dockHeight) ? dockHeight : 0) + 24;
+    const MIN_HEIGHT = 140;
+
+    const spaceBelow = viewportH - BOTTOM_RESERVE - rect.bottom - GAP;
+    const spaceAbove = rect.top - TOP_MARGIN - GAP;
+
+    // Prefer below — it's where the eye expects a contextual menu —
+    // unless there's clearly more room above.
+    const placeBelow =
+      spaceBelow >= MIN_HEIGHT || spaceBelow >= spaceAbove;
+
+    if (placeBelow) {
+      return {
+        top: `${Math.round(Math.max(TOP_MARGIN, rect.bottom + GAP))}px`,
+        maxHeight: `${Math.max(MIN_HEIGHT, spaceBelow)}px`,
+      };
+    }
+    return {
+      bottom: `${Math.round(Math.max(BOTTOM_RESERVE, viewportH - rect.top + GAP))}px`,
+      maxHeight: `${Math.max(MIN_HEIGHT, spaceAbove)}px`,
+    };
+  }
+
+  private mountHideAllFab(): void {
+    this.highlightsHidden = false;
+    try {
+      this.highlightsHidden = localStorage.getItem(HIGHLIGHTS_HIDDEN_KEY) === "1";
+    } catch {
+      // localStorage blocked — fall back to default-visible.
+    }
+
+    const fab = document.createElement("button");
+    fab.type = "button";
+    fab.className = "cmt-hide-all-fab";
+    fab.setAttribute("aria-label", "Toggle comment highlights");
+    fab.innerHTML =
+      '<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">' +
+      '<path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H8l-4 4V6a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
+    fab.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.setHighlightsHidden(!this.highlightsHidden);
+    });
+    document.body.appendChild(fab);
+    this.hideAllFab = fab;
+    this.applyHighlightsHidden();
+  }
+
+  private setHighlightsHidden(hidden: boolean): void {
+    this.highlightsHidden = hidden;
+    try {
+      localStorage.setItem(HIGHLIGHTS_HIDDEN_KEY, hidden ? "1" : "0");
+    } catch {
+      // Persistence is best-effort — the in-memory state still
+      // works for the rest of this session.
+    }
+    this.applyHighlightsHidden();
+    // Dismiss any popover when hiding — otherwise the overlay
+    // remains on top of the dimmed article, which looks broken.
+    if (hidden && this.activeCardId) this.setActiveCard(null);
+  }
+
+  private applyHighlightsHidden(): void {
+    document.body.classList.toggle(
+      "cmt-highlights-hidden",
+      this.highlightsHidden,
+    );
+    if (this.hideAllFab) {
+      this.hideAllFab.setAttribute(
+        "aria-pressed",
+        String(this.highlightsHidden),
+      );
+      this.hideAllFab.title = this.highlightsHidden
+        ? "Show comment highlights"
+        : "Hide comment highlights";
+    }
   }
 
   // ===== Column =====
@@ -454,6 +915,16 @@ class CommentSystem {
     return wrap;
   }
 
+  // Combined resolved check: either the thread carries its own
+  // resolvedAt (self-resolve via CommentStore) OR the per-post
+  // resolutions store has an entry (author-resolve). Author wins
+  // any tie at the display layer; both states equivalently hide.
+  private threadIsResolved(thread: Thread): boolean {
+    if (isResolved(thread)) return true;
+    if (this.resolutions?.isResolved(thread.id)) return true;
+    return false;
+  }
+
   // Master render: redraws cards, highlights, and indicators from scratch.
   // Cheap enough at our scale (a handful of threads per post) that we
   // don't bother diffing.
@@ -466,7 +937,7 @@ class CommentSystem {
       this.unwrap(s),
     );
     for (const thread of this.snapshot) {
-      if (isResolved(thread)) continue;
+      if (this.threadIsResolved(thread)) continue;
       if (thread.anchor.kind === "text" && !this.threadIsStale(thread)) {
         this.highlightTextThread(thread);
       }
@@ -486,13 +957,43 @@ class CommentSystem {
     this.cardEls.clear();
     const all: Thread[] = [...this.snapshot, ...this.drafts];
     for (const thread of all) {
-      if (isResolved(thread)) continue;
+      if (this.threadIsResolved(thread)) continue;
       const isStale = thread.anchor.kind === "text"
         && this.threadIsStale(thread);
       if (this.hiddenCardIds.has(thread.id) && !isStale) continue;
       const card = this.buildCard(thread);
       this.column.appendChild(card);
       this.cardEls.set(thread.id, card);
+    }
+
+    // Re-apply the mobile "active popover" marker — `cardEls` was
+    // just cleared, so the new card for `activeCardId` (if any)
+    // needs the attribute again, and the inline positioning we
+    // computed at tap time has to be restored (otherwise a
+    // poll-driven re-render would snap the popover back to the CSS
+    // default bottom-sheet position). If the active thread
+    // vanished (e.g. resolved by the author between renders), drop
+    // the state.
+    if (this.activeCardId) {
+      const card = this.cardEls.get(this.activeCardId);
+      if (card) {
+        card.setAttribute("data-mobile-active", "true");
+        this.applyMobileCardPosition(card);
+      } else {
+        this.activeCardId = null;
+        this.activeMobilePosition = null;
+      }
+    }
+
+    // If the last-focused thread is no longer rendered (e.g. it was
+    // resolved or hidden out from under us), drop the marker — a
+    // future highlight click should be treated as a fresh navigate,
+    // not as a phantom toggle.
+    if (
+      this.lastFocusedThreadId
+      && !this.cardEls.has(this.lastFocusedThreadId)
+    ) {
+      this.lastFocusedThreadId = null;
     }
 
     this.updateGraphicIndicators();
@@ -619,6 +1120,21 @@ class CommentSystem {
     ta.className = "cmt-reply-input";
     ta.rows = isDraft ? 3 : 2;
     ta.placeholder = isDraft ? "Comment…" : "Reply…";
+    // Restore any persisted in-progress body for this draft so a reload
+    // (or a re-render from a poll tick) doesn't blank what the user was
+    // typing. Saved threads always start with an empty reply field —
+    // bodies are only persisted for unsubmitted drafts.
+    if (isDraft) {
+      const saved = this.draftBodies.get(thread.id);
+      if (saved) ta.value = saved;
+      // Persist every keystroke. The localStorage write is cheap and
+      // synchronous; debouncing would only matter at thousand-keystroke
+      // scales which we won't hit on a comment composer.
+      ta.addEventListener("input", () => {
+        this.draftBodies.set(thread.id, ta.value);
+        this.persistDrafts();
+      });
+    }
     // Stop card-click bubbling from inside the textarea (would re-trigger
     // anchor scrolling on every click while typing).
     ta.addEventListener("click", (e) => e.stopPropagation());
@@ -644,6 +1160,8 @@ class CommentSystem {
         e.stopPropagation();
         if (isDraft) {
           this.drafts = this.drafts.filter((t) => t.id !== thread.id);
+          this.draftBodies.delete(thread.id);
+          this.persistDrafts();
           this.renderAll();
         } else {
           this.hiddenCardIds.add(thread.id);
@@ -654,24 +1172,53 @@ class CommentSystem {
     }
 
     // Resolve — decisive, permanent dismiss. Available on every saved
-    // thread (including stale, where it's often *the* right action). Not
-    // shown on drafts: there's nothing to resolve yet, and Cancel already
-    // covers "throw this away."
-    if (!isDraft) {
+    // thread (including stale, where it's often *the* right action).
+    // Routing splits into two paths:
+    //   - Own thread (we're the original commenter): write the
+    //     resolution into our CommentDoc (`store.resolveThread`).
+    //   - Foreign thread (we're the post author resolving a reader's
+    //     comment): write a per-post resolution entry — only the
+    //     author can do this, and only the post author's session is
+    //     authorized server-side. Visible to both the author and the
+    //     original commenter on next poll.
+    // Hidden entirely for non-author readers on foreign threads
+    // because they can't see foreign threads in the first place; the
+    // condition still guards against unauthorized clicks just in
+    // case.
+    const ownThread = !isDraft && this.store?.ownsThread(thread.id);
+    const canAuthorResolve =
+      !isDraft && !ownThread && !!this.identity && this.isAuthorMode();
+    if (!isDraft && (ownThread || canAuthorResolve)) {
       const resolve = document.createElement("button");
       resolve.type = "button";
       resolve.className = "cmt-reply-resolve";
       resolve.textContent = "Resolve";
-      resolve.title =
-        "Resolve this thread — hides it permanently and queues a delete to sync to the server";
+      resolve.title = ownThread
+        ? "Resolve this thread — hides it permanently and queues a delete to sync to the server"
+        : "Resolve this commenter's thread — marks it resolved for them too";
       resolve.addEventListener("click", (e) => {
         e.stopPropagation();
         if (!this.store) return;
         // Also drop any session-only "hide" mark so the thread isn't
         // stuck in the hidden set forever after being resolved.
         this.hiddenCardIds.delete(thread.id);
-        this.store.resolveThread(thread.id, Date.now());
-        this.refreshSnapshotAndRender();
+        if (ownThread) {
+          this.store.resolveThread(thread.id, Date.now());
+          this.refreshSnapshotAndRender();
+        } else if (this.resolutions && this.identity) {
+          const envelope: ResolutionEnvelope = {
+            threadId: thread.id,
+            resolvedAt: Date.now(),
+            resolverId: this.identity.userId,
+            resolverName: this.identity.name ?? this.identity.email,
+          };
+          // Fire-and-forget; the store's onChange hook re-renders
+          // when the local cache updates (after the PUT lands).
+          // Errors are logged inside the store.
+          this.resolutions
+            .resolve(envelope)
+            .catch((err) => console.warn("author resolve failed:", err));
+        }
       });
       row.appendChild(resolve);
     }
@@ -701,6 +1248,8 @@ class CommentSystem {
         this.store.addThread(thread.id, thread.anchor, thread.createdAt);
         this.store.addReply(thread.id, reply);
         this.drafts = this.drafts.filter((t) => t.id !== thread.id);
+        this.draftBodies.delete(thread.id);
+        this.persistDrafts();
       } else {
         this.store.addReply(thread.id, reply);
       }
@@ -739,6 +1288,41 @@ class CommentSystem {
     this.refreshSnapshotAndRender();
   }
 
+  // One polling tick: pull any changes the server has accumulated
+  // since last time and re-render if anything moved. The polling
+  // controller calls this; the per-store hydrate + aggregate calls
+  // are both idempotent set-diffs, so a no-op tick is cheap (1 LIST
+  // per relevant user, no GETs, no DOM work beyond the snapshot
+  // comparison).
+  private async pollOnce(postPath: string): Promise<void> {
+    if (!this.store || !this.sync || !this.identity) return;
+    try {
+      await this.sync.hydrate();
+    } catch (err) {
+      console.warn("poll: own hydrate failed:", err);
+    }
+    if (this.isAuthorMode()) {
+      try {
+        await aggregateOtherReaders(
+          this.store,
+          postPath,
+          this.identity.userId,
+          this.aggState,
+        );
+      } catch (err) {
+        console.warn("poll: aggregate failed:", err);
+      }
+    }
+    if (this.resolutions) {
+      try {
+        await this.resolutions.hydrate();
+      } catch (err) {
+        console.warn("poll: resolutions hydrate failed:", err);
+      }
+    }
+    this.refreshSnapshotAndRender();
+  }
+
   // Re-pull the JSON snapshot from the store and re-render. Called after
   // every mutation so the UI always reflects current doc state.
   private refreshSnapshotAndRender() {
@@ -753,6 +1337,10 @@ class CommentSystem {
   // we stack them at the page bottom.
   private repositionCards() {
     if (!this.column) return;
+    // Mobile uses fixed-overlay positioning driven entirely by CSS;
+    // the column's normal stacked layout doesn't apply and a JS
+    // `top` write would just be overridden.
+    if (this.isMobile) return;
 
     const items: Array<{
       card: HTMLElement;
@@ -769,12 +1357,16 @@ class CommentSystem {
     }
     items.sort((a, b) => a.target - b.target);
 
-    // The identity header sits at the top of the column in normal flow,
-    // but cards are absolutely positioned and would otherwise stack
-    // starting at column-top = 0. Start `prevBottom` past the header so
-    // the first card lands below it instead of behind it.
-    const headerHeight = this.identityHeader?.offsetHeight ?? 0;
-    let prevBottom = headerHeight > 0 ? headerHeight - CARD_GAP_PX : 0;
+    // The identity header (and any version banner / history details
+    // inserted between it and the cards) sits at the top of the
+    // column in normal flow, but cards are absolutely positioned and
+    // would otherwise stack starting at column-top = 0. Sum every
+    // non-card child so the first card lands below them.
+    const topReserved =
+      (this.identityHeader?.offsetHeight ?? 0) +
+      (this.versionBannerEl?.offsetHeight ?? 0) +
+      (this.versionHistoryEl?.offsetHeight ?? 0);
+    let prevBottom = topReserved > 0 ? topReserved - CARD_GAP_PX : 0;
     for (const { card, target } of items) {
       const top = Math.max(target, prevBottom + CARD_GAP_PX);
       card.style.top = `${top}px`;
@@ -933,6 +1525,19 @@ class CommentSystem {
 
   // ===== Compose new drafts =====
 
+  // Serialize the current drafts + per-draft textarea bodies to
+  // localStorage. Called after any mutation that adds, removes, or
+  // edits a draft. The bodies map is filtered through the current
+  // `drafts` array so a stray entry for a removed thread can't leak.
+  private persistDrafts(): void {
+    if (!this.draftsStorage) return;
+    const entries = this.drafts.map((thread) => ({
+      thread,
+      body: this.draftBodies.get(thread.id) ?? "",
+    }));
+    this.draftsStorage.save(entries);
+  }
+
   // Triggered by the "Comment" action-bar button after a text selection.
   // Captures the selection into a TextAnchor, creates an empty draft, and
   // adds a card for it in the column (auto-focused for typing).
@@ -988,9 +1593,10 @@ class CommentSystem {
       createdAt: Date.now(),
     };
     this.drafts.push(draft);
+    this.persistDrafts();
     this.hideActionBar();
     this.renderAll();
-    this.focusDraft(draft.id);
+    this.surfaceDraft(draft.id);
   }
 
   // Triggered by clicking the "+" comment button on a figure.
@@ -1006,11 +1612,19 @@ class CommentSystem {
       createdAt: Date.now(),
     };
     this.drafts.push(draft);
+    this.persistDrafts();
     this.renderAll();
-    this.focusDraft(draft.id);
+    this.surfaceDraft(draft.id);
   }
 
-  private focusDraft(threadId: string) {
+  // After creating a draft, get it in front of the user. On desktop
+  // that means scrolling its column card into view; on mobile it
+  // means promoting it to the active popover.
+  private surfaceDraft(threadId: string) {
+    if (this.isMobile) {
+      this.setActiveCard(threadId);
+      return;
+    }
     const card = this.cardEls.get(threadId);
     if (!card) return;
     card.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1145,7 +1759,7 @@ class CommentSystem {
         const gid = el.dataset.commentGraphicId;
         if (!gid) return;
         const matching = this.snapshot.filter(
-          (t) => !isResolved(t)
+          (t) => !this.threadIsResolved(t)
             && t.anchor.kind === "graphic"
             && t.anchor.id === gid,
         );
@@ -1158,7 +1772,30 @@ class CommentSystem {
         }
         if (didUnhide) this.renderAll();
         const first = matching[0];
-        if (first) this.scrollCardIntoView(first.id);
+        if (!first) return;
+        if (this.isMobile) {
+          // Same toggle behavior as the text-highlight tap: a second
+          // tap on the same indicator closes the popover.
+          if (this.activeCardId === first.id) {
+            this.setActiveCard(null);
+          } else {
+            this.setActiveCard(first.id);
+          }
+        } else {
+          // Desktop toggle (mirrors the highlight-click path):
+          // navigate on first click, hide on the second.
+          if (didUnhide) {
+            this.scrollCardIntoView(first.id);
+            this.lastFocusedThreadId = first.id;
+          } else if (this.lastFocusedThreadId === first.id) {
+            this.hiddenCardIds.add(first.id);
+            this.lastFocusedThreadId = null;
+            this.renderAll();
+          } else {
+            this.scrollCardIntoView(first.id);
+            this.lastFocusedThreadId = first.id;
+          }
+        }
       });
 
       const cs = getComputedStyle(el);
@@ -1173,7 +1810,7 @@ class CommentSystem {
   private updateGraphicIndicators() {
     for (const [gid, el] of this.graphicsById) {
       const count = this.snapshot.filter(
-        (t) => !isResolved(t)
+        (t) => !this.threadIsResolved(t)
           && t.anchor.kind === "graphic"
           && t.anchor.id === gid,
       ).length;
@@ -1194,6 +1831,24 @@ class CommentSystem {
   private onAnyClick(e: MouseEvent) {
     const target = e.target as HTMLElement | null;
     if (!target) return;
+
+    // On mobile, a tap outside any card / highlight / control closes
+    // the active popover. Check this BEFORE the highlight handling
+    // so a tap on the highlight itself opens the popover (handled
+    // below) rather than closing it.
+    if (this.isMobile && this.activeCardId) {
+      const insideCard = target.closest(".cmt-card");
+      const onHighlight = target.closest(".cmt-highlight");
+      const onGraphic = target.closest(
+        ".cmt-graphic-btn, .cmt-graphic-indicator",
+      );
+      const onActionBar = target.closest(".cmt-action-bar");
+      const onFab = target.closest(".cmt-hide-all-fab");
+      if (!insideCard && !onHighlight && !onGraphic && !onActionBar && !onFab) {
+        this.setActiveCard(null);
+      }
+    }
+
     // Click on a highlight → unhide its card (if hidden) and scroll to
     // it. When highlights are *nested* (multiple threads on the same
     // selection), we walk all enclosing `.cmt-highlight` ancestors and
@@ -1217,10 +1872,39 @@ class CommentSystem {
       }
     }
     if (didUnhide) this.renderAll();
-    // Innermost (= the actual clicked span) scrolls to keep the focal
-    // card most prominent.
+    // Innermost (= the actual clicked span) is the one to surface.
     const innermost = ids[0];
-    if (innermost) this.scrollCardIntoView(innermost);
+    if (!innermost) return;
+    if (this.isMobile) {
+      // Popover model — tapping the active anchor's highlight again
+      // toggles the popover closed. Without this, the only way to
+      // dismiss it is tap-outside, which is fiddly on a phone (the
+      // popover covers a sizeable strip of the screen). Tapping a
+      // *different* highlight still switches the popover.
+      if (this.activeCardId === innermost) {
+        this.setActiveCard(null);
+      } else {
+        this.setActiveCard(innermost);
+      }
+    } else {
+      // Column model: navigate-then-hide pattern.
+      // - If the click just brought a hidden card back, scroll to it
+      //   (no toggle — the user obviously wants to see it).
+      // - Otherwise, if this is a second consecutive click on the
+      //   same anchor, hide its card.
+      // - Otherwise, scroll + mark as focused.
+      if (didUnhide) {
+        this.scrollCardIntoView(innermost);
+        this.lastFocusedThreadId = innermost;
+      } else if (this.lastFocusedThreadId === innermost) {
+        this.hiddenCardIds.add(innermost);
+        this.lastFocusedThreadId = null;
+        this.renderAll();
+      } else {
+        this.scrollCardIntoView(innermost);
+        this.lastFocusedThreadId = innermost;
+      }
+    }
   }
 }
 

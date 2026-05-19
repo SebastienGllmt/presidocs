@@ -161,6 +161,21 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 
 .narrate-toggle svg { color: var(--accent); }
 
+/* On narrow viewports the dock spans almost the full width
+   (`width: min(720px, calc(100% - 24px))`) and its right edge crosses
+   the toggle's bottom-right anchor point. When the toggle is
+   expanded, lift it above the dock by exactly the dock's measured
+   height plus a small gap; `--narrate-dock-height` is written by
+   narrator.ts via a ResizeObserver, so the offset stays in sync as
+   chapter pills wrap or the player resizes. The breakpoint is wider
+   than the mobile one for narrator's own styles because the overlap
+   geometry kicks in well before "phone" widths. */
+@media (max-width: 1000px) {
+  .narrate-toggle[aria-expanded="true"] {
+    bottom: calc(var(--narrate-dock-height, 140px) + 26px);
+  }
+}
+
 /* --- Chapter pill strip ----------------------------------------------------- */
 
 .chapter-strip {

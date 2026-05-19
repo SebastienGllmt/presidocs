@@ -150,6 +150,16 @@ class Narrator {
   // corner that toggles the dock's visibility. Clicking it when the dock is
   // open slides the dock off-screen; clicking it when the dock is hidden
   // brings the dock back. Audio keeps playing in either case.
+  //
+  // On narrow viewports (< ~1000px) the dock occupies almost the full
+  // width at the bottom, so a bottom-anchored Listen pill on the right
+  // would sit on top of the dock's right edge. We sidestep that by
+  // tracking the dock's measured height in a CSS custom property
+  // (`--narrate-dock-height`); the stylesheet uses it under a media
+  // query to lift the toggle above the dock whenever it's expanded.
+  // ResizeObserver keeps the variable in sync as the player or chapter
+  // strip changes height (e.g. on orientation change or when a wrapping
+  // chapter row materializes).
   private setupVisibilityToggle() {
     const dock = this.playerContainer.closest(".narrate-dock") as HTMLElement | null;
     if (!dock) return;
@@ -169,6 +179,26 @@ class Narrator {
     });
     dock.parentNode?.insertBefore(btn, dock.nextSibling);
     this.toggleBtn = btn;
+
+    // Mirror the dock's measured height into a CSS variable on the
+    // document root. We read it from CSS (see narrator.css) only when
+    // the toggle is expanded on a narrow viewport, but it's cheap to
+    // maintain unconditionally.
+    const writeDockHeight = (h: number) => {
+      document.documentElement.style.setProperty(
+        "--narrate-dock-height",
+        `${Math.round(h)}px`,
+      );
+    };
+    writeDockHeight(dock.offsetHeight);
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver((entries) => {
+        const entry = entries[0];
+        if (!entry) return;
+        writeDockHeight(entry.contentRect.height);
+      });
+      ro.observe(dock);
+    }
   }
 
   private setDockHidden(hidden: boolean) {

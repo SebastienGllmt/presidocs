@@ -60,7 +60,40 @@ export interface CommentChangeStore {
   // Lists all userIds that have *any* change under this post.
   // Author-only at the route layer; the store doesn't enforce auth.
   listUsers(post: string): Promise<string[]>;
+
+  // --- Author-resolution surface ---
+  //
+  // Resolutions live in a separate per-post namespace
+  // (`resolutions/<post>/<threadId>.json`), keyed by threadId rather
+  // than by user. One blob per resolved thread; the body is an
+  // opaque JSON envelope the server doesn't parse. Author-only
+  // writes; any logged-in user may read.
+  //
+  // We don't bother with content-addressed change-objects here
+  // because resolutions are single-writer per post (only the author
+  // writes) — last-write-wins on the same key is harmless (two
+  // author devices resolving the same thread differ only in
+  // timestamp, and we don't care which wins). This sidesteps the
+  // entire Automerge / per-change / set-diff plumbing.
+  getResolution(
+    post: string,
+    threadId: string,
+  ): Promise<Uint8Array | null>;
+
+  putResolution(
+    post: string,
+    threadId: string,
+    bytes: Uint8Array,
+  ): Promise<void>;
+
+  listResolutions(post: string): Promise<ResolutionListEntry[]>;
 }
+
+export type ResolutionListEntry = {
+  threadId: string;
+  size: number;
+  uploaded: Date;
+};
 
 // ---------- Key shape ----------
 
@@ -105,4 +138,23 @@ export function userIdFromKey(key: string): string | null {
   const beforeLast = key.lastIndexOf("/", lastSlash - 1);
   if (beforeLast === -1) return null;
   return key.slice(beforeLast + 1, lastSlash);
+}
+
+// `resolutions/<postPath>/<threadId>.json`. Mutable (last-write-wins);
+// single writer per post (the author), so concurrent overwrites are
+// effectively the same content.
+export function resolutionKey(postPath: string, threadId: string): string {
+  return `resolutions/${postPath}/${threadId}.json`;
+}
+
+export function resolutionPrefix(postPath: string): string {
+  return `resolutions/${postPath}/`;
+}
+
+export function threadIdFromResolutionKey(key: string): string | null {
+  const lastSlash = key.lastIndexOf("/");
+  if (lastSlash === -1) return null;
+  const last = key.slice(lastSlash + 1);
+  if (!last.endsWith(".json")) return null;
+  return last.slice(0, -".json".length);
 }

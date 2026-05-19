@@ -338,6 +338,86 @@
 .cmt-identity-provider-google { border-color: #d0d7de; }
 .cmt-identity-provider-microsoft { border-color: #d0d7de; }
 
+/* ============================================================================
+   Document-version UI — sits between the identity header and the cards.
+   The banner is shown when the user has been here before and the hash
+   changed; the history details panel is author-only.
+   ============================================================================ */
+.cmt-version-banner {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  font: 12px/1.5 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  color: #78350f;
+}
+.cmt-version-banner-text {
+  margin: 0;
+  flex: 1;
+}
+.cmt-version-banner-dismiss {
+  background: transparent;
+  border: 0;
+  color: #78350f;
+  font: 700 16px/1 inherit;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+  align-self: center;
+}
+.cmt-version-banner-dismiss:hover { color: #451a03; }
+
+.cmt-version-history {
+  pointer-events: auto;
+  background: var(--cmt-bg);
+  border: 1px solid var(--cmt-border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  font: 12px/1.45 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+}
+.cmt-version-history-summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--cmt-fg-muted);
+  user-select: none;
+}
+.cmt-version-history-summary:hover { color: var(--cmt-fg); }
+.cmt-version-history-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.cmt-version-history-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  color: var(--cmt-fg-muted);
+  border-top: 1px solid var(--cmt-border);
+}
+.cmt-version-history-item:first-child { border-top: 0; }
+.cmt-version-history-current { color: var(--cmt-fg); font-weight: 600; }
+.cmt-version-history-hash {
+  font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--cmt-fg-muted);
+}
+.cmt-version-history-tag {
+  font: 600 10px/1 inherit;
+  background: var(--cmt-accent);
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
 /* Round avatar. The image (when present) fills the circle; the
    data-initial fallback is rendered via ::before so it shows through if
    the <img> is missing or errors out and is removed by the JS handler. */
@@ -434,18 +514,115 @@
 }
 
 /* ============================================================================
+   Hide-all toggle. Floating button plus a `body` class that suppresses
+   every visual surface of the comment system without touching the
+   underlying state. Used either as a screenshot-clean mode on desktop
+   or as the primary dismiss affordance on mobile.
+
+   Positioned top-right because the bottom is dense on mobile: the
+   narrator's "Listen" pill sits at right: 18px / bottom: 18px and the
+   player dock spans `calc(100% - 24px)` centered at the bottom of the
+   viewport. Anything bottom-anchored would collide with one or both
+   of those.
+   ============================================================================ */
+.cmt-hide-all-fab {
+  position: fixed;
+  top: max(16px, env(safe-area-inset-top, 16px));
+  right: max(16px, env(safe-area-inset-right, 16px));
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--cmt-border);
+  background: var(--cmt-bg);
+  color: var(--cmt-fg-muted);
+  box-shadow: var(--cmt-shadow);
+  cursor: pointer;
+  z-index: 1500;
+  transition: background 120ms ease, color 120ms ease;
+}
+.cmt-hide-all-fab:hover { color: var(--cmt-fg); }
+.cmt-hide-all-fab[aria-pressed="true"] {
+  background: var(--cmt-accent);
+  color: #fff;
+  border-color: var(--cmt-accent);
+}
+
+body.cmt-highlights-hidden .cmt-highlight {
+  background: transparent;
+  /* Keep clickable so taking the FAB back off reveals everything. */
+}
+body.cmt-highlights-hidden .cmt-graphic-btn,
+body.cmt-highlights-hidden .cmt-graphic-indicator { display: none; }
+body.cmt-highlights-hidden .cmt-column { display: none; }
+body.cmt-highlights-hidden .cmt-action-bar { display: none; }
+
+/* ============================================================================
    Responsive: the column sits in the right margin of a 720px-wide article.
    At wide viewports we reserve space on the right of the body so the
    article's `margin: auto` shifts it left, opening a clear gutter for the
-   column instead of overlapping article content. Below ~1100px there
-   isn't enough horizontal room — we hide the column entirely; a mobile-
-   friendly bottom sheet is a future task. Narrow viewports still get the
-   action bar (so new comments can be authored), they just don't display
-   existing threads alongside the article.
+   column instead of overlapping article content.
+
+   Below ~1100px the column doesn't fit alongside the article, so we
+   switch to a *popover model*: cards still render into the column DOM
+   (so the existing build/event logic works unchanged), but everything
+   in the column is hidden by CSS — only the card tagged
+   `data-mobile-active="true"` shows up, as a fixed-position bottom
+   sheet anchored to the viewport. The hide-all FAB takes over as the
+   single dismiss affordance.
    ============================================================================ */
 @media (min-width: 1100px) {
   body { padding-right: 360px; }
+  /* Desktop hides the FAB — the column itself is the affordance. */
+  .cmt-hide-all-fab { display: none; }
 }
+
 @media (max-width: 1099px) {
-  .cmt-column { display: none; }
+  /* Column becomes an inert positioning context only — it itself
+     doesn't draw, but cards inside it are still in the DOM. */
+  .cmt-column {
+    position: fixed;
+    inset: 0;
+    width: auto;
+    top: 0;
+    right: 0;
+    pointer-events: none;
+    /* Hide all the column's "always visible" surfaces — they're
+       column-only UX (a slim sign-in pill or full bottom sheet for
+       these is a follow-up). */
+  }
+  .cmt-identity,
+  .cmt-version-banner,
+  .cmt-version-history { display: none; }
+
+  /* Every card is hidden by default… */
+  .cmt-card { display: none; }
+
+  /* …except the one marked active, which renders as a bottom-sheet
+     overlay. left/right padding keeps it off the screen edges; the
+     max-height + overflow-y lets long threads scroll within the
+     popover. `bottom: 80px` leaves room for the narrator's "Listen"
+     pill (bottom: 18px) without obscuring it — the popover may
+     partially overlap the player dock when both are open, but the
+     z-index put the popover on top and the overlap is small. */
+  .cmt-card[data-mobile-active="true"] {
+    display: block;
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: 80px;
+    top: auto;
+    max-height: 60vh;
+    overflow-y: auto;
+    pointer-events: auto;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+    z-index: var(--cmt-z-card);
+  }
+
+  /* The drafting selection bar can collide with the bottom-sheet on
+     short screens. Push it above the popover when both are visible. */
+  .cmt-action-bar { z-index: calc(var(--cmt-z-card) + 1); }
 }
