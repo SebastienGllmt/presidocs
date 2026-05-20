@@ -31,11 +31,15 @@ import {
   isResolved,
   isDeleted,
   visibleReplies,
-  type Anchor,
+  isTextTarget,
+  contextOf,
+  makeTextTarget,
+  makeGraphicTarget,
+  textTargetParts,
+  graphicTargetId,
   type Context,
-  type GraphicAnchor,
   type Reply,
-  type TextAnchor,
+  type Target,
   type Thread,
 } from "./commentsStore.ts";
 import {
@@ -82,6 +86,10 @@ const GRAPHIC_ROOT_TAGS = new Set(["FIGURE"]);
 // Cards stack with this much vertical space between them when collision-
 // avoidance pushes a later card past its preferred anchor-aligned top.
 const CARD_GAP_PX = 8;
+// Extra gap kept between the lowest card's bottom and the player dock
+// when reserving bottom scroll room, so a bottom card never sits flush
+// against the dock.
+const BOTTOM_CLEARANCE_PX = 24;
 
 // Below this viewport width the column doesn't fit alongside the
 // article. We switch to a popover model: cards are rendered into the
@@ -311,6 +319,14 @@ class CommentSystem {
 
   // The right-margin column hosting all cards. One card per thread/draft.
   private column: HTMLElement | null = null;
+  // Invisible flow element appended to <body> that grows just enough to
+  // give scroll room below the lowest comment card, so a card can always
+  // be scrolled clear of the viewport-fixed player dock (see
+  // repositionCards). 0 height when not needed.
+  private bottomSpacer: HTMLElement | null = null;
+  // See mountColumn — measures the column's positioning origin so card
+  // tops align with their anchors instead of sitting lower.
+  private columnProbe: HTMLElement | null = null;
   private cardEls = new Map<string, HTMLElement>();
 
   // Floating "Comment" pill that appears above a text selection.
@@ -488,14 +504,21 @@ class CommentSystem {
     const blocks: BlockInfo[] = [];
     let counter = 0;
     for (const el of walkBlocks(root, BLOCK_TAGS)) {
-      const stableId = el.id && el.id.length > 0
-        ? `id:${el.id}`
+      // In the narration drawer the walker stops at the <li> wrapping each
+      // segment (LI is a block tag), but that <li> also holds the play
+      // button whose <time> clock ("0:11") would otherwise leak into the
+      // block's text, hash, offsets, and quote. Re-target to the inner
+      // spoken-text <p> so anchors cover only the spoken words. No-op
+      // outside the drawer — article blocks have no .spoken-text child.
+      const block = el.querySelector<HTMLElement>(".spoken-text") ?? el;
+      const stableId = block.id && block.id.length > 0
+        ? `id:${block.id}`
         : `${context}:__b-${counter}`;
-      el.dataset.commentBlockId = stableId;
-      el.dataset.commentContext = context;
-      const text = el.textContent ?? "";
+      block.dataset.commentBlockId = stableId;
+      block.dataset.commentContext = context;
+      const text = block.textContent ?? "";
       const hash = await sha256(normalizeText(text));
-      const info: BlockInfo = { id: stableId, element: el, context, hash, text };
+      const info: BlockInfo = { id: stableId, element: block, context, hash, text };
       blocks.push(info);
       this.blocksById.set(stableId, info);
       counter++;
@@ -730,18 +753,18 @@ class CommentSystem {
     if (!thread) return null;
 
     let anchorEl: HTMLElement | null = null;
-    if (thread.anchor.kind === "text") {
+    if (isTextTarget(thread.target)) {
       anchorEl = document.querySelector<HTMLElement>(
         `.cmt-highlight[data-thread-id="${CSS.escape(threadId)}"]`,
       );
       if (!anchorEl) {
-        const firstSeg = thread.anchor.segments[0];
+        const firstSeg = textTargetParts(thread.target).blocks[0];
         if (firstSeg) {
           anchorEl = this.blocksById.get(firstSeg.id)?.element ?? null;
         }
       }
     } else {
-      anchorEl = this.graphicsById.get(thread.anchor.id) ?? null;
+      anchorEl = this.graphicsById.get(graphicTargetId(thread.target)) ?? null;
     }
     if (!anchorEl) return null;
 
@@ -753,10 +776,7 @@ class CommentSystem {
     // plus player dock area. The dock's measured height is published
     // by narrator.ts as `--narrate-dock-height`; we read it back
     // here so the reservation tracks the actual dock size.
-    const dockHeightStr = getComputedStyle(document.documentElement)
-      .getPropertyValue("--narrate-dock-height").trim();
-    const dockHeight = dockHeightStr ? parseFloat(dockHeightStr) : 0;
-    const BOTTOM_RESERVE = (Number.isFinite(dockHeight) ? dockHeight : 0) + 24;
+    const BOTTOM_RESERVE = this.dockHeightPx() + 24;
     const MIN_HEIGHT = 140;
 
     const spaceBelow = viewportH - BOTTOM_RESERVE - rect.bottom - GAP;
@@ -843,6 +863,31 @@ class CommentSystem {
     col.setAttribute("aria-label", "Comments");
     document.body.appendChild(col);
     this.column = col;
+
+    // Flow element that reserves bottom scroll room (sized in
+    // repositionCards). Must be in normal flow — not inside the
+    // absolutely-positioned column — so it actually extends the
+    // document's scrollHeight.
+    const spacer = document.createElement("div");
+    spacer.id = "cmt-bottom-spacer";
+    spacer.setAttribute("aria-hidden", "true");
+    document.body.appendChild(spacer);
+    this.bottomSpacer = spacer;
+
+    // Zero-size absolutely-positioned probe sharing the cards'
+    // containing block. Cards' `top` is relative to the column's
+    // positioning origin, not the document, and that origin isn't
+    // reliably the column's own box top (the article's top margin
+    // shifts it). We measure the origin off this probe so card tops can
+    // be converted from document coordinates (what anchors give us) into
+    // the column-relative coordinates `style.top` actually wants — see
+    // repositionCards.
+    const probe = document.createElement("div");
+    probe.setAttribute("aria-hidden", "true");
+    probe.style.cssText =
+      "position:absolute;top:0;left:0;width:0;height:0;pointer-events:none;";
+    col.appendChild(probe);
+    this.columnProbe = probe;
 
     // The identity header sits above the cards. It lives outside the
     // column's normal absolutely-positioned card flow so it doesn't get
@@ -962,7 +1007,7 @@ class CommentSystem {
     );
     for (const thread of this.snapshot) {
       if (this.threadIsResolved(thread)) continue;
-      if (thread.anchor.kind === "text" && !this.threadIsStale(thread)) {
+      if (isTextTarget(thread.target) && !this.threadIsStale(thread)) {
         this.highlightTextThread(thread);
       }
     }
@@ -982,7 +1027,7 @@ class CommentSystem {
     const all: Thread[] = [...this.snapshot, ...this.drafts];
     for (const thread of all) {
       if (this.threadIsResolved(thread)) continue;
-      const isStale = thread.anchor.kind === "text"
+      const isStale = isTextTarget(thread.target)
         && this.threadIsStale(thread);
       if (this.hiddenCardIds.has(thread.id) && !isStale) continue;
       const card = this.buildCard(thread);
@@ -1030,29 +1075,56 @@ class CommentSystem {
   // right thing (discard the draft entirely vs. just clear the reply box).
   private buildCard(thread: Thread): HTMLElement {
     const isDraft = this.drafts.includes(thread);
-    const isStale = !isDraft && thread.anchor.kind === "text"
-      && this.threadIsStale(thread);
+    const isText = isTextTarget(thread.target);
+    const isStale = !isDraft && isText && this.threadIsStale(thread);
+
+    const isNarration = contextOf(thread.target) === "narration";
 
     const card = document.createElement("article");
     card.className = "cmt-card";
     card.dataset.threadId = thread.id;
-    card.dataset.kind = thread.anchor.kind;
+    card.dataset.kind = isText ? "text" : "graphic";
+    // Lets CSS tint narration comments distinctly from article ones.
+    card.dataset.context = isNarration ? "narration" : "article";
     if (isDraft) card.dataset.draft = "true";
     if (isStale) card.dataset.stale = "true";
 
     // --- Anchor preview ---
     const preview = document.createElement("div");
     preview.className = "cmt-anchor-preview";
-    if (thread.anchor.kind === "text") {
+    if (isTextTarget(thread.target)) {
       const quote = document.createElement("span");
       quote.className = "cmt-quote-text";
-      quote.textContent = thread.anchor.quote;
+      quote.textContent = textTargetParts(thread.target).quote;
       preview.appendChild(quote);
       if (isStale) {
         const tag = document.createElement("span");
         tag.className = "cmt-stale-tag";
         tag.textContent = "outdated";
         preview.appendChild(tag);
+      }
+      // Narration comments get an explicit speaker button to jump the
+      // player to (and play) the segment they sit on — a deliberate
+      // press, so reading the comment never starts audio by accident.
+      // The button doubles as the visual marker that this is a comment
+      // on the spoken track rather than the article.
+      if (isNarration) {
+        const speaker = document.createElement("button");
+        speaker.type = "button";
+        speaker.className = "cmt-play-narration";
+        speaker.title = "Play this part of the narration";
+        speaker.setAttribute("aria-label", "Play this part of the narration");
+        speaker.innerHTML =
+          '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
+          '<path d="M4 9v6h4l5 5V4L8 9H4z" fill="currentColor"/>' +
+          '<path d="M16 8.5a4 4 0 0 1 0 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' +
+          "</svg>";
+        speaker.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.playThreadAudio(thread);
+        });
+        preview.appendChild(speaker);
       }
     } else {
       const span = document.createElement("span");
@@ -1269,7 +1341,7 @@ class CommentSystem {
         // would be tidier here, but the public store API has separate
         // ops; we accept two ops for the v1 case since it's a fresh
         // thread no one else has touched yet.
-        this.store.addThread(thread.id, thread.anchor, thread.createdAt);
+        this.store.addThread(thread.id, thread.target, thread.createdAt);
         this.store.addReply(thread.id, reply);
         this.drafts = this.drafts.filter((t) => t.id !== thread.id);
         this.draftBodies.delete(thread.id);
@@ -1355,6 +1427,15 @@ class CommentSystem {
     this.renderAll();
   }
 
+  // Player dock height (px) published by narrator.ts as the
+  // `--narrate-dock-height` custom property, or 0 if absent.
+  private dockHeightPx(): number {
+    const raw = getComputedStyle(document.documentElement)
+      .getPropertyValue("--narrate-dock-height").trim();
+    const n = raw ? parseFloat(raw) : 0;
+    return Number.isFinite(n) ? n : 0;
+  }
+
   // Vertically align each card with its anchor's top, then push later
   // cards down to avoid overlap. Stale text threads (no highlight) fall
   // back to their first segment's position; if even that segment is gone,
@@ -1363,21 +1444,39 @@ class CommentSystem {
     if (!this.column) return;
     // Mobile uses fixed-overlay positioning driven entirely by CSS;
     // the column's normal stacked layout doesn't apply and a JS
-    // `top` write would just be overridden.
-    if (this.isMobile) return;
+    // `top` write would just be overridden. Drop any reserved bottom
+    // room — the desktop spacer shouldn't linger after a resize down.
+    if (this.isMobile) {
+      if (this.bottomSpacer) this.bottomSpacer.style.height = "0px";
+      return;
+    }
+
+    // Height of the document *without* our spacer, so the spacer math
+    // below is stable (and so a bottom-stacked card's fallback target
+    // doesn't chase the spacer it then grows).
+    const spacerH = this.bottomSpacer?.offsetHeight ?? 0;
+    const naturalHeight = document.documentElement.scrollHeight - spacerH;
+
+    // The document Y at which a card's `top: 0` would render. `style.top`
+    // is relative to the column's positioning origin, so we subtract this
+    // from each anchor's document Y to align the card with its anchor
+    // (without it, every card sits lower by the origin's offset).
+    const originY = this.columnProbe
+      ? this.columnProbe.getBoundingClientRect().top + window.scrollY
+      : 0;
 
     const items: Array<{
       card: HTMLElement;
       thread: Thread;
       target: number;
     }> = [];
-    const docHeight = document.documentElement.scrollHeight;
     for (const [tid, card] of this.cardEls) {
       const thread = this.snapshot.find((t) => t.id === tid)
         ?? this.drafts.find((t) => t.id === tid);
       if (!thread) continue;
-      const target = this.computeAnchorTop(thread) ?? docHeight + 200;
-      items.push({ card, thread, target });
+      // computeAnchorTop is in document coords; convert to column-relative.
+      const docTarget = this.computeAnchorTop(thread) ?? naturalHeight + 200;
+      items.push({ card, thread, target: docTarget - originY });
     }
     items.sort((a, b) => a.target - b.target);
 
@@ -1398,10 +1497,65 @@ class CommentSystem {
       // of top so reading offsetHeight here is safe.
       prevBottom = top + card.offsetHeight;
     }
+
+    // The player dock is fixed to the viewport bottom, so a card whose
+    // document position lands in the last dock-height band can never be
+    // scrolled out from under it (worst case: a comment on the final
+    // paragraph — there's nothing below to scroll into). Grow an invisible
+    // spacer so the document scrolls far enough to lift the lowest card
+    // clear of the dock + a margin.
+    if (this.bottomSpacer) {
+      // Measure the lowest card's bottom in *document* coordinates via
+      // getBoundingClientRect — NOT `prevBottom`/`card.style.top`, which
+      // are relative to the absolutely-positioned column and so understate
+      // the true document position by the column's own offset (~the
+      // article's top margin), leaving the reservation short and the card
+      // still partly behind the dock.
+      let lowestBottom = 0;
+      for (const { card } of items) {
+        const b = card.getBoundingClientRect().bottom + window.scrollY;
+        if (b > lowestBottom) lowestBottom = b;
+      }
+      const needed = lowestBottom + this.dockHeightPx() + BOTTOM_CLEARANCE_PX;
+      const spacer = Math.max(0, Math.ceil(needed - naturalHeight));
+      if (spacer !== spacerH) this.bottomSpacer.style.height = `${spacer}px`;
+    }
+  }
+
+  // The article element a narration comment refers to. A narration
+  // segment's `<mark name="X"/>` pairs with an article `id="X"` (the same
+  // mapping narrator.ts uses to highlight the article during playback), so
+  // we resolve the comment's segment → its mark → the article element.
+  // Narration cards align to *this* element rather than to their drawer
+  // block — the drawer is a fixed-position panel, so drawer coordinates
+  // make every narration card cluster around the current scroll position
+  // and overflow once there are more than a few. Anchoring to the article
+  // spreads them down the column exactly like article comments.
+  //
+  // Returns null when the mark has no paired article element. An author
+  // can write a `<mark>` with no matching id (narrator.ts warns when it
+  // happens) — those cards fall back to bottom-stacking. If a segment ever
+  // maps to several article elements (not possible today: one mark, one
+  // id), this returns the first one in document order.
+  private narrationArticleAnchor(thread: Thread): HTMLElement | null {
+    if (!this.articleRoot || !isTextTarget(thread.target)) return null;
+    const firstBlockId = textTargetParts(thread.target).blocks[0]?.id;
+    const block = firstBlockId ? this.blocksById.get(firstBlockId) : undefined;
+    const markName = block?.element
+      .closest<HTMLElement>(".spoken-segment")?.dataset.mark;
+    if (!markName) return null;
+    return this.articleRoot.querySelector<HTMLElement>(`#${CSS.escape(markName)}`);
   }
 
   private computeAnchorTop(thread: Thread): number | null {
-    if (thread.anchor.kind === "text") {
+    if (isTextTarget(thread.target)) {
+      // Narration comments align to the article position their segment
+      // refers to (see narrationArticleAnchor). No paired article element
+      // → null → bottom-stack.
+      if (contextOf(thread.target) === "narration") {
+        const el = this.narrationArticleAnchor(thread);
+        return el ? el.getBoundingClientRect().top + window.scrollY : null;
+      }
       // Prefer the first highlight (matches exactly where the comment
       // points); fall back to the first segment block (works for stale
       // threads when the segment still exists, just with different text).
@@ -1409,32 +1563,56 @@ class CommentSystem {
         `.cmt-highlight[data-thread-id="${CSS.escape(thread.id)}"]`,
       );
       if (hl) return hl.getBoundingClientRect().top + window.scrollY;
-      const firstSeg = thread.anchor.segments[0];
+      const firstSeg = textTargetParts(thread.target).blocks[0];
       const block = firstSeg ? this.blocksById.get(firstSeg.id) : undefined;
       if (block) return block.element.getBoundingClientRect().top + window.scrollY;
       return null;
     }
-    const el = this.graphicsById.get(thread.anchor.id);
+    const el = this.graphicsById.get(graphicTargetId(thread.target));
     if (el) return el.getBoundingClientRect().top + window.scrollY;
     return null;
   }
 
-  // Scroll the article so the anchor is visible, and briefly pulse the
-  // matching highlight / graphic. Used when the user clicks on a card to
-  // jump back to its anchor in the document.
+  // Jump the player to the narration segment this comment sits on and
+  // play. Reuses the segment's own play button (which seeks + plays), so
+  // there's no coupling into the narrator module beyond the DOM the
+  // comment system already reads. Triggered only by the explicit speaker
+  // button on a narration card — never by a plain card click, so reading
+  // a comment can't accidentally start audio.
+  private playThreadAudio(thread: Thread) {
+    if (!isTextTarget(thread.target)) return;
+    const firstSeg = textTargetParts(thread.target).blocks[0];
+    const block = firstSeg ? this.blocksById.get(firstSeg.id) : undefined;
+    const seg = block?.element.closest<HTMLElement>(".spoken-segment");
+    seg?.querySelector<HTMLButtonElement>(".spoken-play")?.click();
+  }
+
+  // Scroll the document so the anchor is visible, and briefly pulse it.
+  // Used when the user clicks a card to jump to where it points. For a
+  // narration comment that's the article element its segment refers to
+  // (where the card is now positioned) — playback is on the separate
+  // speaker button, so this gesture only navigates, never plays.
   private scrollAnchorIntoView(thread: Thread) {
     let target: HTMLElement | null = null;
-    if (thread.anchor.kind === "text") {
-      target = document.querySelector<HTMLElement>(
-        `.cmt-highlight[data-thread-id="${CSS.escape(thread.id)}"]`,
-      );
-      if (!target) {
-        const firstSeg = thread.anchor.segments[0];
+    if (isTextTarget(thread.target)) {
+      if (contextOf(thread.target) === "narration") {
+        // Jump to the referred article element; fall back to the drawer
+        // block if the mark has no paired article element.
+        const firstSeg = textTargetParts(thread.target).blocks[0];
         const block = firstSeg ? this.blocksById.get(firstSeg.id) : undefined;
-        target = block?.element ?? null;
+        target = this.narrationArticleAnchor(thread) ?? block?.element ?? null;
+      } else {
+        target = document.querySelector<HTMLElement>(
+          `.cmt-highlight[data-thread-id="${CSS.escape(thread.id)}"]`,
+        );
+        if (!target) {
+          const firstSeg = textTargetParts(thread.target).blocks[0];
+          const block = firstSeg ? this.blocksById.get(firstSeg.id) : undefined;
+          target = block?.element ?? null;
+        }
       }
     } else {
-      target = this.graphicsById.get(thread.anchor.id) ?? null;
+      target = this.graphicsById.get(graphicTargetId(thread.target)) ?? null;
     }
     if (!target) return;
     target.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1563,7 +1741,7 @@ class CommentSystem {
   }
 
   // Triggered by the "Comment" action-bar button after a text selection.
-  // Captures the selection into a TextAnchor, creates an empty draft, and
+  // Captures the selection into a WA text target, creates an empty draft, and
   // adds a card for it in the column (auto-focused for typing).
   private addDraftForSelection() {
     if (!this.pendingRange || !this.pendingStartBlock || !this.pendingEndBlock) {
@@ -1599,20 +1777,54 @@ class CommentSystem {
 
     const startOffset = offsetInBlock(startBlock.element, startNode, startNodeOffset);
     const endOffset = offsetInBlock(endBlock.element, endNode, endNodeOffset);
-    const quote = this.pendingRange.toString();
 
-    const anchor: TextAnchor = {
-      kind: "text",
+    // Build the quote from the anchored blocks' own text + offsets, not
+    // from `range.toString()`. Across drawer segments the raw range would
+    // splice in the next segment's play-button clock ("0:11") that sits
+    // between the two <p>s in document order; slicing each block's clean
+    // text avoids that and is the precise per-block anchored text anyway.
+    const blockText = (b: BlockInfo) => b.element.textContent ?? "";
+    const quote = touched.length === 1
+      ? blockText(touched[0]!).slice(startOffset, endOffset)
+      : [
+          blockText(touched[0]!).slice(startOffset),
+          ...touched.slice(1, -1).map(blockText),
+          blockText(touched[touched.length - 1]!).slice(0, endOffset),
+        ].join(" ");
+
+    // Surrounding context for the TextQuoteSelector. We don't fuzzy
+    // re-anchor today (the stale-anchor flow orphans + flags instead),
+    // but storing prefix/suffix is cheap (~32 chars each) and keeps the
+    // selector spec-meaningful + leaves the door open to fuzzy matching
+    // later without another CRDT migration.
+    const CTX = 32;
+    const startText = startBlock.element.textContent ?? "";
+    const endText = endBlock.element.textContent ?? "";
+    const prefix = startText.slice(Math.max(0, startOffset - CTX), startOffset);
+    const suffix = endText.slice(endOffset, endOffset + CTX);
+
+    // Narration comments automatically pick up the audio time range of
+    // the segment(s) they touch, from the generated mark timings the
+    // narrator stamps onto each drawer segment (`data-time-ms`). Article
+    // and graphic comments have no audio time and get nothing.
+    const audioRange = this.pendingStartBlock.context === "narration"
+      ? this.computeNarrationAudioRange(touched)
+      : undefined;
+
+    const target = makeTextTarget({
       context: this.pendingStartBlock.context,
-      segments: touched.map((blk) => ({ id: blk.id, hash: blk.hash })),
+      blocks: touched.map((blk) => ({ id: blk.id, hash: blk.hash })),
       startOffset,
       endOffset,
       quote,
-    };
+      prefix,
+      suffix,
+      ...(audioRange ? { audioRange } : {}),
+    });
 
     const draft: Thread = {
       id: uid(),
-      anchor,
+      target,
       replies: [],
       createdAt: Date.now(),
     };
@@ -1623,15 +1835,48 @@ class CommentSystem {
     this.surfaceDraft(draft.id);
   }
 
+  // Derive the audio time range [first segment start, next segment start)
+  // for a narration selection, from the `data-time-ms` the narrator
+  // stamps on each drawer segment (sourced from the generated manifest).
+  // Returns null if the timings aren't present (e.g. audio not generated,
+  // or the touched blocks aren't inside spoken segments). `endMs: null`
+  // means the selection reaches the final segment and so runs open-ended
+  // to the end of the audio.
+  private computeNarrationAudioRange(
+    touched: BlockInfo[],
+  ): { startMs: number; endMs: number | null } | null {
+    if (!this.drawerRoot || touched.length === 0) return null;
+    // `walkBlocks` indexes the `<li>` wrapping each segment (LI is a
+    // block tag and the walker stops there), so `.spoken-segment` is a
+    // *descendant* of the commented block — look down. `closest` is kept
+    // as a fallback in case a future layout nests the block inside the
+    // segment instead.
+    const segOf = (el: HTMLElement): HTMLElement | null =>
+      el.querySelector<HTMLElement>(".spoken-segment[data-time-ms]")
+        ?? el.closest<HTMLElement>(".spoken-segment");
+    const firstSeg = segOf(touched[0]!.element);
+    const lastSeg = segOf(touched[touched.length - 1]!.element);
+    if (!firstSeg || !lastSeg) return null;
+    const startMs = Number(firstSeg.dataset.timeMs);
+    if (!Number.isFinite(startMs)) return null;
+    // Document order == time order (marks are sorted), so the segment
+    // immediately after the last touched one bounds the range.
+    const segs = Array.from(
+      this.drawerRoot.querySelectorAll<HTMLElement>(".spoken-segment[data-time-ms]"),
+    );
+    const nextSeg = segs[segs.indexOf(lastSeg) + 1];
+    const endMs = nextSeg ? Number(nextSeg.dataset.timeMs) : NaN;
+    return { startMs, endMs: Number.isFinite(endMs) ? endMs : null };
+  }
+
   // Triggered by clicking the "+" comment button on a figure.
   private addDraftForGraphic(graphicEl: HTMLElement) {
     const id = graphicEl.dataset.commentGraphicId;
     const ctx = (graphicEl.dataset.commentContext as Context) ?? "article";
     if (!id) return;
-    const anchor: GraphicAnchor = { kind: "graphic", context: ctx, id };
     const draft: Thread = {
       id: uid(),
-      anchor,
+      target: makeGraphicTarget(ctx, id),
       replies: [],
       createdAt: Date.now(),
     };
@@ -1659,8 +1904,8 @@ class CommentSystem {
   // ===== Stale detection =====
 
   private threadIsStale(thread: Thread): boolean {
-    if (thread.anchor.kind !== "text") return false;
-    for (const seg of thread.anchor.segments) {
+    if (!isTextTarget(thread.target)) return false;
+    for (const seg of textTargetParts(thread.target).blocks) {
       const block = this.blocksById.get(seg.id);
       if (!block) return true;
       if (block.hash !== seg.hash) return true;
@@ -1671,8 +1916,9 @@ class CommentSystem {
   // ===== Highlight wrapping (DOM-mutating; reversed by `unwrap`) =====
 
   private highlightTextThread(thread: Thread) {
-    if (thread.anchor.kind !== "text") return;
-    const segs = thread.anchor.segments;
+    if (!isTextTarget(thread.target)) return;
+    const parts = textTargetParts(thread.target);
+    const segs = parts.blocks;
     for (let i = 0; i < segs.length; i++) {
       const seg = segs[i];
       if (!seg) continue;
@@ -1681,8 +1927,8 @@ class CommentSystem {
       const isFirst = i === 0;
       const isLast = i === segs.length - 1;
       const fullLen = block.element.textContent?.length ?? 0;
-      const start = isFirst ? thread.anchor.startOffset : 0;
-      const end = isLast ? thread.anchor.endOffset : fullLen;
+      const start = isFirst ? parts.startOffset : 0;
+      const end = isLast ? parts.endOffset : fullLen;
       this.wrapRangeInBlock(block.element, start, end, thread.id);
     }
   }
@@ -1784,8 +2030,8 @@ class CommentSystem {
         if (!gid) return;
         const matching = this.snapshot.filter(
           (t) => !this.threadIsResolved(t)
-            && t.anchor.kind === "graphic"
-            && t.anchor.id === gid,
+            && !isTextTarget(t.target)
+            && graphicTargetId(t.target) === gid,
         );
         let didUnhide = false;
         for (const t of matching) {
@@ -1835,8 +2081,8 @@ class CommentSystem {
     for (const [gid, el] of this.graphicsById) {
       const count = this.snapshot.filter(
         (t) => !this.threadIsResolved(t)
-          && t.anchor.kind === "graphic"
-          && t.anchor.id === gid,
+          && !isTextTarget(t.target)
+          && graphicTargetId(t.target) === gid,
       ).length;
       const ind = el.querySelector<HTMLElement>(".cmt-graphic-indicator");
       if (!ind) continue;

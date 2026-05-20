@@ -8,6 +8,12 @@
 
 import { join, resolve } from "node:path";
 import { loadUnresolvedThreads } from "./loadUnresolvedThreads.ts";
+import {
+  contextOf,
+  graphicTargetId,
+  isTextTarget,
+  textTargetParts,
+} from "../client/commentsStore.ts";
 
 const PROJECT_ROOT = resolve(import.meta.dir, "..");
 
@@ -26,11 +32,12 @@ async function main() {
   );
   for (const t of result.unresolved) {
     console.log(`Thread ${t.thread.id} (by ${t.ownerUserId}):`);
-    const a = t.thread.anchor;
-    if (a.kind === "text") {
-      console.log(`  anchor: text in ${a.context}, quote: ${JSON.stringify(a.quote)}`);
+    const target = t.thread.target;
+    if (isTextTarget(target)) {
+      const { quote } = textTargetParts(target);
+      console.log(`  anchor: text in ${contextOf(target)}, quote: ${JSON.stringify(quote)}`);
     } else {
-      console.log(`  anchor: graphic figure id=${a.id} in ${a.context}`);
+      console.log(`  anchor: graphic figure id=${graphicTargetId(target)} in ${contextOf(target)}`);
     }
     for (const r of t.thread.replies) {
       console.log(`  - ${r.authorName}: ${r.body}`);

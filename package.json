@@ -8,8 +8,8 @@
     "start": "bun index.ts",
     "generate": "bun generate/generate.ts",
     "clean": "bun generate/clean.ts",
-    "apply-comments": "bun authoring/applyComments.ts",
-    "promote-draft": "bun authoring/promoteDraft.ts",
+    "resolve-threads": "bun authoring/resolveThreads.ts",
+    "export-annotations": "bun authoring/exportAnnotations.ts",
     "build": "bun generate/post-meta.ts && bun generate/post-versions.ts && bun build ./index.html ./posts/*.html --outdir ./dist --target browser && bun generate/copy-static.ts && bun generate/strip-served-html.ts",
     "deploy": "bun run build && wrangler deploy"
   },

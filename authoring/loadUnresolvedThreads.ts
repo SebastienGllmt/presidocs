@@ -20,8 +20,8 @@ import { join } from "node:path";
 import { fsAdapter } from "../server/comments/fsAdapter.ts";
 import { SEED_BYTES_B64 } from "../client/commentsStore.ts";
 import type {
-  Anchor,
   Reply,
+  Target,
   Thread,
 } from "../client/commentsStore.ts";
 
@@ -35,7 +35,7 @@ import type {
 // Automerge.applyChanges drops changes whose schema doesn't match.
 
 type StoredThread = {
-  anchor: Anchor;
+  target: Target;
   createdAt: number;
   resolvedAt?: number;
 };
@@ -105,6 +105,13 @@ export type LoadOptions = {
 export type LoadResult = {
   unresolved: UnresolvedThread[];
   /**
+   * Every thread with at least one live reply, *including* resolved
+   * ones — the superset of `unresolved`. Used by the Web Annotation
+   * export, which wants the full picture (resolved annotations carry
+   * an `x-blog:resolvedAt`), not just the author's attention queue.
+   */
+  all: UnresolvedThread[];
+  /**
    * Threads we found but filtered out. Useful for the CLI summary —
    * "12 threads total, 7 already resolved" reads better than just "5
    * unresolved" with no denominator.
@@ -163,6 +170,7 @@ export async function loadUnresolvedThreads(
   let totalCount = 0;
   let resolvedCount = 0;
   const unresolved: UnresolvedThread[] = [];
+  const all: UnresolvedThread[] = [];
 
   for (const { userId, doc } of perUser) {
     const js = Automerge.toJS(doc) as CommentDoc;
@@ -179,6 +187,11 @@ export async function loadUnresolvedThreads(
     }
 
     for (const [id, t] of Object.entries(js.threads)) {
+      // Skip pre-Web-Annotation blobs (old `anchor` shape, no `target`).
+      // The seed is unchanged so these still apply to the doc, but they
+      // predate the migration and carry no usable anchor — drop them
+      // rather than crash. See client/commentsStore.ts snapshot().
+      if (!t.target) continue;
       totalCount++;
 
       const replies = (repliesByThread.get(id) ?? [])
@@ -193,21 +206,29 @@ export async function loadUnresolvedThreads(
       // could still produce one — skip it defensively.
       const hasNothingToSay = replies.length === 0;
 
-      if (isResolvedByOwner || isResolvedByAuthor || hasNothingToSay) {
+      if (hasNothingToSay) {
         resolvedCount++;
         continue;
       }
 
-      unresolved.push({
+      const entry: UnresolvedThread = {
         ownerUserId: userId,
         thread: {
           id,
-          anchor: t.anchor,
+          target: t.target,
           replies,
           createdAt: t.createdAt,
           ...(t.resolvedAt !== undefined && { resolvedAt: t.resolvedAt }),
         },
-      });
+      };
+      all.push(entry);
+
+      if (isResolvedByOwner || isResolvedByAuthor) {
+        resolvedCount++;
+        continue;
+      }
+
+      unresolved.push(entry);
     }
   }
 
@@ -215,6 +236,7 @@ export async function loadUnresolvedThreads(
   // render order and makes Claude's pass deterministic across re-runs
   // when nothing has changed.
   unresolved.sort((a, b) => a.thread.createdAt - b.thread.createdAt);
+  all.sort((a, b) => a.thread.createdAt - b.thread.createdAt);
 
-  return { unresolved, resolvedCount, totalCount };
+  return { unresolved, all, resolvedCount, totalCount };
 }

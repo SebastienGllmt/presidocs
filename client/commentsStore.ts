@@ -123,25 +123,250 @@ function getSeedBytes(_automerge: Automerge): Uint8Array {
 }
 
 // ---------- Public types (snapshot side, plain JSON) ----------
+//
+// Comment anchors are stored as W3C Web Annotation Data Model "targets"
+// (REC 2017, https://www.w3.org/TR/annotation-model/#selectors): a
+// `source` IRI plus one or more selectors that narrow the target to a
+// part of that source. See methodology.md → Comments → "Anchoring is
+// the Web Annotation target model" for the full rationale and the
+// field-by-field mapping from the pre-2026 ad-hoc shape.
+//
+// Two anchor flavors, both expressed in pure WA selector vocabulary:
+//   - text selection → a RangeSelector between two block selectors
+//     (each refined by a TextPositionSelector giving the char offset
+//     within that block) plus a TextQuoteSelector carrying the verbatim
+//     text (+ surrounding context for future fuzzy re-anchoring).
+//   - whole graphic   → a single FragmentSelector naming the figure.
+//
+// The per-block content hashes that drive stale-detection have no
+// native WA equivalent (the model has selectors, not integrity checks),
+// so they live in the project-namespaced `x-blog:segmentHashes`
+// extension — the conventional WA escape hatch for data the vocabulary
+// doesn't cover. That array is also the authoritative *ordered* block
+// list our highlight/stale code walks; the RangeSelector only names the
+// two endpoints, so the extension is a superset, not a duplicate.
 
 export type Context = "article" | "narration";
 
-export type TextAnchor = {
-  kind: "text";
+// Char offsets within one block. We only ever use one boundary per
+// endpoint of a range (`start` on the range's start block, `end` on its
+// end block), but the spec makes both fields mandatory, so the unused
+// one mirrors the used one (a zero-length boundary marker).
+export type TextPositionSelector = {
+  type: "TextPositionSelector";
+  start: number;
+  end: number;
+};
+
+// A real HTML fragment id (`<p id="foo">` → value "foo"). Used when the
+// block carried an author-supplied `id`.
+export type FragmentSelector = {
+  type: "FragmentSelector";
+  value: string;
+  refinedBy?: TextPositionSelector;
+};
+
+// A synthesized block path (`article:__b-7`) for blocks with no
+// author id. Named CssSelector per the spec slot for "path into the
+// DOM"; the value is our internal block-index id, not a literal CSS
+// query (these ids are deliberately fragile under edits — see the
+// stale-anchor flow). Carries the same data-attribute the DOM has
+// (`[data-comment-block-id="..."]`) for any external consumer that
+// wants to resolve it.
+export type CssSelector = {
+  type: "CssSelector";
+  value: string;
+  refinedBy?: TextPositionSelector;
+};
+
+export type BlockSelector = FragmentSelector | CssSelector;
+
+export type TextQuoteSelector = {
+  type: "TextQuoteSelector";
+  exact: string;
+  prefix?: string;
+  suffix?: string;
+};
+
+export type RangeSelector = {
+  type: "RangeSelector";
+  startSelector: BlockSelector;
+  endSelector: BlockSelector;
+};
+
+// W3C Media Fragments selector (https://www.w3.org/TR/media-frags/) —
+// `value` is an `npt` time range like "t=83,95" (seconds). It records
+// the slice of the narration *audio* a comment sits on. Populated
+// *automatically* for narration comments from the generated mark
+// timings (the narrator stamps each drawer segment with `data-time-ms`,
+// sourced from the manifest, which `bun run generate` computes via the
+// AudioPipeline) — the author never types a timestamp. Absent on
+// article and graphic targets. It rides alongside the text selectors as
+// an additional facet of the same target; the range is segment-granular
+// (bounded by `<mark>` times, the finest timing the manifest carries),
+// not character-granular.
+export const MEDIA_FRAGS_SPEC = "http://www.w3.org/TR/media-frags/";
+
+export type MediaFragmentSelector = {
+  type: "FragmentSelector";
+  conformsTo: typeof MEDIA_FRAGS_SPEC;
+  value: string;
+};
+
+export type TextTarget = {
+  source: string; // post-relative IRI: "" (article) or "#narration"
+  // [structural range, verbatim quote, (narration only) audio range].
+  selector: [RangeSelector, TextQuoteSelector, ...MediaFragmentSelector[]];
+  "x-blog:segmentHashes": Array<{ id: string; hash: string }>;
+};
+
+export type GraphicTarget = {
+  source: string;
+  selector: FragmentSelector;
+};
+
+export type Target = TextTarget | GraphicTarget;
+
+// ---------- Target helpers ----------
+//
+// All knowledge of the selector shape lives here so the UI and the
+// offline authoring tools read plain fields, not nested selector
+// arrays. `source` encodes the commentable surface as a fragment: the
+// article body is the bare resource (""), the spoken-script drawer is
+// "#narration". (The post path itself is implicit — the whole doc is
+// per-post — and gets prepended only at the JSON-LD export boundary.)
+
+const NARRATION_SOURCE = "#narration";
+
+export function sourceForContext(context: Context): string {
+  return context === "narration" ? NARRATION_SOURCE : "";
+}
+
+export function contextOf(target: Target): Context {
+  return target.source.includes(NARRATION_SOURCE) ? "narration" : "article";
+}
+
+export function isTextTarget(t: Target): t is TextTarget {
+  return "x-blog:segmentHashes" in t;
+}
+
+// Internal block id (`id:foo` / `article:__b-7`) ⇄ block selector. The
+// `id:` namespace prefix is internal bookkeeping; a FragmentSelector's
+// `value` is the bare HTML fragment, so we re-add / strip the prefix at
+// this boundary.
+function blockIdToSelector(internalId: string): BlockSelector {
+  if (internalId.startsWith("id:")) {
+    return { type: "FragmentSelector", value: internalId.slice(3) };
+  }
+  return { type: "CssSelector", value: internalId };
+}
+function selectorToBlockId(sel: BlockSelector): string {
+  return sel.type === "FragmentSelector" ? `id:${sel.value}` : sel.value;
+}
+
+// Format a millisecond instant as `npt` seconds (trailing zeros trimmed).
+function nptSeconds(ms: number): string {
+  return Number((ms / 1000).toFixed(3)).toString();
+}
+
+export function makeTextTarget(args: {
   context: Context;
-  segments: Array<{ id: string; hash: string }>;
+  blocks: Array<{ id: string; hash: string }>;
   startOffset: number;
   endOffset: number;
   quote: string;
-};
+  prefix?: string;
+  suffix?: string;
+  /**
+   * Audio time range for narration comments, derived automatically from
+   * the generated mark timings — never hand-entered. `endMs: null` means
+   * open-ended (the last segment runs to the end of the audio), which
+   * Media Fragments expresses as a start-only `t=<start>`.
+   */
+  audioRange?: { startMs: number; endMs: number | null };
+}): TextTarget {
+  const first = args.blocks[0]!;
+  const last = args.blocks[args.blocks.length - 1]!;
+  const startSelector = blockIdToSelector(first.id);
+  startSelector.refinedBy = {
+    type: "TextPositionSelector",
+    start: args.startOffset,
+    end: args.startOffset,
+  };
+  const endSelector = blockIdToSelector(last.id);
+  endSelector.refinedBy = {
+    type: "TextPositionSelector",
+    start: args.endOffset,
+    end: args.endOffset,
+  };
+  const quote: TextQuoteSelector = { type: "TextQuoteSelector", exact: args.quote };
+  if (args.prefix) quote.prefix = args.prefix;
+  if (args.suffix) quote.suffix = args.suffix;
+  const range: RangeSelector = { type: "RangeSelector", startSelector, endSelector };
+  const segmentHashes = args.blocks.map((b) => ({ id: b.id, hash: b.hash }));
+  const source = sourceForContext(args.context);
+  if (args.audioRange) {
+    const { startMs, endMs } = args.audioRange;
+    const value =
+      endMs == null ? `t=${nptSeconds(startMs)}` : `t=${nptSeconds(startMs)},${nptSeconds(endMs)}`;
+    const media: MediaFragmentSelector = {
+      type: "FragmentSelector",
+      conformsTo: MEDIA_FRAGS_SPEC,
+      value,
+    };
+    return { source, selector: [range, quote, media], "x-blog:segmentHashes": segmentHashes };
+  }
+  return { source, selector: [range, quote], "x-blog:segmentHashes": segmentHashes };
+}
 
-export type GraphicAnchor = {
-  kind: "graphic";
-  context: Context;
-  id: string;
-};
+export function makeGraphicTarget(context: Context, figureId: string): GraphicTarget {
+  return {
+    source: sourceForContext(context),
+    selector: blockIdToSelector(figureId) as FragmentSelector,
+  };
+}
 
-export type Anchor = TextAnchor | GraphicAnchor;
+// Reconstruct the practical anchor fields our resolution code needs from
+// a WA text target. Centralizes the selector-shape knowledge.
+export function textTargetParts(t: TextTarget): {
+  blocks: Array<{ id: string; hash: string }>;
+  startOffset: number;
+  endOffset: number;
+  quote: string;
+} {
+  const [range, quote] = t.selector;
+  return {
+    blocks: t["x-blog:segmentHashes"],
+    startOffset: range.startSelector.refinedBy?.start ?? 0,
+    endOffset: range.endSelector.refinedBy?.end ?? 0,
+    quote: quote.exact,
+  };
+}
+
+export function graphicTargetId(t: GraphicTarget): string {
+  return selectorToBlockId(t.selector);
+}
+
+// The audio time range a (narration) comment sits on, in ms, or null if
+// the target carries no Media Fragments selector (article / graphic
+// targets, or a narration comment created before the drawer timings
+// were available). `endMs: null` is an open-ended range (runs to the
+// end of the audio).
+export function audioFragmentRange(
+  target: Target,
+): { startMs: number; endMs: number | null } | null {
+  if (!isTextTarget(target)) return null;
+  const media = target.selector.find(
+    (s): s is MediaFragmentSelector =>
+      "conformsTo" in s && s.conformsTo === MEDIA_FRAGS_SPEC,
+  );
+  if (!media) return null;
+  const m = /^t=([\d.]+)(?:,([\d.]+))?$/.exec(media.value);
+  if (!m) return null;
+  const startMs = Math.round(parseFloat(m[1]!) * 1000);
+  const endMs = m[2] !== undefined ? Math.round(parseFloat(m[2]) * 1000) : null;
+  return { startMs, endMs };
+}
 
 export type Reply = {
   id: string;
@@ -161,7 +386,7 @@ export type Reply = {
 
 export type Thread = {
   id: string;
-  anchor: Anchor;
+  target: Target;
   // Snapshot exposes replies as an array (sorted by createdAt). The
   // underlying doc keeps them as a map for CRDT-friendliness.
   replies: Reply[];
@@ -203,7 +428,7 @@ export function visibleReplies(thread: Thread): Reply[] {
 // per-thread mutable `resolvedAt`. Replies live in a separate map,
 // not nested here.
 type StoredThread = {
-  anchor: Anchor;
+  target: Target;
   createdAt: number;
   resolvedAt?: number;
 };
@@ -363,12 +588,19 @@ export class CommentStore {
     const out: Thread[] = [];
     for (const id of Object.keys(js.threads)) {
       const t = js.threads[id]!;
+      // Defensive: a thread written before the Web Annotation migration
+      // (the `anchor` shape, not `target`) still applies cleanly to the
+      // doc — the seed didn't change — but has no `target`. Rather than
+      // crash the whole comment system on one stale blob, drop it. This
+      // is the documented breaking change (methodology.md → "WA target
+      // model"): pre-migration comments don't survive.
+      if (!t.target) continue;
       const replies = (repliesByThread.get(id) ?? []).sort(
         (a, b) => a.createdAt - b.createdAt,
       );
       out.push({
         id,
-        anchor: t.anchor,
+        target: t.target,
         replies,
         createdAt: t.createdAt,
         ...(t.resolvedAt !== undefined && { resolvedAt: t.resolvedAt }),
@@ -395,12 +627,12 @@ export class CommentStore {
 
   // ---------- Mutations ----------
 
-  addThread(threadId: string, anchor: Anchor, createdAt: number): void {
+  addThread(threadId: string, target: Target, createdAt: number): void {
     this.mutate("add thread", (d) => {
-      // Anchor is structurally cloned into the doc so future change ops
-      // see a stable reference; we never mutate anchor afterwards.
+      // Target is structurally cloned into the doc so future change ops
+      // see a stable reference; we never mutate it afterwards.
       d.threads[threadId] = {
-        anchor: structuredClone(anchor),
+        target: structuredClone(target),
         createdAt,
       };
     });

@@ -18,7 +18,7 @@ Key design decisions that shape the architecture:
 - **Segment-level audio cache.** Edit one sentence and only that sentence is re-synthesized — the rest comes from cache. See [Audio caching](#audio-caching).
 - **Non-linear narration is a first-class case.** Presenters reference earlier slides; our highlight/scroll logic has to handle going backwards as gracefully as forwards.
 - **No light/dark toggle**: we will never support a dark-mode/light-mode switch, because we need to ensure generated visuals for charts, etc. appear correctly (too hard to do this for both modes)
-- **Objects are CRDT-based; the server is dumb storage.** Objects are managed via Automerge (CRDT library) and synced as content-addressed change objects in R2. Following this CRDT paradigm, the server (Worker) never runs Automerge or hold any other reconciliation logic. It just shuffles bytes.
+- **Objects are CRDT-based; the *production* server is dumb storage.** Objects are managed via Automerge (CRDT library) and synced as content-addressed change objects in R2. Following this CRDT paradigm, the **production** server (the Cloudflare Worker) never runs Automerge or holds any other reconciliation logic — it just shuffles bytes. This is a *production deployment* constraint, not a universal one: it's what lets the comment data survive a malicious / buggy / different-version edge server, and it's why per-reader writes don't need server-side merge. **Localhost is exempt.** The dev Bun server and the offline build/authoring tools (`bun run generate`, `authoring/*`) run on the developer's machine, fully trusted, and freely run Automerge — merging every reader's blob, snapshotting, serializing to other formats. So "the server is dumb" should be read as "the *edge* server is dumb"; anything that only ever runs on localhost may be as smart as it likes.
 - **Cloudflare ecosystem in prod, Bun in dev.** We focus on leveraging the Cloudflare ecosyhstem for production (Workers for the HTTP layer, R2 for any dynamic blob, the Static Assets binding for static content). Bun is dev-only (`bun --hot index.ts`) and build-time only (`bun run generate`)
 - **Commenting as a core feature** Comments are done via OAuth login with the user's email. This allows us to not only apply recommended changes if relevant, but also follow-up with any commenter (via email or otherwise) to engage.
 - **AI-assisted iteration: the comment system *is* the editing surface.** The author leaves their own comments on a post via the same UI a reader does, interleaved with readers' feedback ("rephrase this paragraph", "add an example for X"). An offline tool then hands every unresolved thread — both sources, undifferentiated — to Claude, which edits the source HTML in one reviewable diff. No separate editor view, no parallel workflow for human-driven vs. reader-driven edits. The same mechanism that gathers reader questions is the mechanism that drives the next revision. See [AI-assisted authoring](#ai-assisted-authoring-authoring).
@@ -173,13 +173,23 @@ One floating popover per span breaks as soon as you have **multiple threads on t
 
 The column sidesteps the disambiguation problem entirely: every thread is always visible, stacked next to its anchor. Clicking a highlight scrolls its card into view (and pulses it); clicking a card scrolls the article back to its anchor (and pulses that). Two threads on the same selection just appear as two cards at the same vertical position.
 
-### Anchoring (text)
+### Anchoring: the Web Annotation target model
 
-Selections aren't stored as DOM ranges (those break on any edit). Each *block* gets a stable id and a sha256 of its normalized text content. A text anchor is:
+Comment anchors are stored as **W3C [Web Annotation Data Model][AnnotationModel]** *targets* (REC 2017) — a `source` IRI plus one or more *selectors* that narrow it to a part of that source. The types live in `client/commentsStore.ts`; all knowledge of the selector shape is funneled through a small set of helpers (`makeTextTarget` / `makeGraphicTarget` to build, `textTargetParts` / `graphicTargetId` / `contextOf` / `isTextTarget` to read) so the UI and the offline tools read plain fields, never raw selector arrays.
 
-- **`segments`** — the ordered list of blocks the selection touches, each `{ id, hash }`. Multi-segment selections (e.g., spanning two paragraphs) carry one entry per block.
-- **`startOffset` / `endOffset`** — character offsets within the *first* and *last* segment respectively, measured against `textContent` (which is invariant under our highlight-span DOM wrapping, so re-anchoring after a reload is deterministic).
-- **`quote`** — the verbatim selected text at creation time, kept for the outdated-comments list so an orphaned thread can still tell you what it used to point at.
+**Why the spec shape.** Our pre-2026 anchor type (`{ kind, context, segments, startOffset, endOffset, quote }`) was, field-for-field, a worse-named reinvention of WA selectors. Adopting the spec is a vocabulary win (anyone who's touched annotation tooling knows "selector," "target," "TextQuoteSelector") and leaves the door open to interop with Hypothes.is / dokieli / EPUB readers — see [exporting](#exporting-to-the-web-annotation-wire-format). It cost almost nothing: the mapping is near 1:1, with exactly one concept the WA model doesn't have (our per-block content hash), parked in a project-namespaced extension.
+
+A **text** target carries the standard selectors — a **`RangeSelector`** for the block span and a **`TextQuoteSelector`** for the verbatim text (plus a little surrounding context, stored cheaply against a possible future fuzzy re-anchor) — plus one project extension, **`x-blog:segmentHashes`**: a content hash of every block the selection touches. The WA model has selectors, not integrity checks, so the hashes — which drive stale-detection ([below](#stale-anchors-orphan--flag)) — have no native home and live in the extension. The `source` distinguishes the commentable surface (article body vs. the spoken-script drawer); the full post IRI is resolved only at the export boundary.
+
+**Narration comments also carry an audio time range — derived, never entered.** A comment on the spoken-script drawer is implicitly about a slice of the narration *audio*. The author never types timestamps: `bun run generate` already computes each `<mark>`'s time (via the `AudioPipeline`), and a narration comment automatically picks up the audio range of the segment(s) it covers, stored as a W3C **Media Fragments** ([spec][MediaFragments]) selector alongside the text ones — so it survives [export](#exporting-to-the-web-annotation-wire-format) to standard annotation tooling. The range is segment-granular (bounded by `<mark>` times). The card has a speaker button that plays that segment; the stored range is otherwise for export/interop and future pacing-feedback features.
+
+**The stored range is best-effort, not authoritative.** Audio is regenerated every revision, so a `t=` is only exactly valid for the build it was created against. In the normal loop that's a non-issue: a comment is typically resolved by the very AI edit that changes the content (and therefore the audio), so it's gone before its timestamps can drift. The range only risks going stale when a comment *outlives* a regeneration — e.g. a `PARTIAL` / `NOTE-ONLY` thread the edit left open, or a comment on a segment that got re-synthesized for unrelated reasons. So a consumer that needs an accurate time should re-derive it from the segment's current `<mark>` (reachable through the text anchor), treating the stored `t=` as a hint that may be one build old, never as ground truth.
+
+**Narration comments are visually distinct** — a violet accent and the speaker button, versus the blue of article comments. The icon is the main "this is about the audio" cue; we skip a text label to keep the narrow card uncluttered.
+
+**Narration cards are positioned by the *article* element they refer to, not by the drawer.** A narration comment's literal anchor lives in the spoken-script drawer (a fixed panel off to the side), so positioning cards there made them all cluster at the current scroll position and overflow — you could never see them all. Instead we place each narration card next to the article element its segment refers to, via the same `<mark name="X"/>` ↔ article `id="X"` pairing the player uses to highlight during playback, so narration and article comments interleave down the column. Clicking the card scrolls the article there; the speaker button drives the audio. Two edge cases the mark↔id model implies:
+- **No paired article element.** An author can write a `<mark>` whose name matches no article `id`. Such a comment has no article position, so it falls back to stacking at the page bottom (and a click scrolls the drawer instead). Rare, and degrades gracefully rather than mispositioning.
+- **Multiple article elements.** Not possible today — one mark name resolves to one id. If a segment ever maps to several, we'd anchor the card to the first; nothing else changes.
 
 Every block needs an id so we can refer to it later. We try them in this order:
 
@@ -188,9 +198,11 @@ Every block needs an id so we can refer to it later. We try them in this order:
 
 The takeaway: blocks the author labelled stay rock-solid, and blocks they didn't label still work — they just become eligible for the "outdated" flow as soon as the surrounding document changes.
 
+**Narration anchors cover only the spoken words.** A drawer segment's block also wraps the segment's play button (with its timestamp clock). The indexer and quote-capture deliberately exclude that, so a narration comment's stored quote and stale-detection hash track the spoken text, not the clock — including across multi-segment selections, where the clocks sit between segments.
+
 ### Stale anchors: orphan + flag
 
-On every render, each segment's current hash is recomputed and compared to the stored one. If *any* segment in a thread mismatches, the thread is marked **outdated**:
+On every render, each block's current hash is recomputed and compared to the one stored in `x-blog:segmentHashes`. If *any* block in a thread mismatches, the thread is marked **outdated**:
 
 - Its highlight is not drawn in the article (we don't want to point at the wrong sentence).
 - Its card still renders in the column, with an "outdated" tag in the anchor preview and the original `quote` text intact so the reader can find what it used to point at. The card falls back to the first segment's element for vertical positioning; if even that segment is gone, it stacks at the bottom of the column.
@@ -202,9 +214,24 @@ Note this means we reject these alternatives:
 
 ### Anchoring (graphics)
 
-Whole-graphic only in v1, scoped to `<figure>` (the authoring convention from [SSML usage](#ssml-usage)). The anchor is just the figure's id — no hash, because the graphic's content isn't text and isn't comparable across edits. If a figure is replaced (same id, new contents) the comment intentionally follows; that's almost always the right behavior when an author iterates on a diagram. Multiple threads on the same figure simply stack as multiple cards in the column — there's no dedupe.
+Whole-graphic only in v1, scoped to `<figure>` (the authoring convention from [SSML usage](#ssml-usage)). A graphic target is a `source` plus a single **`FragmentSelector`** naming the figure's id — no hash (the graphic's content isn't text and isn't comparable across edits). If a figure is replaced (same id, new contents) the comment intentionally follows; that's almost always the right behavior when an author iterates on a diagram. Multiple threads on the same figure simply stack as multiple cards in the column — there's no dedupe.
 
 Standalone `<svg>`/`<img>`/`<canvas>` are deferred: `<img>` is a void element, `<svg>` is a different DOM namespace, both need a wrapper before we can drop an HTML trigger button inside. The figure-only restriction keeps the indexing code free of those edge cases.
+
+### Exporting to the Web Annotation wire format
+
+Storing anchors as WA targets is "Phase A": the *in-memory* shape is already the spec model, but the bytes on the wire (Automerge change-objects) are plain JS objects with no JSON-LD framing. "Phase B" closes that gap with a pure transform in `shared/annotationExport.ts` that turns a merged comment snapshot into spec-valid JSON-LD: each thread becomes an `Annotation` (`motivation: "commenting"`), each reply a `TextualBody` (`format: "text/markdown"`), wrapped in an `AnnotationCollection`. The non-WA bits become project extensions (`x-blog:resolvedAt`; the `x-blog:segmentHashes` already inside the target); `authorEmail` is **dropped** (author-eyes-only follow-up data has no place in a portable export). Annotation IRIs are `urn:blog:<slug>:thread:<id>` — a `urn:` scheme, *not* `urn:uuid:`, because our ids aren't RFC-4122 UUIDs and claiming otherwise is a lie a strict consumer could reject.
+
+**Where it runs — and why not a Worker route.** The proposal's original sketch was a `GET /comments/export?post=X` endpoint on the Worker. That would force the edge server to run Automerge (merge every reader's per-user blob, then serialize), which **violates the production dumb-server rule** (see the key design decision up top). So the merge-and-serialize step lives only where running Automerge is already fine:
+
+- **The offline authoring tool** `bun authoring/exportAnnotations.ts <slug> [--all] [--base <iri>] [--out <file>]`. It reuses the offline aggregation in `loadUnresolvedThreads` (which merges the dev fsAdapter blobs), then runs the serializer; it's also the input the [`process-comments` skill](#ai-assisted-authoring-authoring--the-process-comments-skill) consumes. Pure localhost Bun — the dumb-server rule doesn't reach it.
+- **The author's browser**, which already holds the merged snapshot via the aggregator; a client-side "download annotations" affordance is a few lines on top of the same serializer (not yet wired to a button, but the function is ready).
+
+Both respect dumb-server perfectly: the merge happens on a trusted, full-Automerge runtime; the edge server still only ever shuffles opaque change-bytes.
+
+**On the Annotation Protocol / LDN inbox (the proposal's "Phase C").** Skipped, and the localhost exemption *doesn't* rescue it. The motivation for an inbound [Annotation Protocol][AnnotationProtocol] endpoint was "let federated annotation clients POST annotations into our system." But (a) it's an *inbound, networked* surface — that's a production endpoint, squarely under the dumb-server rule, not a localhost-only tool that the exemption covers; and (b) the one place we *did* wonder whether the protocol would help — the local AI comment-resolution pipeline — gains nothing from it: that tool reads the comment blobs straight off disk (`generated/.comments-dev/`) and merges them in-process, so a REST/LDN layer would be plumbing it routes *around*, not through. The standard *vocabulary* (which the authoring prompt now speaks for free, post-Phase-A) is the entire benefit there; the standard *protocol* adds nothing. If an LDN inbox is ever wanted, it's a genuine new networked feature with the same dumb-server tension the proposal flagged — not unlocked by this work.
+
+**Migration / breaking change.** Phase A renamed the stored field `anchor` → `target` and reshaped its contents. The shared Automerge **seed is unchanged** (it only declares the top-level `threads` / `replies` maps; the anchor lives *inside* a thread, written by `addThread`), so this is *not* a seed-regen / schema-evolution event — old change-objects still apply cleanly to the doc. They just produce threads with the legacy `anchor` field and no `target`. Since the system has no production comments and breaking changes were acceptable, there is **no migration change**: such pre-migration threads are defensively *skipped* at both read boundaries (`commentsStore.snapshot()` and the offline loader) rather than crashing the renderer on a missing `target`. To clear the stale local test data entirely, wipe `generated/.comments-dev/` and the `blog-comments:*` localStorage keys.
 
 ### Storage layer (`client/commentsStore.ts`)
 
@@ -219,7 +246,7 @@ Comments live in an **Automerge document** (CRDT) rather than a plain JSON array
 type CommentDoc = {
   threads: {
     [id: string]: {
-      anchor: Anchor,
+      target: Target,   // Web Annotation target (see Anchoring above)
       createdAt: number,
       resolvedAt?: number,
     }
@@ -384,7 +411,8 @@ Each post has a content hash — SHA-256 of the source HTML bytes — that the b
 ### UI
 
 - **Selection → floating action bar.** A "Comment" pill appears above any selection inside a commentable root. Clicking it creates a draft card in the column, scrolls to it, and focuses its textarea.
-- **Cards column** spans the document height. Each card is within it, so cards scroll with the page naturally. `repositionCards()` aligns each card's top with its anchor's `getBoundingClientRect().top + scrollY`, then walks in sort order pushing later cards down by at least `CARD_GAP_PX` so they don't overlap. It runs on scroll, resize, and after every render.
+- **Cards column** spans the document height. Each card is within it, so cards scroll with the page naturally. `repositionCards()` aligns each card's top with its anchor, then pushes later cards down so they don't overlap. It runs on scroll, resize, and after every render.
+- **Bottom clearance.** Comments near the end of the page are kept scrollable clear of the fixed player dock (an invisible spacer adds just enough scroll room), so a comment on the very last paragraph isn't trapped behind the player.
 - **Drafts vs threads.** A *draft* is an unsubmitted thread held in `this.drafts`. Drafts deliberately don't go into the CRDT, so they never sync to a server or to the user's other devices — but they DO persist to localStorage via `draftsStorage.ts` so closing the tab mid-compose doesn't lose the work (see [Draft persistence](#draft-persistence-clientdraftsstoragets)). The card looks the same as a saved one but is framed with a blue border; the composer's "Cancel" discards the entire draft, "Comment" promotes it (registering the thread and the reply). After the first reply lands the thread lives in the CRDT and subsequent typing in the same card just appends replies. Each card owns its own textarea, so drafts never collide with each other and the old "you have unsaved work" draft-protection logic isn't needed.
 - **Cross-linking** between card and anchor: clicking a highlight scrolls its card into view and pulses it; clicking a card (anywhere outside its buttons / textarea) scrolls the article to the anchor and pulses the highlight.
 - **Highlight color** is soft blue (`rgba(88, 166, 255, 0.22)`), deliberately not yellow — narration already paints the active sentence yellow/orange, and a sentence that's both being read and commented needs to be visually unambiguous. Nested highlight spans (overlapping threads) naturally compose to a darker blue, which reads as "denser commentary here."
@@ -417,9 +445,9 @@ Two notes on what's deferred:
 - **<1100px (popover mode):** the column's permanent surfaces (identity header, version banner, history panel, stacked cards) are hidden. Threads render into the DOM as before, but only the one tagged `data-mobile-active="true"` is visible — as a fixed-position overlay (`left/right: 12px`). The popover is **anchored to the tapped element**: at the moment the user taps, `computeMobilePopoverPosition` measures the anchor's `getBoundingClientRect()` and writes inline `top`/`bottom`/`max-height` so the popover appears immediately below the anchor (or above it if there's more room there). The reserved bottom region tracks `--narrate-dock-height` so the popover stays above the player dock no matter how tall it is. The computed position is stashed in `activeMobilePosition` and re-applied after every `renderAll` — a poll-driven re-render rebuilds the card element, so without re-applying the popover would snap to the CSS default. Always writing inline `top` *and* `bottom` (one explicit, one `auto`) is deliberate: a stale `top` left over from a previous desktop `repositionCards` would otherwise win over CSS specificity and force the card to stretch into a tall, mostly-empty box. Tapping a highlight or graphic indicator promotes that thread to active; tapping the *same* anchor a second time toggles it closed; tapping a *different* highlight switches the popover to its thread. Tap-outside still works as a backup dismiss. Drafts created via the action-bar Comment pill are immediately surfaced as the active popover. Multi-thread anchors still resolve to a single popover (the first thread); a stacked-popover or swipe-between flow can land later without further architectural changes.
 - **Hide-all-comments button** (`.cmt-hide-all-fab`): a small circular button pinned to the top-right of the viewport (mobile-only — desktop hides it via media query, since the column itself is the affordance). Top placement is deliberate — the bottom is dense on mobile, with the narrator's "Listen" pill and the player dock competing for the same space. Pressing flattens every highlight, suppresses graphic indicators, hides the column, and dismisses the active popover. The toggle is persisted to localStorage so the choice survives reloads — useful both as a mobile distraction-free reading mode and as a desktop screenshot-clean mode. The underlying state (drafts, hidden cards, snapshot) is untouched - it just suppresses visual surfaces.
 
-**Mobile sign-in surface.** The identity header (`.cmt-identity`) is pinned to the top-right of the viewport on mobile via `position: fixed`, stacked just below the hide-all-comments button (which keeps its top-right corner). Width is capped at `min(220px, calc(100vw - 24px))` — the desktop column is 320px wide, so the mobile pill is deliberately ~30% narrower so it reads as a compact floating widget instead of a shrunken column. Both states render: logged-out shows the pitch + Google / Microsoft provider buttons (the missing affordance that an earlier draft of v1 left as a known gap), logged-in shows the avatar + name + Sign out. Three ways the bar leaves the screen:
+**Mobile sign-in surface.** The identity header (`.cmt-identity`) is pinned to the top-right of the viewport on mobile via `position: fixed`, stacked just below the hide-all-comments button (which keeps its top-right corner). Width is capped at `min(220px, calc(100vw - 24px))` — the desktop column is 320px wide, so the mobile pill is deliberately ~30% narrower so it reads as a compact floating widget instead of a shrunken column. Both states render: logged-out shows the pitch + Google / Microsoft provider buttons, logged-in shows the avatar + name + Sign out. Three ways the bar leaves the screen:
 
-- A dedicated × inside the bar (`.cmt-identity-dismiss`) flips `body.cmt-identity-dismissed` and hides it for the session. The dismiss rule lives outside the mobile media query so resizing across the breakpoint (mobile → desktop or vice versa) preserves the choice — dismissing on one layout shouldn't surface the bar on the other. *Deliberately not persisted across reloads*, so a returning reader who's never signed in still sees the affordance on the next page load.
+- A dedicated × inside the bar (`.cmt-identity-dismiss`) flips `body.cmt-identity-dismissed` and hides it for the session. *Deliberately not persisted across reloads*, so a returning reader who's never signed in still sees the affordance on the next page load.
 - While a comment popover is open (`body.cmt-mobile-popover-active`, toggled by `setActiveCard`), the bar is hidden — the popover's auto-placement near the tapped anchor can land in the upper viewport, so overlapping the bar would be visual clutter. The bar re-appears as soon as the popover dismisses.
 - The hide-all-comments button still suppresses the bar along with everything else in the comment system (the identity sits inside the column DOM, which `body.cmt-highlights-hidden` already collapses).
 
@@ -560,64 +588,58 @@ The author check requires `session.emailVerified === true`. Without that gate, a
 - In dev builds, `posts/*.html` is the source of truth
 - In prod builds, we use only the generated files (`wrangler dev` works without a build step)
 
-## AI-assisted authoring (`authoring/`)
+## AI-assisted authoring (`authoring/` + the `process-comments` skill)
 
-The comment system isn't just a feedback channel — it's the authoring interface itself. The author opens their own post, highlights text, leaves comments like "rephrase this", "add a paragraph about edge cases", etc. — through exactly the same UI a reader uses. Two commands form the loop:
+The comment system isn't just a feedback channel — it's the authoring interface itself. The author opens their own post, highlights text, leaves comments like "rephrase this", "add a paragraph about edge cases", etc. — through exactly the same UI a reader uses. The loop:
 
 1. Publish the post.
 2. Readers (and the author, on a re-read) leave comments through the in-page column.
-3. Run `bun run apply-comments <slug>`. The tool aggregates every unresolved thread — readers' + the author's own — and hands them to Claude with instructions to edit the post. Claude writes its changes to `posts/<slug>.ai-draft.html` (sidecar) using the built-in Edit tool, emitting a structured per-thread verdict (`APPLIED` / `PARTIAL` / `NOTE-ONLY`) at the end of its run. Verdicts are captured into `posts/<slug>.ai-draft.meta.json`.
-4. Author reviews the draft (`diff posts/<slug>.html posts/<slug>.ai-draft.html`).
-5. Run `bun run promote-draft <slug>` to accept. This moves the draft into place, writes resolution envelopes for every thread Claude marked `APPLIED`, deletes the meta sidecar, and re-runs `generate/post-versions.ts` so the new content hash is recorded in `posts/versions.json`. (Or `rm posts/<slug>.ai-draft.*` to discard.)
-6. Author regenerates audio (`bun run generate`) and redeploys (`bun run build && wrangler deploy`).
+3. In a Claude Code session, run the **`process-comments` skill** (`/process-comments <slug>`). It pulls every unresolved thread — readers' + the author's own — edits the post HTML in place to address them, and resolves the ones it addresses, with the author reviewing each change live and steering across passes.
+4. Author regenerates audio (`bun run generate`) and redeploys (`bun run build && wrangler deploy`).
 
-**Author-self comments and reader comments are treated identically.** "Rephrase the avalanche-effect paragraph to mention SHA-256 explicitly" (left by the author) goes in the same prompt as "is this really deterministic for streaming inputs?" (left by a reader). Claude makes one coherent set of edits across both. That synthesis is the point: separating "what the author wants to change" from "what readers want explained" loses the case where one edit addresses both.
+**Author-self comments and reader comments are treated identically.** "Rephrase the avalanche-effect paragraph to mention SHA-256 explicitly" (left by the author) sits in the same working set as "is this really deterministic for streaming inputs?" (left by a reader). The skill makes one coherent set of edits across both. That synthesis is the point: separating "what the author wants to change" from "what readers want explained" loses the case where one edit addresses both.
 
-**Why split apply and promote into two commands.** Resolution is a side-effect that's wrong if the author rejects the draft. If we resolved on Claude's run, then later discarded the draft, the original threads would look closed even though their content was never shipped. Tying resolution to acceptance (the `promote-draft` step) keeps the system honest: a thread is resolved *if and only if* the edit it triggered actually landed in `posts/<slug>.html`. The intermediate state — Claude's verdicts captured in the meta sidecar — is the carrier between the two commands.
+### How the loop works (the `process-comments` skill)
 
-### Why a build-time tool, not in-Worker
+The skill (`.claude/skills/process-comments/SKILL.md`) runs inside an ordinary interactive Claude Code session and drives:
 
-The same three-runtime split that shapes the rest of the project (see [Deploy architecture](#deploy-architecture)) applies: Bun for dev/build-time, Workers for prod request handling, browser for reader UI. AI authoring fits cleanly into the build-time bucket:
+1. **Fetch** the open comments — `bun authoring/exportAnnotations.ts <slug>` — as a Web Annotation `AnnotationCollection` (see [Inputs the skill sees](#inputs-the-skill-sees)).
+2. **Read the editing rules** (`authoring/authoringRules.md`) and the post, then **edit `posts/<slug>.html` in place**.
+3. **Report a verdict per thread** (`APPLIED | PARTIAL | NOTE-ONLY`) and **pause for the author** to review (`git diff`), request changes, or ask for another pass.
+4. On the author's sign-off, **resolve the `APPLIED` threads** — `bun authoring/resolveThreads.ts <slug> <id…>` (see [Resolution write-back](#resolution-write-back-resolve-iff-shipped)).
 
-- **Workers can't host the call.** A Claude pass on a long post can take minutes; Workers target second-scale request handling, not multi-minute generation. `ctx.waitUntil` doesn't help — we want streaming output the author can watch.
-- **The browser can't hold credentials.** Whether `ANTHROPIC_API_KEY` or an OAuth token, shipping it to the client lets anyone with the page open spend the author's quota.
-- **Build-time already has the files.** The tool writes to `posts/<slug>.ai-draft.html`; the very next step is `bun run build` against the same directory.
+### Why local tooling, not in-Worker or the browser
 
-Author identity is intrinsic: only someone with the project checked out and an authorized local Claude Code session can run the tool. No new auth surface to secure.
+The same three-runtime split that shapes the rest of the project (see [Deploy architecture](#deploy-architecture)) applies: Bun + the author's local Claude Code for dev/build-time, Workers for prod request handling, browser for reader UI. AI authoring lives in the local bucket:
 
-### Why `claude -p`, not the Anthropic SDK
+- **Workers can't host it.** A pass over a long post can take minutes; Workers target second-scale request handling, not multi-minute interactive editing the author watches.
+- **The browser can't hold credentials.** Whether an API key or an OAuth token, shipping it to the client lets anyone with the page open spend the author's quota.
+- **Local already has the files.** The post HTML is right there in the working tree; the very next step is `bun run build` against the same directory.
 
-`claude -p` is Claude Code's non-interactive mode — accepts a prompt over stdin, runs the agent loop with its built-in tools, streams tool calls + final output to stdout. Two practical wins versus calling `api.anthropic.com/v1/messages` directly:
+Author identity is intrinsic: only someone with the project checked out and an authorized local Claude Code session can run the skill. No new auth surface to secure.
 
-- **Author's existing auth.** No `ANTHROPIC_API_KEY` to provision, no Cloudflare secret, no dotenv entry. The author already has Claude Code on their machine; the tool inherits its login.
-- **Built-in Edit / Read / Grep / Glob.** Otherwise we'd reimplement exact-text replacement, file-read scoping, and a tool-use loop against the raw Messages API. Claude Code's versions are already battle-tested; Edit's `old_string`-must-be-unique invariant keeps Claude from making sloppy multi-hit replacements.
+### Why an in-session skill (not a subprocess or the SDK)
 
-The exact-text Edit-tool model is what makes "AI edits a real file" reviewable. Each edit is a focused diff hunk Claude has to justify in its summary — there's no full-file rewrite step where a `<script type="text/narration">` block could silently disappear.
+Running comment-processing *inside the author's interactive Claude Code session* — rather than spawning a separate non-interactive process or calling `api.anthropic.com/v1/messages` directly — buys three things:
 
-The prompt goes over stdin rather than as a positional argv (which is capped at ~256 KB on macOS, smaller on some Linuxes) — a long post plus dozens of threads can otherwise exceed the limit and fail with a confusing E2BIG.
+- **The author's own session, plan, and auth.** No `ANTHROPIC_API_KEY` to provision, no separately-billed subprocess; it runs on the Claude Code the author is already signed into.
+- **Built-in Edit / Read / Grep / Glob.** No reimplementing exact-text replacement or a tool-use loop against the raw API. Edit's `old_string`-must-be-unique invariant keeps every change a focused, reviewable diff hunk — there's no full-file rewrite step where a `<script type="text/narration">` block could silently disappear.
+- **Iteration with shared context.** The session persists across passes, so the author can do many rounds — "reconsider just the narration comments", "revert that last edit", "also restructure §3 while you're in there" — and interleave their own direction with the comment-driven edits. A one-shot, memoryless invocation can do none of that.
 
-### Why a sidecar (`.ai-draft.html`), not in-place
+### In-place editing; git is the review surface
 
-Default behavior writes to `posts/<slug>.ai-draft.html` next to the source; `--in-place` overrides for authors who'd rather review through `git diff`.
+The skill edits `posts/<slug>.html` directly — no draft sidecar. The author is present and steering: watching each Edit as it happens, with `git diff` against the working tree as the review surface and git itself as the undo. So the safety model is **human-in-the-loop** — the author's live review approves (or stops, or corrects) each change. That's what lets the skill skip both a separate draft/review-accept indirection and any tool-permission sandbox: there's no memoryless process to fence in, just an author watching.
 
-The sidecar gives three things:
-- **A clean review surface** — `diff posts/<slug>.html posts/<slug>.ai-draft.html` shows only Claude's changes, independent of any other unstaged work in the tree.
-- **Safety under unstaged work.** A typical author runs this mid-edit; in-place writes would interleave AI edits with whatever they were already changing.
-- **An obvious accept gesture** — `mv` is one keystroke and atomic.
+### Inputs the skill sees
 
-`posts/*.ai-draft.html` is gitignored so accidental commits don't include the draft.
+`bun authoring/exportAnnotations.ts <slug> [--all]` emits the open comments as a [Web Annotation](#anchoring-the-web-annotation-target-model) `AnnotationCollection` (JSON-LD). Each comment carries:
+- a **stable IRI** (`urn:blog:<slug>:thread:<id>`) — the key for the verdicts and the resolution write-back;
+- a **`target` selector** pinpointing the block + exact quoted text, so the skill locates text via Edit's unique-match requirement;
+- the **reply bodies** — the actual feedback to act on.
 
-### Inputs Claude sees
+`authorEmail` is stripped from the export — it's author-eyes-only follow-up data with no place in a portable annotation (see the [exporter](#exporting-to-the-web-annotation-wire-format)).
 
-Per unresolved thread, the prompt includes:
-- The thread id (for the structured-summary back-reference)
-- The owner's userId (so Claude can group multi-thread feedback from the same reader)
-- The anchor — segment ids + verbatim quote for text anchors, figure id for graphics
-- Every reply in chronological order, with display name + email
-
-The owner's email is shown to Claude on purpose: if a comment is ambiguous, Claude's summary can recommend "reply to <email> for clarification" instead of guessing.
-
-A dry-run diagnostic, `bun authoring/listUnresolved.ts <slug>`, prints exactly what would be fed to Claude without paying for a model call — useful for sanity-checking which threads survived the resolved-filter before spending tokens.
+A dry-run diagnostic, `bun authoring/listUnresolved.ts <slug>`, prints the same set in human-readable form — a quick sanity check of which threads survived the resolved-filter.
 
 ### What gets filtered out
 
@@ -629,52 +651,41 @@ The loader walks the same store the in-browser author aggregator does (`generate
 
 What's left is what Claude sees — never a thread already addressed.
 
-### System prompt — focused, not all of methodology.md
+### The editing rules (`authoring/authoringRules.md`)
 
-This document is ~90KB, mostly infrastructure (CRDT, OAuth, build system) irrelevant to a per-post edit. The authoring system prompt is ~2KB and covers only what Claude needs to edit a post without breaking it:
+The rules the skill follows live in `authoring/authoringRules.md` — a small (~2KB) doc, deliberately *not* all of this ~90KB methodology. It covers only what's needed to edit a post without breaking it:
 
 - HTML structure (article + narration scripts + PLS lexicon).
 - The mark↔id pairing between narration `<mark name="X"/>` and article `id="X"`.
 - Which tags are infrastructure (`<meta name="author-email">`, `<link>` / `<script type="module">` for client wiring) and must not be touched.
-- The decision tree: typo-fix → apply; rewording request → rewrite; substantive disagreement → flag in summary rather than auto-apply.
-- A required structured-summary output format (`Thread #N (id=…): APPLIED | PARTIAL | NOTE-ONLY`) so the post-run summary is greppable.
+- The decision tree: typo-fix → apply; rewording request → rewrite; substantive disagreement / out of scope → flag as `NOTE-ONLY` rather than silently apply.
+- The required structured verdict format (`Thread #N (id=…): APPLIED | PARTIAL | NOTE-ONLY`).
 
-Pasting all of methodology.md into the prompt would bloat tokens, dilute the rules that matter for editing, and force Claude to read about Automerge merge semantics when the question at hand is "how should this paragraph read."
+Keeping the rules small and separate means the skill loads only what's relevant to "how should this paragraph read," not Automerge merge semantics or the OAuth flow.
 
-### Tool sandboxing
+### Resolution write-back (resolve-iff-shipped)
 
-Tools are whitelisted to `Read, Edit, Grep, Glob`. No `Bash`, no `WebFetch`, no `Write` — Edit suffices because the draft file is pre-created by the wrapper. `--permission-mode acceptEdits` auto-accepts Edit calls but still pauses for anything outside the whitelist, so a spurious `Bash("git push")` surfaces explicitly instead of silently executing.
+`bun authoring/resolveThreads.ts <slug> <id…>` writes one author-resolution envelope per thread, through the same `fsAdapter.putResolution` the dev server uses. It accepts either a bare thread id or the annotation IRI verbatim (it strips the `urn:blog:<slug>:thread:` prefix). The envelope uses `resolverId: "ai-applied"` — distinct from the OAuth `<provider>:<sub>` scheme so AI-driven resolutions stay greppable in audits — and `resolverName: "AI (process-comments skill)"`.
 
-The whitelist + the sidecar + git form the safety stack: Claude has to consciously try to touch something off-target, and even if it does, there's a pre-edit copy and `git diff` to recover.
+Two rules keep it honest:
 
-### Promote: turning a draft into a new version
+- **Only `APPLIED` resolves.** `PARTIAL` (addressed *some* of the thread) and `NOTE-ONLY` (flagged for the author rather than edited) stay open — the verdict is the skill's own self-assessment, not ground truth, so the author resolves those manually after follow-up.
+- **Resolve only after the edit shipped.** Resolution means "this feedback landed in `posts/<slug>.html`." Because the skill edits in place and resolves only on the author's sign-off, a thread is resolved *if and only if* the edit it triggered is actually in the file — there's no draft-rejected window where a thread could look closed without its content shipping.
 
-`bun run promote-draft <slug>` is the accept-side of the loop:
+Resolutions land in the local dev store (`generated/.comments-dev/resolutions/`); the author pushes them to R2 alongside the next deploy (`wrangler r2 object put …`, symmetric with the `wrangler r2 object sync` used to fetch comments). A first-class R2 push step is a follow-up. Resolving is *not* bundled with a version bump — the post content-hash is recorded by `generate/post-versions.ts` on the next `bun run build`, which also arms readers' "doc changed" banner ([Document version](#document-version-clientpostversionts-serverpostversionsroutets)).
 
-1. Reads `posts/<slug>.ai-draft.meta.json` to recover Claude's per-thread verdicts.
-2. Optionally prints the unified diff (`--show-diff`) — by default it skips this, since the author has typically already reviewed via `diff` before invoking promote.
-3. Prompts `y/N` (skip with `--yes` for scripted use).
-4. **Writes resolutions for every `APPLIED` thread** by calling the same `fsAdapter.putResolution` the dev server uses. The envelope uses `resolverId: "ai-applied"` and `resolverName: "AI (apply-comments)"` — a deliberately distinct identity prefix from the OAuth `<provider>:<sub>` scheme so audits can grep for AI-driven resolutions.
-5. Renames `posts/<slug>.ai-draft.html` → `posts/<slug>.html` atomically.
-6. Deletes the meta sidecar (it's served its purpose).
-7. Re-runs `generate/post-versions.ts` so the new SHA-256 lands in `posts/versions.json` and the generated `server/postVersions.generated.ts` is in sync. Readers' "doc changed" banner ([Document version](#document-version-clientpostversionts-serverpostversionsroutets)) is now armed — anyone who'd visited the old version sees the heads-up on next load.
+### Decided against — surfacing per-iteration AI history in the browser
 
-**Resolution writes happen before the rename**, on purpose. If the process crashes between rename and resolution writes, the post is promoted but the threads still look open in the author aggregator — confusing, and the author has no memory of which threads were supposed to close (the meta sidecar is by then in the trash). Doing resolutions first means a crash leaves resolutions written + draft intact + threads correctly marked resolved on the next aggregator load.
-
-**Auto-resolutions land in the local dev store, not directly in R2.** For v1 the author pushes them up alongside the next deploy (`wrangler r2 object put …`, symmetric with the `wrangler r2 object sync` they ran to fetch comments). A first-class push step belongs in the same follow-up that adds an R2 read adapter to the loader.
-
-**Only `APPLIED` resolves.** `PARTIAL` (Claude addressed *some* of the thread) and `NOTE-ONLY` (Claude flagged the thread for the author rather than editing) stay open. The author can resolve those manually after follow-up. The conservative default reflects that the structured verdict is Claude's own self-assessment, not ground truth — promote should not silently close a thread Claude wasn't confident it addressed.
-
-**Filter-out collision with the version generator.** `generate/post-versions.ts` walks `posts/*.html` and would otherwise pick up `posts/<slug>.ai-draft.html` as if it were a real post — creating a phantom `/posts/<slug>.ai-draft` entry in `versions.json` on any mid-review build. The walker explicitly skips `*.ai-draft.html` to prevent that.
+We considered capturing each intermediate AI pass as a browsable version (a "show me what the AI tried across iterations" view in the UI). It's fundamentally incompatible with in-place editing: in-place means every pass overwrites `posts/<slug>.html`, so intermediate passes only ever exist as uncommitted working-tree states — there's nothing durable to surface unless we re-introduce per-pass snapshots, which is exactly the draft machinery in-place was chosen to drop. So iteration history lives in **git** (the author commits between passes if they want checkpoints), and only *shipped* revisions become browsable entries in the author's [Document versions](#document-version-clientpostversionts-serverpostversionsroutets) panel (via the post-version hash on the next build).
 
 ### Excluded from v1
 
 - **R2 fetch from the loader.** Currently reads only the local dev store. Pulling prod comments is one `wrangler r2 object sync` away today; an R2 adapter shaped like `server/comments/r2Adapter.ts` is a follow-up.
-- **R2 push for auto-resolutions.** Symmetric to the read side; resolutions land in `generated/.comments-dev/` on promote, and the author pushes them with `wrangler r2 object put` until the sync step is automated.
-- **Chained audio regeneration.** `bun run generate` does this already; chaining it into promote would be a convenience but has its own (multi-minute) latency story, and the author often wants to verify the prose before paying that cost.
-- **Reply-back to commenters.** A future flow could have Claude propose responses for the author to send via email; deferred until outbound email is wired up (see [Future direction: Web Push notifications](#future-direction-web-push-notifications)).
-- **Multi-post sessions.** One post per invocation. Cross-post consistency (e.g. updating a shared intro across a series) is a manual loop today.
-- **Promote-from-CI.** `promote-draft` runs locally only; there's no flow for a CI bot to approve drafts on behalf of the author. The `--yes` flag is there for scripting *from the author's machine*, not for automation.
+- **R2 push for resolutions.** Symmetric to the read side; `resolveThreads.ts` writes into `generated/.comments-dev/resolutions/`, and the author pushes them with `wrangler r2 object put` until the sync step is automated.
+- **Chained audio regeneration.** `bun run generate` does this already; folding it into the comment-processing loop would be a convenience but has its own (multi-minute) latency story, and the author often wants to verify the prose before paying that cost.
+- **Reply-back to commenters.** A future flow could have the skill propose responses for the author to send via email; deferred until outbound email is wired up (see [Future direction: Web Push notifications](#future-direction-web-push-notifications)).
+- **Multi-post sessions.** One post per skill invocation. Cross-post consistency (e.g. updating a shared intro across a series) is a manual loop today.
+- **Unattended / CI runs.** The skill is interactive by design — the author reviews live and resolution ties to that sign-off — so there's deliberately no headless path for a bot to apply and resolve comments on the author's behalf.
 
 ## Deploy architecture
 
@@ -822,6 +833,10 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 
 ## Relation to other specifications
 
+### In active use
+
+- **Web Annotation Data Model** ([spec][AnnotationModel]): the comments system stores every anchor as a Web Annotation *target* (selectors over the post — `RangeSelector` + `TextQuoteSelector`, or a `FragmentSelector` for graphics), and exports threads as a JSON-LD `AnnotationCollection`. See [Comments → Anchoring](#anchoring-the-web-annotation-target-model) and [Exporting to the Web Annotation wire format](#exporting-to-the-web-annotation-wire-format). (Still *not* used for the narration `<mark>` ↔ `id` pairing — that relation is simple enough to need no annotation vocabulary.)
+
 ### Possibly usable later
 
 - **EPUB 3 Media Overlays** ([spec][EPUB]): Media Overlays pair text fragments with audio clips via SMIL
@@ -832,9 +847,8 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 ### Considered, not used
 
 - **WebVTT** ([spec][WebVTT]): primarily used to overlay captions on top of video tracks (or audio tracks) via `<track>` elements, but we don't use any overlay like this.
-- **Media Fragments URI** ([spec][MediaFragments]): allows time-based URL fragment syntax (ex: `#t=12,18`), but we don't need any of these.
+- **Media Fragments URI** ([spec][MediaFragments]) **as a player/URL feature**: we don't expose time-based URL fragments (ex: `#t=12,18`) for linking into the audio. The Media Fragments `t=` syntax *does* appear inside the comments data model (a narration comment carries the audio time range of its segment as a Web Annotation Media Fragments selector), but it's **best-effort, not authoritative** — audio is regenerated each revision, so a stored `t=` is only exactly valid for its build. The resolve-on-edit loop usually retires a comment before its timestamps drift; the durable anchor is always the narration *text*. See [Comments → Anchoring](#anchoring-the-web-annotation-target-model) for the full staleness reasoning.
 - **Spoken HTML** ([spec][SpokenHtml]) allows inlining SSML notation directly in HTML elements with attributes. However, our audio content is too different from the blog context for this to be useful (and instead use script tags)
-- **Web Annotation Data Model** ([spec][AnnotationModel]): defines usage of JSON-LD to encode relations between objects. Although `mark`s are relations between the spoken track and the HTML content, it's a simple enough relation that we don't need a complex annotation system.
 
 ---
 
@@ -845,6 +859,7 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 [MediaFragments]: https://www.w3.org/TR/media-frags/
 [SpokenHtml]: https://www.w3.org/TR/spoken-html/
 [AnnotationModel]: https://www.w3.org/TR/annotation-model/
+[AnnotationProtocol]: https://www.w3.org/TR/annotation-protocol/
 [PLS]: https://www.w3.org/TR/pronunciation-lexicon/
 [SSML]: https://www.w3.org/TR/speech-synthesis11/
 [SSML-mark]: https://www.w3.org/TR/speech-synthesis11/#S3.3.2

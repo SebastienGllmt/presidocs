@@ -42,6 +42,11 @@ const {
   isDeleted,
   visibleReplies,
   setCommentsWasmSource,
+  makeTextTarget,
+  makeGraphicTarget,
+  graphicTargetId,
+  audioFragmentRange,
+  MEDIA_FRAGS_SPEC,
 } = await import("./commentsStore.ts");
 
 // ---- WASM source: read directly off node_modules ----------------------
@@ -65,20 +70,17 @@ function freshStorage() {
   storage.clear();
 }
 
-const ANCHOR_TEXT = {
-  kind: "text" as const,
-  context: "article" as const,
-  segments: [{ id: "id:foo", hash: "hash-of-foo" }],
+// Web Annotation targets, built through the same constructors the UI
+// uses so the stored shape under test is exactly what ships.
+const ANCHOR_TEXT = makeTextTarget({
+  context: "article",
+  blocks: [{ id: "id:foo", hash: "hash-of-foo" }],
   startOffset: 0,
   endOffset: 10,
   quote: "Hello world",
-};
+});
 
-const ANCHOR_GRAPHIC = {
-  kind: "graphic" as const,
-  context: "article" as const,
-  id: "id:diagram",
-};
+const ANCHOR_GRAPHIC = makeGraphicTarget("article", "id:diagram");
 
 const TEST_USER_ID = "google:test-user-123";
 
@@ -118,7 +120,7 @@ test("addThread + addReply round-trip via snapshot", async () => {
   const snap = s.snapshot();
   expect(snap.length).toBe(1);
   expect(snap[0]!.id).toBe("t1");
-  expect(snap[0]!.anchor).toEqual(ANCHOR_TEXT);
+  expect(snap[0]!.target).toEqual(ANCHOR_TEXT);
   expect(snap[0]!.replies.length).toBe(1);
   expect(snap[0]!.replies[0]!.body).toBe("hi");
   expect(snap[0]!.createdAt).toBe(100);
@@ -218,8 +220,55 @@ test("graphic anchors round-trip", async () => {
   s.addThread("g1", ANCHOR_GRAPHIC, 100);
   s.addReply("g1", reply("r1", "diagram is great", 110));
   const t = s.snapshot()[0]!;
-  expect(t.anchor.kind).toBe("graphic");
-  expect((t.anchor as typeof ANCHOR_GRAPHIC).id).toBe("id:diagram");
+  expect(t.target).toEqual(ANCHOR_GRAPHIC);
+  expect(graphicTargetId(t.target as typeof ANCHOR_GRAPHIC)).toBe("id:diagram");
+});
+
+test("narration target carries an auto-derived Media Fragments selector", async () => {
+  const target = makeTextTarget({
+    context: "narration",
+    blocks: [{ id: "id:lede", hash: "h" }],
+    startOffset: 0,
+    endOffset: 5,
+    quote: "Hello",
+    audioRange: { startMs: 2868, endMs: 8838 },
+  });
+  // Third selector is the Media Fragments FragmentSelector, in seconds.
+  expect(target.selector[2]).toEqual({
+    type: "FragmentSelector",
+    conformsTo: MEDIA_FRAGS_SPEC,
+    value: "t=2.868,8.838",
+  });
+  // Round-trips through the accessor back to ms.
+  expect(audioFragmentRange(target)).toEqual({ startMs: 2868, endMs: 8838 });
+
+  // Round-trips through the CRDT too.
+  const s = await makeStore();
+  s.addThread("n1", target, 100);
+  s.addReply("n1", reply("r1", "pacing feels rushed", 110));
+  expect(audioFragmentRange(s.snapshot()[0]!.target)).toEqual({
+    startMs: 2868,
+    endMs: 8838,
+  });
+});
+
+test("open-ended audio range (final segment) omits the end", () => {
+  const target = makeTextTarget({
+    context: "narration",
+    blocks: [{ id: "id:outro", hash: "h" }],
+    startOffset: 0,
+    endOffset: 3,
+    quote: "Bye",
+    audioRange: { startMs: 90000, endMs: null },
+  });
+  expect((target.selector[2] as { value: string }).value).toBe("t=90");
+  expect(audioFragmentRange(target)).toEqual({ startMs: 90000, endMs: null });
+});
+
+test("non-narration / article targets have no Media Fragments selector", () => {
+  expect(audioFragmentRange(ANCHOR_TEXT)).toBeNull();
+  expect(ANCHOR_TEXT.selector.length).toBe(2);
+  expect(audioFragmentRange(ANCHOR_GRAPHIC)).toBeNull();
 });
 
 test("reload from localStorage preserves the doc", async () => {
