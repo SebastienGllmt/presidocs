@@ -122,6 +122,7 @@ class Narrator {
     this.renderChapters(manifest);
     this.setupVisibilityToggle();
     this.setupHighlightToggle();
+    this.setupCloseButton();
     this.setupSmoothBar();
     this.setupKeyboardShortcuts();
     this.buildDrawer(manifest);
@@ -151,15 +152,16 @@ class Narrator {
   // open slides the dock off-screen; clicking it when the dock is hidden
   // brings the dock back. Audio keeps playing in either case.
   //
-  // On narrow viewports (< ~1000px) the dock occupies almost the full
-  // width at the bottom, so a bottom-anchored Listen pill on the right
-  // would sit on top of the dock's right edge. We sidestep that by
-  // tracking the dock's measured height in a CSS custom property
-  // (`--narrate-dock-height`); the stylesheet uses it under a media
-  // query to lift the toggle above the dock whenever it's expanded.
-  // ResizeObserver keeps the variable in sync as the player or chapter
-  // strip changes height (e.g. on orientation change or when a wrapping
-  // chapter row materializes).
+  // On narrow viewports (≤ 1000px) the dock spans almost the full
+  // width, so we hide the floating Listen pill while the dock is open
+  // and use an in-player × instead (see `setupCloseButton`). The
+  // dock's measured height is still mirrored into a CSS custom
+  // property (`--narrate-dock-height`) for downstream consumers —
+  // notably the comments mobile-popover positioner, which reserves
+  // bottom-of-viewport space above the dock. ResizeObserver keeps the
+  // variable in sync as the player or chapter strip changes height
+  // (e.g. on orientation change or when a wrapping chapter row
+  // materializes).
   private setupVisibilityToggle() {
     const dock = this.playerContainer.closest(".narrate-dock") as HTMLElement | null;
     if (!dock) return;
@@ -286,6 +288,28 @@ class Narrator {
     if (moreBtn) basic.insertBefore(btn, moreBtn);
     else basic.appendChild(btn);
     this.highlightBtn = btn;
+  }
+
+  // Inject a close × in the top-right corner of the player card. Shown
+  // only on small screens (CSS media query) — on desktop the floating
+  // "Listen" pill is the close affordance and the in-player × would
+  // just be redundant. On mobile the dock takes most of the viewport
+  // width and the pill would otherwise sit on top of the dock, so the
+  // pill is hidden when the dock is open and the in-player × replaces
+  // it as the dismiss control.
+  private setupCloseButton() {
+    const player = this.playerContainer.querySelector(".shk-player") as HTMLElement | null;
+    if (!player) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "narrate-close-btn";
+    btn.setAttribute("aria-label", "Close narration player");
+    btn.title = "Close player";
+    btn.innerHTML =
+      '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">'
+      + '<path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+    btn.addEventListener("click", () => this.setDockHidden(true));
+    player.appendChild(btn);
   }
 
   // Shikwasa updates `.shk-bar_played` on `timeupdate`, which fires ~4×/sec.

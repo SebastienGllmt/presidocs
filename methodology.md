@@ -21,6 +21,7 @@ Key design decisions that shape the architecture:
 - **Objects are CRDT-based; the server is dumb storage.** Objects are managed via Automerge (CRDT library) and synced as content-addressed change objects in R2. Following this CRDT paradigm, the server (Worker) never runs Automerge or hold any other reconciliation logic. It just shuffles bytes.
 - **Cloudflare ecosystem in prod, Bun in dev.** We focus on leveraging the Cloudflare ecosyhstem for production (Workers for the HTTP layer, R2 for any dynamic blob, the Static Assets binding for static content). Bun is dev-only (`bun --hot index.ts`) and build-time only (`bun run generate`)
 - **Commenting as a core feature** Comments are done via OAuth login with the user's email. This allows us to not only apply recommended changes if relevant, but also follow-up with any commenter (via email or otherwise) to engage.
+- **AI-assisted iteration: the comment system *is* the editing surface.** The author leaves their own comments on a post via the same UI a reader does, interleaved with readers' feedback ("rephrase this paragraph", "add an example for X"). An offline tool then hands every unresolved thread — both sources, undifferentiated — to Claude, which edits the source HTML in one reviewable diff. No separate editor view, no parallel workflow for human-driven vs. reader-driven edits. The same mechanism that gathers reader questions is the mechanism that drives the next revision. See [AI-assisted authoring](#ai-assisted-authoring-authoring).
 
 ## Repository layout
 
@@ -136,7 +137,10 @@ The audio player is managed by [shikwasa](https://shikwasa.js.org/), and exposes
     - also turns off auto-scroll to facilitate taking screenshots, but snaps back when re-enabled
     - highlighting is hidden, but still logically processed (even if now shown) as this is much simlper and snappier than trying to recalculate what highlights should be shown at any given point the user re-enables highlighting
 - Show a progress bar & timer for position in the audio
-- Toggle player entirely (to hide it and focus on just the article)
+- Toggle player entirely (to hide it and focus on just the article). Two affordances depending on viewport:
+    - **Desktop / wide viewport (>1000px)**: the floating "Listen" pill at bottom-right toggles the dock open and closed.
+    - **Narrow viewport (≤1000px)**: the dock spans almost the full width, so the floating pill would otherwise sit on top of the dock's right edge when open. Instead of relocating the pill, we hide it while the dock is open and inject a close × (`.narrate-close-btn`) into the top-right corner of the player card. The pill returns as the *open* affordance once the dock is dismissed.
+    - Shikwasa's own breakpoint switches the player to a vertically-stacked flex layout at ≤640px, so in the band between 641px and 1000px the player is still horizontal *and* our × is already showing. The highlight-toggle button (the rightmost item in the controls row) would otherwise collide with the corner × in that band, so an extra `padding-right: 44px` is applied to `.shk-player` there to push the controls inward and leave the corner clear.
 
 *Note*:
 - `Shikwasa`s `seek(time)` calls `parseInt(time)` internally (truncating fractions), so we bypass it with our own `seekToMs`
@@ -411,9 +415,13 @@ Two notes on what's deferred:
 
 - **≥1100px (column mode):** column visible alongside the article. Highlight clicks navigate to the matching card (scroll + pulse). A *second* consecutive click on the same highlight (or graphic indicator) hides that card — equivalent to clicking the card's Hide button, but driven from the article side. The state is tracked in `lastFocusedThreadId`, which is reset whenever a click brings a previously-hidden card back (so an unhide-then-rehide doesn't happen in one click), whenever a different anchor is clicked, and whenever the focused card disappears between renders. This makes the highlight a single primitive for "show me / hide me again" rather than a one-way navigation gesture.
 - **<1100px (popover mode):** the column's permanent surfaces (identity header, version banner, history panel, stacked cards) are hidden. Threads render into the DOM as before, but only the one tagged `data-mobile-active="true"` is visible — as a fixed-position overlay (`left/right: 12px`). The popover is **anchored to the tapped element**: at the moment the user taps, `computeMobilePopoverPosition` measures the anchor's `getBoundingClientRect()` and writes inline `top`/`bottom`/`max-height` so the popover appears immediately below the anchor (or above it if there's more room there). The reserved bottom region tracks `--narrate-dock-height` so the popover stays above the player dock no matter how tall it is. The computed position is stashed in `activeMobilePosition` and re-applied after every `renderAll` — a poll-driven re-render rebuilds the card element, so without re-applying the popover would snap to the CSS default. Always writing inline `top` *and* `bottom` (one explicit, one `auto`) is deliberate: a stale `top` left over from a previous desktop `repositionCards` would otherwise win over CSS specificity and force the card to stretch into a tall, mostly-empty box. Tapping a highlight or graphic indicator promotes that thread to active; tapping the *same* anchor a second time toggles it closed; tapping a *different* highlight switches the popover to its thread. Tap-outside still works as a backup dismiss. Drafts created via the action-bar Comment pill are immediately surfaced as the active popover. Multi-thread anchors still resolve to a single popover (the first thread); a stacked-popover or swipe-between flow can land later without further architectural changes.
-- **Hide-all comments**: floating button top-right (mobile-only, desktop hides it via media query). Top placement is deliberate — the bottom is dense on mobile, with the narrator's "Listen" pill and the player dock competing for the same space. Pressing flattens every highlight, suppresses graphic indicators, hides the column, and dismisses the active popover. The toggle is persisted to localStorage so the choice survives reloads — useful both as a mobile distraction-free reading mode and as a desktop screenshot-clean mode. The underlying state (drafts, hidden cards, snapshot) is untouched - it just suppresses visual surfaces.
+- **Hide-all-comments button** (`.cmt-hide-all-fab`): a small circular button pinned to the top-right of the viewport (mobile-only — desktop hides it via media query, since the column itself is the affordance). Top placement is deliberate — the bottom is dense on mobile, with the narrator's "Listen" pill and the player dock competing for the same space. Pressing flattens every highlight, suppresses graphic indicators, hides the column, and dismisses the active popover. The toggle is persisted to localStorage so the choice survives reloads — useful both as a mobile distraction-free reading mode and as a desktop screenshot-clean mode. The underlying state (drafts, hidden cards, snapshot) is untouched - it just suppresses visual surfaces.
 
-A still-open mobile gap is the sign-in flow. The column is hidden, so the identity header (with its provider buttons) is unreachable on mobile. The action-bar Comment pill is suppressed when not logged in, which means a mobile reader has no obvious affordance to authenticate. Plausible fixes: a "Sign in" state when logged out, or an inline mini-pane when the user taps Comment without a session. Deferred.
+**Mobile sign-in surface.** The identity header (`.cmt-identity`) is pinned to the top-right of the viewport on mobile via `position: fixed`, stacked just below the hide-all-comments button (which keeps its top-right corner). Width is capped at `min(220px, calc(100vw - 24px))` — the desktop column is 320px wide, so the mobile pill is deliberately ~30% narrower so it reads as a compact floating widget instead of a shrunken column. Both states render: logged-out shows the pitch + Google / Microsoft provider buttons (the missing affordance that an earlier draft of v1 left as a known gap), logged-in shows the avatar + name + Sign out. Three ways the bar leaves the screen:
+
+- A dedicated × inside the bar (`.cmt-identity-dismiss`) flips `body.cmt-identity-dismissed` and hides it for the session. The dismiss rule lives outside the mobile media query so resizing across the breakpoint (mobile → desktop or vice versa) preserves the choice — dismissing on one layout shouldn't surface the bar on the other. *Deliberately not persisted across reloads*, so a returning reader who's never signed in still sees the affordance on the next page load.
+- While a comment popover is open (`body.cmt-mobile-popover-active`, toggled by `setActiveCard`), the bar is hidden — the popover's auto-placement near the tapped anchor can land in the upper viewport, so overlapping the bar would be visual clutter. The bar re-appears as soon as the popover dismisses.
+- The hide-all-comments button still suppresses the bar along with everything else in the comment system (the identity sits inside the column DOM, which `body.cmt-highlights-hidden` already collapses).
 
 ### Future direction: Web Push notifications
 
@@ -461,7 +469,6 @@ The core motivation of the whole auth-gated comment system — "the author wants
 - **Server-push (SSE / websocket) instead of polling.** The current polling cadence is good enough at single-author scale; SSE would slot in by replacing `CommentPolling` without touching the stores.
 - **Server-side per-reply length validation.** The 32 KB blob cap + 8 KB per-PUT delta + 10/min rate limit are enforced in the Worker; per-reply 5000-char limits are client-side UX only. Strict server enforcement would require shipping Automerge into the Worker bundle (~700 KB) to parse the doc; the byte budgets above cover the same threat envelope at zero bundle cost.
 - Cross-document selections (selection must stay within one of: article body OR drawer).
-- **Sign-in flow on mobile** — the identity header (and its provider buttons) is hidden in popover mode. A reader who's never signed in has no obvious affordance to start that flow.
 - **Web Push notifications** to the author on new comments. Design captured in [Future direction: Web Push notifications](#future-direction-web-push-notifications); not built.
 
 ## Auth & login (`server/auth/`)
@@ -552,6 +559,122 @@ The author check requires `session.emailVerified === true`. Without that gate, a
 
 - In dev builds, `posts/*.html` is the source of truth
 - In prod builds, we use only the generated files (`wrangler dev` works without a build step)
+
+## AI-assisted authoring (`authoring/`)
+
+The comment system isn't just a feedback channel — it's the authoring interface itself. The author opens their own post, highlights text, leaves comments like "rephrase this", "add a paragraph about edge cases", etc. — through exactly the same UI a reader uses. Two commands form the loop:
+
+1. Publish the post.
+2. Readers (and the author, on a re-read) leave comments through the in-page column.
+3. Run `bun run apply-comments <slug>`. The tool aggregates every unresolved thread — readers' + the author's own — and hands them to Claude with instructions to edit the post. Claude writes its changes to `posts/<slug>.ai-draft.html` (sidecar) using the built-in Edit tool, emitting a structured per-thread verdict (`APPLIED` / `PARTIAL` / `NOTE-ONLY`) at the end of its run. Verdicts are captured into `posts/<slug>.ai-draft.meta.json`.
+4. Author reviews the draft (`diff posts/<slug>.html posts/<slug>.ai-draft.html`).
+5. Run `bun run promote-draft <slug>` to accept. This moves the draft into place, writes resolution envelopes for every thread Claude marked `APPLIED`, deletes the meta sidecar, and re-runs `generate/post-versions.ts` so the new content hash is recorded in `posts/versions.json`. (Or `rm posts/<slug>.ai-draft.*` to discard.)
+6. Author regenerates audio (`bun run generate`) and redeploys (`bun run build && wrangler deploy`).
+
+**Author-self comments and reader comments are treated identically.** "Rephrase the avalanche-effect paragraph to mention SHA-256 explicitly" (left by the author) goes in the same prompt as "is this really deterministic for streaming inputs?" (left by a reader). Claude makes one coherent set of edits across both. That synthesis is the point: separating "what the author wants to change" from "what readers want explained" loses the case where one edit addresses both.
+
+**Why split apply and promote into two commands.** Resolution is a side-effect that's wrong if the author rejects the draft. If we resolved on Claude's run, then later discarded the draft, the original threads would look closed even though their content was never shipped. Tying resolution to acceptance (the `promote-draft` step) keeps the system honest: a thread is resolved *if and only if* the edit it triggered actually landed in `posts/<slug>.html`. The intermediate state — Claude's verdicts captured in the meta sidecar — is the carrier between the two commands.
+
+### Why a build-time tool, not in-Worker
+
+The same three-runtime split that shapes the rest of the project (see [Deploy architecture](#deploy-architecture)) applies: Bun for dev/build-time, Workers for prod request handling, browser for reader UI. AI authoring fits cleanly into the build-time bucket:
+
+- **Workers can't host the call.** A Claude pass on a long post can take minutes; Workers target second-scale request handling, not multi-minute generation. `ctx.waitUntil` doesn't help — we want streaming output the author can watch.
+- **The browser can't hold credentials.** Whether `ANTHROPIC_API_KEY` or an OAuth token, shipping it to the client lets anyone with the page open spend the author's quota.
+- **Build-time already has the files.** The tool writes to `posts/<slug>.ai-draft.html`; the very next step is `bun run build` against the same directory.
+
+Author identity is intrinsic: only someone with the project checked out and an authorized local Claude Code session can run the tool. No new auth surface to secure.
+
+### Why `claude -p`, not the Anthropic SDK
+
+`claude -p` is Claude Code's non-interactive mode — accepts a prompt over stdin, runs the agent loop with its built-in tools, streams tool calls + final output to stdout. Two practical wins versus calling `api.anthropic.com/v1/messages` directly:
+
+- **Author's existing auth.** No `ANTHROPIC_API_KEY` to provision, no Cloudflare secret, no dotenv entry. The author already has Claude Code on their machine; the tool inherits its login.
+- **Built-in Edit / Read / Grep / Glob.** Otherwise we'd reimplement exact-text replacement, file-read scoping, and a tool-use loop against the raw Messages API. Claude Code's versions are already battle-tested; Edit's `old_string`-must-be-unique invariant keeps Claude from making sloppy multi-hit replacements.
+
+The exact-text Edit-tool model is what makes "AI edits a real file" reviewable. Each edit is a focused diff hunk Claude has to justify in its summary — there's no full-file rewrite step where a `<script type="text/narration">` block could silently disappear.
+
+The prompt goes over stdin rather than as a positional argv (which is capped at ~256 KB on macOS, smaller on some Linuxes) — a long post plus dozens of threads can otherwise exceed the limit and fail with a confusing E2BIG.
+
+### Why a sidecar (`.ai-draft.html`), not in-place
+
+Default behavior writes to `posts/<slug>.ai-draft.html` next to the source; `--in-place` overrides for authors who'd rather review through `git diff`.
+
+The sidecar gives three things:
+- **A clean review surface** — `diff posts/<slug>.html posts/<slug>.ai-draft.html` shows only Claude's changes, independent of any other unstaged work in the tree.
+- **Safety under unstaged work.** A typical author runs this mid-edit; in-place writes would interleave AI edits with whatever they were already changing.
+- **An obvious accept gesture** — `mv` is one keystroke and atomic.
+
+`posts/*.ai-draft.html` is gitignored so accidental commits don't include the draft.
+
+### Inputs Claude sees
+
+Per unresolved thread, the prompt includes:
+- The thread id (for the structured-summary back-reference)
+- The owner's userId (so Claude can group multi-thread feedback from the same reader)
+- The anchor — segment ids + verbatim quote for text anchors, figure id for graphics
+- Every reply in chronological order, with display name + email
+
+The owner's email is shown to Claude on purpose: if a comment is ambiguous, Claude's summary can recommend "reply to <email> for clarification" instead of guessing.
+
+A dry-run diagnostic, `bun authoring/listUnresolved.ts <slug>`, prints exactly what would be fed to Claude without paying for a model call — useful for sanity-checking which threads survived the resolved-filter before spending tokens.
+
+### What gets filtered out
+
+The loader walks the same store the in-browser author aggregator does (`generated/.comments-dev/` in dev; R2 in prod, currently fetched via `wrangler r2 object sync` before running). For each user it replays every `.bin` change-object against the shared seed (see [Storage layer](#storage-layer-clientcommentsstorets)), then drops:
+
+- Threads with `resolvedAt !== undefined` (self-resolve).
+- Threads whose id appears in the per-post resolutions namespace (author-resolve — see [Author-resolution](#author-resolution-clientresolutionsstorets-servercommentsresolutionsroutests)).
+- Threads with zero live (non-tombstoned) replies — defensive against malformed blobs; the auto-resolve in `deleteReply` should already cover this.
+
+What's left is what Claude sees — never a thread already addressed.
+
+### System prompt — focused, not all of methodology.md
+
+This document is ~90KB, mostly infrastructure (CRDT, OAuth, build system) irrelevant to a per-post edit. The authoring system prompt is ~2KB and covers only what Claude needs to edit a post without breaking it:
+
+- HTML structure (article + narration scripts + PLS lexicon).
+- The mark↔id pairing between narration `<mark name="X"/>` and article `id="X"`.
+- Which tags are infrastructure (`<meta name="author-email">`, `<link>` / `<script type="module">` for client wiring) and must not be touched.
+- The decision tree: typo-fix → apply; rewording request → rewrite; substantive disagreement → flag in summary rather than auto-apply.
+- A required structured-summary output format (`Thread #N (id=…): APPLIED | PARTIAL | NOTE-ONLY`) so the post-run summary is greppable.
+
+Pasting all of methodology.md into the prompt would bloat tokens, dilute the rules that matter for editing, and force Claude to read about Automerge merge semantics when the question at hand is "how should this paragraph read."
+
+### Tool sandboxing
+
+Tools are whitelisted to `Read, Edit, Grep, Glob`. No `Bash`, no `WebFetch`, no `Write` — Edit suffices because the draft file is pre-created by the wrapper. `--permission-mode acceptEdits` auto-accepts Edit calls but still pauses for anything outside the whitelist, so a spurious `Bash("git push")` surfaces explicitly instead of silently executing.
+
+The whitelist + the sidecar + git form the safety stack: Claude has to consciously try to touch something off-target, and even if it does, there's a pre-edit copy and `git diff` to recover.
+
+### Promote: turning a draft into a new version
+
+`bun run promote-draft <slug>` is the accept-side of the loop:
+
+1. Reads `posts/<slug>.ai-draft.meta.json` to recover Claude's per-thread verdicts.
+2. Optionally prints the unified diff (`--show-diff`) — by default it skips this, since the author has typically already reviewed via `diff` before invoking promote.
+3. Prompts `y/N` (skip with `--yes` for scripted use).
+4. **Writes resolutions for every `APPLIED` thread** by calling the same `fsAdapter.putResolution` the dev server uses. The envelope uses `resolverId: "ai-applied"` and `resolverName: "AI (apply-comments)"` — a deliberately distinct identity prefix from the OAuth `<provider>:<sub>` scheme so audits can grep for AI-driven resolutions.
+5. Renames `posts/<slug>.ai-draft.html` → `posts/<slug>.html` atomically.
+6. Deletes the meta sidecar (it's served its purpose).
+7. Re-runs `generate/post-versions.ts` so the new SHA-256 lands in `posts/versions.json` and the generated `server/postVersions.generated.ts` is in sync. Readers' "doc changed" banner ([Document version](#document-version-clientpostversionts-serverpostversionsroutets)) is now armed — anyone who'd visited the old version sees the heads-up on next load.
+
+**Resolution writes happen before the rename**, on purpose. If the process crashes between rename and resolution writes, the post is promoted but the threads still look open in the author aggregator — confusing, and the author has no memory of which threads were supposed to close (the meta sidecar is by then in the trash). Doing resolutions first means a crash leaves resolutions written + draft intact + threads correctly marked resolved on the next aggregator load.
+
+**Auto-resolutions land in the local dev store, not directly in R2.** For v1 the author pushes them up alongside the next deploy (`wrangler r2 object put …`, symmetric with the `wrangler r2 object sync` they ran to fetch comments). A first-class push step belongs in the same follow-up that adds an R2 read adapter to the loader.
+
+**Only `APPLIED` resolves.** `PARTIAL` (Claude addressed *some* of the thread) and `NOTE-ONLY` (Claude flagged the thread for the author rather than editing) stay open. The author can resolve those manually after follow-up. The conservative default reflects that the structured verdict is Claude's own self-assessment, not ground truth — promote should not silently close a thread Claude wasn't confident it addressed.
+
+**Filter-out collision with the version generator.** `generate/post-versions.ts` walks `posts/*.html` and would otherwise pick up `posts/<slug>.ai-draft.html` as if it were a real post — creating a phantom `/posts/<slug>.ai-draft` entry in `versions.json` on any mid-review build. The walker explicitly skips `*.ai-draft.html` to prevent that.
+
+### Excluded from v1
+
+- **R2 fetch from the loader.** Currently reads only the local dev store. Pulling prod comments is one `wrangler r2 object sync` away today; an R2 adapter shaped like `server/comments/r2Adapter.ts` is a follow-up.
+- **R2 push for auto-resolutions.** Symmetric to the read side; resolutions land in `generated/.comments-dev/` on promote, and the author pushes them with `wrangler r2 object put` until the sync step is automated.
+- **Chained audio regeneration.** `bun run generate` does this already; chaining it into promote would be a convenience but has its own (multi-minute) latency story, and the author often wants to verify the prose before paying that cost.
+- **Reply-back to commenters.** A future flow could have Claude propose responses for the author to send via email; deferred until outbound email is wired up (see [Future direction: Web Push notifications](#future-direction-web-push-notifications)).
+- **Multi-post sessions.** One post per invocation. Cross-post consistency (e.g. updating a shared intro across a series) is a manual loop today.
+- **Promote-from-CI.** `promote-draft` runs locally only; there's no flow for a CI bot to approve drafts on behalf of the author. The `--yes` flag is there for scripting *from the author's machine*, not for automation.
 
 ## Deploy architecture
 

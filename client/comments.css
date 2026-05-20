@@ -321,6 +321,37 @@
   flex-direction: column;
   gap: 6px;
 }
+/* Dismiss × — available on both desktop and mobile. Positioned in the
+   top-right of the identity card so it's reachable regardless of which
+   state (logged in / logged out) the card is in. The card needs
+   `position: relative` and a reserved right gutter so the avatar /
+   pitch text / sign-out chip don't run under the button. */
+.cmt-identity { position: relative; padding-right: 28px; }
+.cmt-identity-dismiss {
+  display: inline-flex;
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--cmt-fg-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+.cmt-identity-dismiss:hover { background: #eef0f3; color: var(--cmt-fg); }
+/* Session-only dismiss: clicking the × hides the identity card until
+   reload. Same rule applies on both desktop and mobile so resizing
+   across the breakpoint preserves the choice (a dismiss-on-mobile then
+   expand-to-desktop shouldn't surface the card again). Deliberately
+   not persisted across reloads — a returning reader who's never
+   signed in needs to see the affordance again. */
+body.cmt-identity-dismissed .cmt-identity { display: none; }
 .cmt-identity-provider {
   display: inline-flex;
   align-items: center;
@@ -594,9 +625,35 @@ body.cmt-highlights-hidden .cmt-action-bar { display: none; }
        column-only UX (a slim sign-in pill or full bottom sheet for
        these is a follow-up). */
   }
-  .cmt-identity,
   .cmt-version-banner,
   .cmt-version-history { display: none; }
+
+  /* Surface the identity header at the top of the viewport so a mobile
+     reader can sign in (or out) without needing the column. The column
+     itself stays pointer-events: none — the header rebinds events.
+     Right-anchored and pushed down below the hide-all button (44px
+     tall, ~16px top margin, ~12px gap = ~72px clearance) so the two
+     don't collide at the top-right corner. */
+  .cmt-identity {
+    position: fixed;
+    top: calc(max(16px, env(safe-area-inset-top, 16px)) + 56px);
+    right: 12px;
+    left: auto;
+    margin: 0;
+    /* Desktop column is 320px wide; the mobile pill is deliberately
+       ~30% narrower so it reads as a compact floating widget, not a
+       resized version of the column. */
+    max-width: min(220px, calc(100vw - 24px));
+    pointer-events: auto;
+    z-index: 1400;
+  }
+
+  /* While a comment popover is open, hide the identity bar — the
+     popover may place itself near the top of the viewport (depending
+     on the tapped anchor's position) and overlapping the bar is
+     visual clutter. Re-shown on dismiss via the body class toggle in
+     `setActiveCard`. */
+  body.cmt-mobile-popover-active .cmt-identity { display: none; }
 
   /* Every card is hidden by default… */
   .cmt-card { display: none; }

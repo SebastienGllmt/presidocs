@@ -656,6 +656,10 @@ class CommentSystem {
     }
     this.activeCardId = threadId;
     this.activeMobilePosition = null;
+    // Body class drives the mobile identity-bar hide while a popover
+    // is open — keeps the top of the viewport clear when the popover
+    // computes a placement near it.
+    document.body.classList.toggle("cmt-mobile-popover-active", !!threadId);
     if (!threadId) return;
     if (this.hiddenCardIds.has(threadId)) {
       this.hiddenCardIds.delete(threadId);
@@ -856,6 +860,26 @@ class CommentSystem {
     const h = this.identityHeader;
     if (!h) return;
     h.innerHTML = "";
+
+    // Mobile-only dismiss × — hidden by CSS on desktop. Click flips
+    // `body.cmt-identity-dismissed` which the mobile media query reads
+    // to hide the bar for the session. Deliberately NOT persisted: a
+    // returning reader who's never signed in should see the
+    // affordance again on the next page load.
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.className = "cmt-identity-dismiss";
+    dismiss.setAttribute("aria-label", "Dismiss");
+    dismiss.title = "Dismiss until next reload";
+    dismiss.innerHTML =
+      '<svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true">'
+      + '<path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+    dismiss.addEventListener("click", (e) => {
+      e.stopPropagation();
+      document.body.classList.add("cmt-identity-dismissed");
+    });
+    h.appendChild(dismiss);
+
     if (this.identity) {
       const avatar = this.buildAvatar(this.identity.picture, this.identity.name ?? this.identity.email);
       const name = document.createElement("span");

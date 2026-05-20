@@ -33,6 +33,11 @@ async function walk(
     if (ent.isDirectory()) {
       await walk(rootDir, full, out);
     } else if (ent.isFile() && ent.name.endsWith(".html")) {
+      // AI-assisted authoring writes drafts as a sibling sidecar
+      // (`posts/<slug>.ai-draft.html`). Skip them — they're not real
+      // posts and versioning them would pollute `versions.json` with
+      // phantom postPaths every time someone built mid-review.
+      if (ent.name.endsWith(".ai-draft.html")) continue;
       const bytes = await readFile(full);
       const hash = await sha256Hex(bytes);
       const relPath = relative(rootDir, full).split(sep).join("/");

@@ -104,7 +104,7 @@ function loadAutomerge(): Promise<Automerge> {
 //     for (let i = 0; i < b.length; i++) r += String.fromCharCode(b[i]);
 //     console.log(btoa(r));
 //   });'
-const SEED_BYTES_B64 =
+export const SEED_BYTES_B64 =
   "hW9Kg1cN6wgAdQEIAAAAAAAAAAABDi3iQnW6anGaIFPMkopg6j6BTdhcwIDQlKNyJId8WdMGAQIDAhMCIwZAAlYCBxURIQIjAjQBQgJWAoABAn8AfwF/An/norDQBn8Afwd+B3JlcGxpZXMHdGhyZWFkcwIAAgECAgACAAIAAA==";
 
 // Hash of the single genesis change inside SEED_BYTES_B64 (computed

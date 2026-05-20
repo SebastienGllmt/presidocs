@@ -36,3 +36,10 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# AI-authored post drafts (output of `bun run apply-comments`).
+# Review with `diff` then `bun run promote-draft` to accept; the meta
+# sidecar carries Claude's per-thread verdicts for auto-resolve on
+# promote. Never committed directly.
+posts/*.ai-draft.html
+posts/*.ai-draft.meta.json
