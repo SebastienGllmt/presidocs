@@ -4,8 +4,12 @@
 // behavior and works anywhere.
 
 import { test, expect, spyOn } from "bun:test";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   createSayProvider,
+  createMossProvider,
   ttsProviders,
   type PlsLexicon,
   type TtsProviderConfig,
@@ -21,9 +25,11 @@ const baseConfig = (overrides: Partial<TtsProviderConfig> = {}): TtsProviderConf
   ...overrides,
 });
 
-test("ttsProviders registry contains say", () => {
+test("ttsProviders registry contains say and moss", () => {
   expect(Object.keys(ttsProviders)).toContain("say");
   expect(ttsProviders.say).toBe(createSayProvider);
+  expect(Object.keys(ttsProviders)).toContain("moss");
+  expect(ttsProviders.moss).toBe(createMossProvider);
 });
 
 test("createSayProvider accepts the supported format and reports its identity", () => {
@@ -99,3 +105,119 @@ test.skipIf(!hasSay)(
     expect(buf.byteLength).toBeGreaterThan(44); // header + at least some samples
   },
 );
+
+// --- MOSS adapter (factory-only) ---------------------------------------------
+//
+// These exercise the construction-time validation, which is all that runs
+// before the first `synthesize`. The worker (and the multi-GB model load) is
+// spawned lazily, so none of this touches Python — it's safe on any platform.
+// Each test owns its MOSS_TTS_DIR / MOSS_TTS_PYTHON env so they don't bleed.
+
+// A throwaway MOSS_TTS_DIR with a stand-in venv python and a reference clip,
+// enough to get the factory past its existence checks.
+function fakeMossEnv(): { dir: string; reference: string } {
+  const dir = mkdtempSync(join(tmpdir(), "moss-env-"));
+  mkdirSync(join(dir, ".venv", "bin"), { recursive: true });
+  writeFileSync(join(dir, ".venv", "bin", "python"), "#!/bin/sh\n");
+  const reference = join(dir, "ref.wav");
+  writeFileSync(reference, "RIFF"); // contents irrelevant; only existence is checked
+  return { dir, reference };
+}
+
+function withMossEnv<T>(
+  env: { MOSS_TTS_DIR?: string; MOSS_TTS_PYTHON?: string },
+  fn: () => T,
+): T {
+  const saved = {
+    MOSS_TTS_DIR: process.env.MOSS_TTS_DIR,
+    MOSS_TTS_PYTHON: process.env.MOSS_TTS_PYTHON,
+  };
+  delete process.env.MOSS_TTS_DIR;
+  delete process.env.MOSS_TTS_PYTHON;
+  if (env.MOSS_TTS_DIR !== undefined) process.env.MOSS_TTS_DIR = env.MOSS_TTS_DIR;
+  if (env.MOSS_TTS_PYTHON !== undefined) process.env.MOSS_TTS_PYTHON = env.MOSS_TTS_PYTHON;
+  try {
+    return fn();
+  } finally {
+    for (const k of ["MOSS_TTS_DIR", "MOSS_TTS_PYTHON"] as const) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+}
+
+const mossConfig = (overrides: Partial<TtsProviderConfig> = {}): TtsProviderConfig => ({
+  voice: "Samantha", // overridden per-test with a real reference path
+  rate: 180,
+  format: monoFmt,
+  ...overrides,
+});
+
+test("createMossProvider rejects stereo input (before any env lookup)", () => {
+  withMossEnv({}, () => {
+    expect(() =>
+      createMossProvider(mossConfig({ format: { ...monoFmt, channels: 2 } })),
+    ).toThrow(/only mono 16-bit PCM is supported/);
+  });
+});
+
+test("createMossProvider errors clearly when MOSS_TTS_DIR is unset", () => {
+  withMossEnv({}, () => {
+    expect(() => createMossProvider(mossConfig())).toThrow(/set MOSS_TTS_DIR/);
+  });
+});
+
+test("createMossProvider errors when the venv python is missing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "moss-nopy-"));
+  withMossEnv({ MOSS_TTS_DIR: dir }, () => {
+    expect(() => createMossProvider(mossConfig())).toThrow(/python interpreter not found/);
+  });
+});
+
+test("createMossProvider errors when --voice isn't a real .wav reference", () => {
+  const { dir } = fakeMossEnv();
+  withMossEnv({ MOSS_TTS_DIR: dir }, () => {
+    // default "Samantha" is a `say` voice name, not a reference clip
+    expect(() => createMossProvider(mossConfig())).toThrow(/must be a path to a voice-clone reference/);
+  });
+});
+
+test("createMossProvider accepts a real reference and reports its identity", () => {
+  const { dir, reference } = fakeMossEnv();
+  withMossEnv({ MOSS_TTS_DIR: dir }, () => {
+    const provider = createMossProvider(mossConfig({ voice: reference }));
+    expect(provider.name).toBe("moss");
+    expect(provider.outputFormat).toEqual(monoFmt);
+    expect(provider.requiredBinaries).toEqual(["ffmpeg"]);
+  });
+});
+
+test("createMossProvider warns when a PLS lexicon is passed (MOSS has no PLS support)", () => {
+  const { dir, reference } = fakeMossEnv();
+  const lexicon: PlsLexicon = {
+    sources: ["posts/common-terms.pls"],
+    xml: "<?xml version=\"1.0\"?><lexicon/>",
+  };
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    withMossEnv({ MOSS_TTS_DIR: dir }, () => {
+      createMossProvider(mossConfig({ voice: reference, lexicon }));
+    });
+    expect(warn.mock.calls.some((c) => /ignoring PLS lexicon/.test(String(c[0])))).toBe(true);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+test("createMossProvider warns that --rate is ignored when non-default", () => {
+  const { dir, reference } = fakeMossEnv();
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    withMossEnv({ MOSS_TTS_DIR: dir }, () => {
+      createMossProvider(mossConfig({ voice: reference, rate: 200 }));
+    });
+    expect(warn.mock.calls.some((c) => /ignoring --rate=200/.test(String(c[0])))).toBe(true);
+  } finally {
+    warn.mockRestore();
+  }
+});

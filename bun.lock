@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "read-demo",
+      "name": "presidocs",
       "dependencies": {
         "@automerge/automerge": "^3.2.6",
         "arctic": "^3.7.0",

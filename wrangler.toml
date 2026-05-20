@@ -12,7 +12,7 @@
 # With nodejs_compat, these surface in `process.env.*` so the auth
 # code reads them the same way it does in dev.
 
-name = "blog-maker-read-demo"
+name = "blog-maker-presidocs"
 main = "worker.ts"
 compatibility_date = "2026-05-19"
 compatibility_flags = ["nodejs_compat"]

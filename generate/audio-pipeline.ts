@@ -126,7 +126,7 @@ export function concatWavs(inputs: Uint8Array[], format: AudioFormat): Uint8Arra
 
 const tmpDir = () => process.env.TMPDIR ?? "/tmp";
 const tmpName = (label: string, ext: string) =>
-  join(tmpDir(), `read-demo-${label}-${process.pid}-${Math.random().toString(36).slice(2)}${ext}`);
+  join(tmpDir(), `presidocs-${label}-${process.pid}-${Math.random().toString(36).slice(2)}${ext}`);
 
 // Generate silence via ffmpeg's `anullsrc` source, written to a temp file.
 // We round-trip through disk (rather than piping stdout) because the wav

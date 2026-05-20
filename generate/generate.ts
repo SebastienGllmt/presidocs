@@ -8,14 +8,22 @@
 //   bun run generate/generate.ts posts/hash-functions.html --voice="Samantha"
 //   bun run generate/generate.ts posts/hash-functions.html --bitrate=96k
 //   bun run generate/generate.ts posts/hash-functions.html --tts=say
+//   MOSS_TTS_DIR=/path/to/MOSS-TTS \
+//     bun run generate/generate.ts posts/hash-functions.html \
+//       --tts=moss --voice=/path/to/my_voice.wav     # production voice clone
 //   bun run generate/generate.ts posts/hash-functions.html --mock     # silent audio
 //
 // Delivers MP3 @ 64 kbps mono. Requires `ffmpeg` on PATH plus whichever
 // binaries the selected TTS provider needs (the preflight fails fast with
 // a clear message if any are missing).
 //
-// TTS provider is selected by `--tts=NAME` (default: `say`, macOS-only).
-// Register new providers in `./tts-providers.ts`.
+// TTS provider is selected by `--tts=NAME` (default: `say`, macOS-only,
+// fast/cheap for iteration). `--tts=moss` is the production voice — a local
+// MOSS-TTS voice clone: set `MOSS_TTS_DIR` to your MOSS-TTS checkout and pass
+// `--voice=<reference.wav>` (the clip to clone). Optional MOSS env overrides:
+// `MOSS_TTS_PYTHON` (interpreter), `MOSS_TTS_DEVICE` (torch device),
+// `MOSS_TTS_FFMPEG_LIB` (FFmpeg lib dir for torchcodec; auto-derived from the
+// `ffmpeg` on PATH otherwise). Register new providers in `./tts-providers.ts`.
 //
 // PLS pronunciation lexicons (PronunciationLexicon-spec.html) come from
 // two optional sources, both merged into one lexicon at build time:

@@ -113,4 +113,4 @@ const server = Bun.serve({
   },
 });
 
-console.log(`read-demo running at ${server.url}`);
+console.log(`presidocs running at ${server.url}`);
