@@ -18,7 +18,11 @@ import { $ } from "bun";
 import { rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { type AudioFormat } from "./audio-pipeline.ts";
+import {
+  type AudioFormat,
+  trailingArtifactTrimMs,
+  truncateToMs,
+} from "./audio-pipeline.ts";
 
 export interface PlsLexicon {
   // Where the lexemes came from, in merge order. Used for log messages and
@@ -50,6 +54,32 @@ export interface TtsProviderConfig {
   lexicon?: PlsLexicon;
 }
 
+// Cross-segment prosody context, passed alongside each segment's text so an
+// expressive engine can avoid restarting every sentence with "top-of-
+// paragraph" energy (see methodology.md, "Cross-segment continuity"). It's a
+// provider-AGNOSTIC concept:
+// each provider uses whatever subset it supports and ignores the rest, the
+// same way `say` ignores a PLS lexicon. Engines vary —
+//   - `continuesPrevious`: the universal signal (false at a paragraph/topic
+//     boundary). MOSS turns it into a delivery `instruction`; a flat synth
+//     like `say` ignores it (no seam to smooth).
+//   - `previousText` / `previousAudio`: richer context for engines that
+//     condition on the prior turn's text or acoustics (e.g. MOSS multi-turn
+//     generation). Carried here so adopting that is a provider-only change.
+//
+// CRUCIALLY this never enters the TTS cache key (see tts-cache.ts): it's
+// best-effort conditioning, not identity. A segment is conditioned on its
+// neighbor as it exists at synth time, but is NOT re-synthesized when that
+// neighbor later drifts — production edits are line-level, so a slightly
+// stale neighbor is "close enough" (same tradeoff the cache already makes by
+// excluding `common-terms.pls`). `rm -rf generated/.tts-cache` re-conditions
+// everything cleanly when wanted.
+export interface SegmentContext {
+  continuesPrevious: boolean;
+  previousText?: string;
+  previousAudio?: Uint8Array;
+}
+
 export interface TtsProvider {
   // Logged at preflight and used in error messages. Identifies the engine,
   // not the voice (those are config).
@@ -63,8 +93,9 @@ export interface TtsProvider {
   readonly requiredBinaries: readonly string[];
   // Synthesize one segment into a WAV buffer matching `outputFormat`. The
   // caller does not filter empty/whitespace input — providers must still
-  // return a valid (possibly minimal-silent) WAV in that case.
-  synthesize(text: string): Promise<Uint8Array>;
+  // return a valid (possibly minimal-silent) WAV in that case. `context` is
+  // optional cross-segment prosody info; providers ignore what they can't use.
+  synthesize(text: string, context?: SegmentContext): Promise<Uint8Array>;
 }
 
 export type TtsProviderFactory = (config: TtsProviderConfig) => TtsProvider;
@@ -144,7 +175,22 @@ export function createSayProvider(config: TtsProviderConfig): TtsProvider {
 
 const MOSS_MODEL_ID = "OpenMOSS-Team/MOSS-TTS-Local-Transformer";
 
-type MossRequest = { text: string; out: string };
+// Delivery hint handed to MOSS for a segment that continues the previous one
+// (the default `instruction` continuation mode; see methodology.md). MOSS's
+// `instruction` field is free-text natural language, and a listening lesson
+// is baked in here: a blunt, natural phrasing far outperformed elaborate
+// directions — an earlier wordy "even, conversational tone" was rendered as a
+// too-soft, trailing-in first word. Keep it simple.
+const MOSS_CONTINUATION_INSTRUCTION =
+  "Talk like you're continuing from an existing paragraph";
+
+type MossRequest = {
+  text: string;
+  out: string;
+  instruction?: string; // `instruction` mode: delivery hint
+  prev_text?: string; // `acoustic` mode: prior segment's text
+  prev_audio?: string; // `acoustic` mode: path to prior segment's WAV (acoustic context)
+};
 type MossResponse = {
   ready?: boolean;
   samplingRate?: number; // worker's native output rate, sent with `ready`
@@ -268,6 +314,23 @@ export function createMossProvider(config: TtsProviderConfig): TtsProvider {
   const workerScript = join(import.meta.dir, "moss_worker.py");
   const device = process.env.MOSS_TTS_DEVICE; // optional; worker auto-detects
 
+  // How to use cross-segment continuity (see methodology.md). Default
+  // `instruction`: a continuation gets a delivery hint — a single-shot
+  // generation, the best-sounding option on the local 1.7B model.
+  //   - `acoustic`: feed the prior segment's actual audio as multi-turn
+  //     context. Strongest in theory, but on the 1.7B model it badly degrades
+  //     quality (it conditions on its own resampled, trimmed output, so
+  //     artifacts compound across a chapter, plus repeated words and tone
+  //     drift). Kept opt-in for experimentation on a larger model.
+  //   - `off`: ignore continuity entirely — every segment a fresh utterance
+  //     (the pre-continuity baseline).
+  const continuationMode = process.env.MOSS_TTS_CONTINUATION ?? "instruction";
+  if (!["instruction", "acoustic", "off"].includes(continuationMode)) {
+    throw new Error(
+      `createMossProvider: MOSS_TTS_CONTINUATION must be instruction|acoustic|off (got ${JSON.stringify(continuationMode)}).`,
+    );
+  }
+
   // Lazily-spawned worker. `null` until the first synth; started at most once.
   type Worker = {
     proc: Bun.Subprocess<"pipe", "pipe", "inherit">;
@@ -324,16 +387,19 @@ export function createMossProvider(config: TtsProviderConfig): TtsProvider {
     return starting;
   }
 
+  const tmpWav = (label: string) =>
+    join(
+      process.env.TMPDIR ?? "/tmp",
+      `presidocs-${label}-${process.pid}-${Math.random().toString(36).slice(2)}.wav`,
+    );
+
   // Resample MOSS's native-rate output to the pipeline's working rate. Only
   // called when the rates differ (see doSynthesize) — matching rates skip
   // this entirely and pass the worker's WAV through untouched. Temp-file
   // round-trip (not a pipe) so the WAV header carries correct RIFF/data sizes
   // for the downstream byte-splice concat.
   async function resampleToWorkingFormat(srcPath: string): Promise<Uint8Array> {
-    const outPath = join(
-      process.env.TMPDIR ?? "/tmp",
-      `presidocs-moss-rs-${process.pid}-${Math.random().toString(36).slice(2)}.wav`,
-    );
+    const outPath = tmpWav("moss-rs");
     try {
       await $`ffmpeg -hide_banner -loglevel error -i ${srcPath} -ac ${format.channels} -ar ${format.sampleRate} -c:a pcm_s16le -y ${outPath}`.quiet();
       return new Uint8Array(await Bun.file(outPath).arrayBuffer());
@@ -347,39 +413,58 @@ export function createMossProvider(config: TtsProviderConfig): TtsProvider {
   // `synthesize` calls into a FIFO queue (today's caller is already serial,
   // but this keeps us correct if that changes).
   let tail: Promise<unknown> = Promise.resolve();
-  function synthesize(text: string): Promise<Uint8Array> {
-    const result = tail.then(() => doSynthesize(text));
+  function synthesize(text: string, context?: SegmentContext): Promise<Uint8Array> {
+    const result = tail.then(() => doSynthesize(text, context));
     tail = result.catch(() => {});
     return result;
   }
 
-  async function doSynthesize(text: string): Promise<Uint8Array> {
+  async function doSynthesize(text: string, context?: SegmentContext): Promise<Uint8Array> {
     const w = await ensureWorker();
     // MOSS can't synthesize empty input; mirror `say`'s minimal-utterance
     // fallback so blank segments still yield a valid (tiny) WAV.
     const spoken = text.trim().length === 0 ? "..." : text;
-    const rawPath = join(
-      process.env.TMPDIR ?? "/tmp",
-      `presidocs-moss-${process.pid}-${Math.random().toString(36).slice(2)}.wav`,
-    );
+    const rawPath = tmpWav("moss");
+    // How a continuation is rendered depends on `continuationMode` (see the
+    // factory). `off` ignores context; `instruction` adds a delivery hint
+    // (single-shot, the default); `acoustic` feeds the prior audio as
+    // multi-turn context (opt-in, larger-model territory).
+    const continues = !!context?.continuesPrevious && continuationMode !== "off";
+    const useAcoustic = continues && continuationMode === "acoustic" && !!context!.previousAudio;
+    const prevAudioPath = useAcoustic ? tmpWav("moss-prev") : null;
     try {
-      const req: MossRequest = { text: spoken, out: rawPath };
+      if (prevAudioPath) await Bun.write(prevAudioPath, context!.previousAudio!);
+      const req: MossRequest = {
+        text: spoken,
+        out: rawPath,
+        // Instruction for `instruction` mode (and as the fallback if
+        // `acoustic` is selected but no prior audio is available).
+        instruction: continues && !useAcoustic ? MOSS_CONTINUATION_INSTRUCTION : undefined,
+        prev_text: useAcoustic ? context!.previousText : undefined,
+        prev_audio: prevAudioPath ?? undefined,
+      };
       w.stdin.write(JSON.stringify(req) + "\n");
       await w.stdin.flush();
       const res = await w.readResponse();
       if (!res.ok) {
         throw new Error(`moss synthesis failed: ${res.error ?? "unknown error"}`);
       }
-      // Lossless fast path: when MOSS already emits the working rate (and it's
-      // mono 16-bit, which the worker always writes), its WAV needs no
-      // conversion — concat byte-splices it directly. Only a rate mismatch
-      // forces the ffmpeg resample.
-      if (w.nativeSampleRate === format.sampleRate) {
-        return new Uint8Array(await Bun.file(rawPath).arrayBuffer());
-      }
-      return await resampleToWorkingFormat(rawPath);
+      // Bring the worker's WAV to the working format. Lossless fast path: when
+      // MOSS already emits the working rate (and it's mono 16-bit, which the
+      // worker always writes), concat can byte-splice it directly — only a
+      // rate mismatch forces the ffmpeg resample.
+      const working =
+        w.nativeSampleRate === format.sampleRate
+          ? new Uint8Array(await Bun.file(rawPath).arrayBuffer())
+          : await resampleToWorkingFormat(rawPath);
+      // Drop MOSS's trailing garbage-audio blip (see trailingArtifactTrimMs).
+      // Done per segment so the click doesn't land at every concat seam, not
+      // just the end of the post.
+      const keepMs = await trailingArtifactTrimMs(working, format);
+      return keepMs === null ? working : await truncateToMs(working, keepMs);
     } finally {
       await rm(rawPath, { force: true });
+      if (prevAudioPath) await rm(prevAudioPath, { force: true });
     }
   }
 

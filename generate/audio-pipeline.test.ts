@@ -14,7 +14,10 @@ import {
   createMp3AudioPipeline,
   durationViaFfmpeg,
   leadingSilenceMs,
+  pcmDurationMs,
+  trailingArtifactTrimMs,
   trimLeadingMs,
+  truncateToMs,
   wavToMp3,
   type AudioFormat,
 } from "./audio-pipeline.ts";
@@ -128,6 +131,54 @@ test("end-to-end: silence + sound → detect → trim → verify what's left", a
 
   // What's left after trimming should be (≈) the sound portion alone.
   expect(afterDur).toBeCloseTo(500, -2);
+});
+
+test("pcmDurationMs reads duration from the WAV header (no subprocess)", async () => {
+  const buf = await buildSilence(asMs(1234), fmt);
+  expect(pcmDurationMs(buf, fmt)).toBeCloseTo(1234, -2);
+});
+
+test("truncateToMs keeps only the first N ms", async () => {
+  const buf = await makeSineWav(asMs(1000));
+  const cut = await truncateToMs(buf, asMs(600));
+  expect(await durationViaFfmpeg(cut)).toBeCloseTo(600, -2);
+});
+
+test("trailingArtifactTrimMs detects a short noise burst after a trailing silence gap", async () => {
+  // speech … <120ms gap> … 80ms blip <EOF> — the MOSS tail-artifact shape.
+  const speech = await makeSineWav(asMs(1000));
+  const gap = await buildSilence(asMs(120), fmt);
+  const blip = await makeSineWav(asMs(80), 1200);
+  const combined = concatWavs([speech, gap, blip], fmt);
+
+  const keep = await trailingArtifactTrimMs(combined, fmt);
+  expect(keep).not.toBeNull();
+  // Cut point sits at the end of the gap (~1120ms): blip dropped, gap kept as
+  // the natural inter-sentence pause. silencedetect lands within a frame.
+  expect(keep!).toBeGreaterThan(1080);
+  expect(keep!).toBeLessThan(1160);
+});
+
+test("trailingArtifactTrimMs returns null when audio ends in speech (no artifact)", async () => {
+  const speech = await makeSineWav(asMs(800));
+  expect(await trailingArtifactTrimMs(speech, fmt)).toBeNull();
+});
+
+test("trailingArtifactTrimMs returns null when audio ends in silence", async () => {
+  const speech = await makeSineWav(asMs(600));
+  const trailing = await buildSilence(asMs(300), fmt);
+  const combined = concatWavs([speech, trailing], fmt);
+  expect(await trailingArtifactTrimMs(combined, fmt)).toBeNull();
+});
+
+test("trailingArtifactTrimMs leaves a long mid-clip pause alone (not an artifact)", async () => {
+  // speech … <100ms pause> … 500ms more speech — the final run is long, so
+  // this is a real pause, not a trailing blip.
+  const a = await makeSineWav(asMs(500));
+  const gap = await buildSilence(asMs(100), fmt);
+  const b = await makeSineWav(asMs(500));
+  const combined = concatWavs([a, gap, b], fmt);
+  expect(await trailingArtifactTrimMs(combined, fmt)).toBeNull();
 });
 
 test("createMp3AudioPipeline wires the factory to the same ops", async () => {

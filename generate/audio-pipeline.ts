@@ -249,6 +249,89 @@ export async function trimLeadingMs(
   }
 }
 
+// Exact duration of a working-format PCM buffer, read straight from the WAV
+// data-chunk size (no subprocess). Lets the trailing-artifact detector below
+// know where EOF is without an extra ffmpeg pass.
+export function pcmDurationMs(buf: Uint8Array, format: AudioFormat): Milliseconds {
+  const { data } = findChunkRanges(buf);
+  const bytesPerSec = format.sampleRate * format.channels * (format.bitsPerSample / 8);
+  return asMs(Math.round((data.size / bytesPerSec) * 1000));
+}
+
+// Autoregressive TTS engines (MOSS among them) often append a brief burst of
+// garbage audio AFTER the last word — preceded by a short silence gap, so it
+// reads as "speech … <pause> … 50ms of noise <EOF>". It's audible as a click
+// or croak at every segment seam once segments are concatenated.
+//
+// We detect it structurally rather than by trying to classify "noise vs
+// speech": run silencedetect, take the LAST point where audio resumes after a
+// silence (the last `silence_end`), and if only a short tail remains to EOF,
+// treat that tail as the artifact. Returning the cut point at `silence_end`
+// drops the blip while KEEPING the silence gap before it as a natural
+// inter-sentence pause. Returns null when there's nothing to trim: a buffer
+// that ends in speech (no trailing `silence_end`) or in silence (long final
+// run) is left untouched, so this is a safe no-op for engines like `say`.
+//
+// `-35dB` cleanly separates the typical low-energy blip (≈ -34dB observed)
+// from true silence (≈ -47dB); `d=0.05` requires a real ≥50ms gap so we never
+// cut into rapid speech.
+const ARTIFACT_TAIL_MAX_MS = 200;
+export async function trailingArtifactTrimMs(
+  buf: Uint8Array,
+  format: AudioFormat,
+): Promise<Milliseconds | null> {
+  const totalMs = pcmDurationMs(buf, format);
+  const proc = Bun.spawn({
+    cmd: [
+      "ffmpeg",
+      "-hide_banner",
+      "-nostats",
+      "-i", "pipe:0",
+      "-af", "silencedetect=noise=-35dB:d=0.05",
+      "-f", "null",
+      "-",
+    ],
+    stdin: new Blob([buf as BlobPart]),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [, errText, code] = await Promise.all([
+    new Response(proc.stdout).arrayBuffer(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (code !== 0) throw new Error(`ffmpeg (silencedetect/tail) exited ${code}:\n${errText}`);
+  // Last `silence_end` = the moment audio last resumed after a gap. If audio
+  // never resumes after a silence (file ends mid-silence, or pure speech with
+  // no gaps), there's no artifact tail to cut.
+  const ends = [...errText.matchAll(/silence_end:\s*([\d.eE+-]+)/g)];
+  const lastEnd = ends[ends.length - 1];
+  if (!lastEnd) return null;
+  const lastEndMs = Math.round(parseFloat(lastEnd[1]!) * 1000);
+  const finalRunMs = totalMs - lastEndMs;
+  if (finalRunMs > 0 && finalRunMs <= ARTIFACT_TAIL_MAX_MS) return asMs(lastEndMs);
+  return null;
+}
+
+// Truncate a working-format buffer to keep only its first `ms`. Like
+// `trimLeadingMs`, round-trips through temp files (not a pipe) so the WAV
+// muxer can fix up RIFF/data-chunk sizes that `concatWavs` later reads. We
+// re-encode `pcm_s16le` rather than `-c copy`: copy truncates at coarse packet
+// boundaries (tens of ms off), while a PCM→PCM re-encode is sample-accurate
+// AND still lossless (the samples pass through unchanged).
+export async function truncateToMs(buf: Uint8Array, ms: Milliseconds): Promise<Uint8Array> {
+  const inPath = tmpName("trunc-in", ".wav");
+  const outPath = tmpName("trunc-out", ".wav");
+  const seconds = msToSeconds(ms);
+  try {
+    await Bun.write(inPath, buf);
+    await $`ffmpeg -hide_banner -loglevel error -i ${inPath} -t ${seconds} -c:a pcm_s16le -y ${outPath}`.quiet();
+    return new Uint8Array(await Bun.file(outPath).arrayBuffer());
+  } finally {
+    await Promise.all([rm(inPath, { force: true }), rm(outPath, { force: true })]);
+  }
+}
+
 // MP3 encoder via ffmpeg. Stream-in / stream-out so we never touch disk for
 // the intermediate WAV — important because the working buffers can be tens
 // of megabytes for long posts.

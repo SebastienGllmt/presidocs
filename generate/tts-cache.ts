@@ -138,7 +138,7 @@ export function wrapWithCache(
     requiredBinaries: inner.requiredBinaries,
     stats,
     textHashes,
-    async synthesize(text) {
+    async synthesize(text, context) {
       const textHash = computeTextHash(text);
       const fullHash = computeCacheKey(config.identity, text);
       textHashes.add(textHash);
@@ -146,11 +146,18 @@ export function wrapWithCache(
       const path = join(bucket, `${fullHash}.wav`);
       const file = Bun.file(path);
       if (await file.exists()) {
+        // Cache hit ignores `context` by design: cross-segment prosody is
+        // best-effort and deliberately NOT part of the key (see SegmentContext
+        // in tts-providers.ts). So a hit returns whatever flavor was cached,
+        // even if the neighbor has since drifted — the accepted tradeoff that
+        // keeps "edit one sentence → re-synthesize one sentence" intact.
         stats.hits++;
         return new Uint8Array(await file.arrayBuffer());
       }
       stats.misses++;
-      const buf = await inner.synthesize(text);
+      // Forward `context` so the engine can condition on the neighbor, but it
+      // played no part in `fullHash` above.
+      const buf = await inner.synthesize(text, context);
       // mkdir with recursive is idempotent and cheap — no need to track
       // which buckets we've already ensured this run.
       await mkdir(bucket, { recursive: true });

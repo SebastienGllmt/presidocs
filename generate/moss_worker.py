@@ -100,11 +100,35 @@ def main():
             req = json.loads(line)
             text = req["text"]
             out_path = req["out"]
+            # Cross-segment prosody context (see methodology.md). Two flavors:
+            #   - `acoustic` mode: prev_audio + prev_text present → build a
+            #     multi-turn [user, assistant(prev audio), user] conversation so
+            #     MOSS continues from the REAL acoustics of the prior segment
+            #     (no energy/level guessing). generation mode requires an odd
+            #     message count ending in `user`; this is 3, ends user.
+            #   - `instruction` mode (default): only an `instruction` hint, no
+            #     prior audio.
+            instruction = req.get("instruction")
+            prev_text = req.get("prev_text")
+            prev_audio = req.get("prev_audio")
 
-            conversations = [
-                [processor.build_user_message(text=text, reference=[args.reference])]
-            ]
-            batch = processor(conversations, mode="generation")
+            if prev_audio is not None:
+                conversation = [
+                    processor.build_user_message(
+                        text=prev_text or "", reference=[args.reference]
+                    ),
+                    processor.build_assistant_message(audio_codes_list=[prev_audio]),
+                    processor.build_user_message(
+                        text=text, reference=[args.reference]
+                    ),
+                ]
+            else:
+                conversation = [
+                    processor.build_user_message(
+                        text=text, reference=[args.reference], instruction=instruction
+                    )
+                ]
+            batch = processor([conversation], mode="generation")
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
 
@@ -119,8 +143,13 @@ def main():
                     audio_repetition_penalty=1.1,
                 )
 
+            # decode() parses only the newly-generated tokens (from each
+            # output's start_length), so multi-turn context is excluded; the
+            # first non-empty message is this segment's audio.
             wrote = False
             for message in processor.decode(outputs):
+                if message is None:
+                    continue
                 audio = message.audio_codes_list[0]
                 torchaudio.save(out_path, audio.unsqueeze(0), sampling_rate)
                 wrote = True

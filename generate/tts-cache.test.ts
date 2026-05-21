@@ -9,7 +9,7 @@ import {
   wrapWithCache,
   type TtsCacheIdentity,
 } from "./tts-cache.ts";
-import { type TtsProvider } from "./tts-providers.ts";
+import { type TtsProvider, type SegmentContext } from "./tts-providers.ts";
 import { type AudioFormat } from "./audio-pipeline.ts";
 
 const monoFmt: AudioFormat = { sampleRate: 22050, channels: 1, bitsPerSample: 16 };
@@ -35,15 +35,21 @@ afterEach(async () => {
 // Builds a fake TTS provider that returns a deterministic byte payload
 // keyed off the input text, plus a hit counter so tests can assert the
 // inner provider was bypassed on cache hits.
-function makeFake(): TtsProvider & { calls: string[] } {
+function makeFake(): TtsProvider & {
+  calls: string[];
+  contexts: (SegmentContext | undefined)[];
+} {
   const calls: string[] = [];
+  const contexts: (SegmentContext | undefined)[] = [];
   return {
     name: "fake",
     outputFormat: monoFmt,
     requiredBinaries: [],
     calls,
-    async synthesize(text) {
+    contexts,
+    async synthesize(text, context) {
       calls.push(text);
+      contexts.push(context);
       return new TextEncoder().encode(`SYNTH:${text}`);
     },
   };
@@ -205,6 +211,35 @@ test("wrapWithCache: same text + different identity share one bucket", async () 
   expect(buckets.length).toBe(1);
   expect(buckets[0]).toBe(computeTextHash("hello"));
   expect(readdirSync(join(cacheDir, buckets[0]!)).length).toBe(2);
+});
+
+test("wrapWithCache: forwards SegmentContext to the inner provider on a miss", async () => {
+  const fake = makeFake();
+  const cached = wrapWithCache(fake, { cacheDir, identity: baseIdentity });
+  const ctx: SegmentContext = { continuesPrevious: true, previousText: "before" };
+  await cached.synthesize("hello", ctx);
+  expect(fake.contexts).toEqual([ctx]);
+});
+
+test("wrapWithCache: SegmentContext is NOT part of the key (best-effort, stale-tolerant)", async () => {
+  // Same text + identity but different context must still hit the cache: the
+  // context never enters the key (see methodology.md, "Cross-segment
+  // continuity"). So the second call serves the
+  // FIRST context's bytes and never re-invokes the engine — the deliberate
+  // staleness that keeps "edit one sentence → re-synthesize one sentence".
+  const fake = makeFake();
+  const cached = wrapWithCache(fake, { cacheDir, identity: baseIdentity });
+
+  await cached.synthesize("hello", { continuesPrevious: false });
+  await cached.synthesize("hello", { continuesPrevious: true, previousText: "x" });
+
+  expect(cached.stats).toEqual({ hits: 1, misses: 1 });
+  expect(fake.calls).toEqual(["hello"]); // inner called once, not twice
+  // One text-hash bucket, one full-hash file — the differing context produced
+  // no new cache entry.
+  const buckets = readdirSync(cacheDir);
+  expect(buckets.length).toBe(1);
+  expect(readdirSync(join(cacheDir, buckets[0]!)).length).toBe(1);
 });
 
 test("wrapWithCache: creates cacheDir lazily on first miss", async () => {

@@ -7,6 +7,7 @@
     "dev": "bun --hot index.ts",
     "start": "bun index.ts",
     "generate": "bun generate/generate.ts",
+    "generate:prod": "bun generate/generate.ts --tts=moss",
     "clean": "bun generate/clean.ts",
     "resolve-threads": "bun authoring/resolveThreads.ts",
     "export-annotations": "bun authoring/exportAnnotations.ts",

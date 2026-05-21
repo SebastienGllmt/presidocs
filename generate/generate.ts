@@ -8,9 +8,7 @@
 //   bun run generate/generate.ts posts/hash-functions.html --voice="Samantha"
 //   bun run generate/generate.ts posts/hash-functions.html --bitrate=96k
 //   bun run generate/generate.ts posts/hash-functions.html --tts=say
-//   MOSS_TTS_DIR=/path/to/MOSS-TTS \
-//     bun run generate/generate.ts posts/hash-functions.html \
-//       --tts=moss --voice=/path/to/my_voice.wav     # production voice clone
+//   bun run generate:prod posts/hash-functions.html     # production voice clone
 //   bun run generate/generate.ts posts/hash-functions.html --mock     # silent audio
 //
 // Delivers MP3 @ 64 kbps mono. Requires `ffmpeg` on PATH plus whichever
@@ -19,11 +17,15 @@
 //
 // TTS provider is selected by `--tts=NAME` (default: `say`, macOS-only,
 // fast/cheap for iteration). `--tts=moss` is the production voice — a local
-// MOSS-TTS voice clone: set `MOSS_TTS_DIR` to your MOSS-TTS checkout and pass
-// `--voice=<reference.wav>` (the clip to clone). Optional MOSS env overrides:
+// MOSS-TTS voice clone. The `generate:prod` npm script is `--tts=moss`; with
+// `MOSS_TTS_DIR` (your checkout) and `MOSS_TTS_VOICE` (your clone reference
+// .wav) set in `.env` — both Bun-autoloaded — production is just
+// `bun run generate:prod <post.html>`. Without the env defaults, pass
+// `--tts=moss --voice=<reference.wav>` explicitly. Optional MOSS env overrides:
 // `MOSS_TTS_PYTHON` (interpreter), `MOSS_TTS_DEVICE` (torch device),
 // `MOSS_TTS_FFMPEG_LIB` (FFmpeg lib dir for torchcodec; auto-derived from the
-// `ffmpeg` on PATH otherwise). Register new providers in `./tts-providers.ts`.
+// `ffmpeg` on PATH otherwise), `MOSS_TTS_CONTINUATION` (continuity strategy).
+// Register new providers in `./tts-providers.ts`.
 //
 // PLS pronunciation lexicons (PronunciationLexicon-spec.html) come from
 // two optional sources, both merged into one lexicon at build time:
@@ -43,7 +45,8 @@ import {
   type AudioFormat,
   type AudioPipeline,
 } from "./audio-pipeline.ts";
-import { ttsProviders, type PlsLexicon } from "./tts-providers.ts";
+import { ttsProviders, type PlsLexicon, type SegmentContext } from "./tts-providers.ts";
+import { splitChapter } from "./narration.ts";
 import { wrapWithCache, type CachedTtsProvider } from "./tts-cache.ts";
 import { asMs, msToSeconds, type Milliseconds } from "../shared/time.ts";
 
@@ -62,18 +65,34 @@ for (const arg of argv) {
 
 const htmlPath = positional[0];
 if (!htmlPath) {
-  console.error("usage: bun run generate/generate.ts <post.html> [--tts=say] [--voice=Samantha] [--mock]");
+  console.error("usage: bun run generate/generate.ts <post.html> [--tts=say] [--voice=Samantha] [--segment-gap=200] [--mock]");
   process.exit(1);
 }
 
 const mock = flags.has("mock");
-const voice = flags.get("voice") ?? "Samantha";
+// `--tts=NAME` picks the provider factory (default `say`, macOS). Read here so
+// the `voice` default below can be provider-aware.
+const ttsName = flags.get("tts") ?? "say";
+// `--voice` is the `say` voice name OR, for `moss`, the path to the clone
+// reference clip. For `moss`, fall back to MOSS_TTS_VOICE so the per-machine
+// clip path can live in `.env` and the production command stays a one-liner.
+const voice =
+  flags.get("voice") ??
+  (ttsName === "moss" ? process.env.MOSS_TTS_VOICE : undefined) ??
+  "Samantha";
 const rate = Number(flags.get("rate") ?? "180"); // words/min for `say`
 const sampleRate = 22050;
 const channels = 1;
 const bitsPerSample = 16;
 
 const mp3Bitrate = flags.get("bitrate") ?? "64k";
+
+// Silence inserted between adjacent segments (and between chapters) at concat
+// time, so sentences get a natural beat instead of running straight into each
+// other. TTS engines leave little/no gap of their own, especially under
+// continuation prompting. Mark times below are computed against this gapped
+// layout so highlighting stays in sync. Set --segment-gap=0 to disable.
+const segmentGapMs = asMs(Math.max(0, Number(flags.get("segment-gap") ?? "200")));
 
 const html = await Bun.file(htmlPath).text();
 const slug = basename(htmlPath).replace(/\.html?$/i, "");
@@ -162,46 +181,8 @@ if (inlinePlsBlocks.length > 0) {
 
 // --- 2. Split each chapter at <mark> -----------------------------------------
 //
-// The in-chapter format is plain text plus `<mark name="..."/>` boundaries —
-// no `<speak>` wrapper, no nested tags, no namespace. So we do not need an
-// XML parser; a single regex over `<mark name=...>` (self-closing or with
-// an explicit close tag, single or double quotes) gives the boundary
-// positions, and everything between two boundaries is the segment's text.
-//
-// Entities are intentionally NOT decoded: HTMLRewriter hands us script
-// content byte-for-byte (RAWTEXT semantics), and the authoring format is
-// plain prose — `&` means `&`, not `&amp;`. A literal `<` mid-prose is
-// fine because the regex only matches `<mark ...>`, not arbitrary tags.
-
-type Segment = { markName: string | null; text: string };
-
-const markRegex = /<mark\s+name\s*=\s*(?:"([^"]*)"|'([^']*)')\s*\/?\s*>(?:\s*<\/mark\s*>)?/g;
-
-function splitChapter(content: string): Segment[] {
-  const out: Segment[] = [];
-  let currentMark: string | null = null;
-  let lastEnd = 0;
-
-  const push = (rawText: string) => {
-    const text = normalizeWhitespace(rawText);
-    if (currentMark !== null || text) {
-      out.push({ markName: currentMark, text });
-    }
-  };
-
-  for (const match of content.matchAll(markRegex)) {
-    push(content.slice(lastEnd, match.index));
-    currentMark = match[1] ?? match[2] ?? null;
-    lastEnd = match.index + match[0].length;
-  }
-  push(content.slice(lastEnd));
-
-  return out;
-}
-
-function normalizeWhitespace(s: string): string {
-  return s.replace(/\s+/g, " ").trim();
-}
+// Segment parsing (and the paragraph-derived `continuesPrevious` signal) lives
+// in ./narration.ts so it's unit-testable without booting this script.
 
 // --- 3. Bootstrap: pipeline + TTS provider + preflight -----------------------
 //
@@ -214,9 +195,8 @@ function normalizeWhitespace(s: string): string {
 const workingFormat: AudioFormat = { sampleRate, channels, bitsPerSample };
 const pipeline: AudioPipeline = createMp3AudioPipeline(workingFormat, mp3Bitrate);
 
-// TTS provider selection. `--tts=NAME` picks the factory; default is `say`
-// (macOS). New engines plug in by registering a factory in `ttsProviders`.
-const ttsName = flags.get("tts") ?? "say";
+// TTS provider selection (parsed above as `ttsName`). New engines plug in by
+// registering a factory in `ttsProviders`.
 const ttsFactory = ttsProviders[ttsName];
 if (!ttsFactory) {
   console.error(
@@ -384,6 +364,23 @@ type ChapterArtifact = {
 
 const artifacts: ChapterArtifact[] = [];
 
+// Reusable inter-segment / inter-chapter silence (built once). `null` when
+// gaps are disabled, so concat falls back to the original back-to-back glue.
+const segmentGap = segmentGapMs > 0 ? await pipeline.silence(segmentGapMs) : null;
+if (segmentGap) console.log(`Inserting ${segmentGapMs}ms of silence between segments`);
+
+// Interleave `gap` between every adjacent pair of `parts` (no leading/trailing
+// gap). Used for both within-chapter segments and the cross-chapter join.
+const interleave = (parts: Uint8Array[], gap: Uint8Array | null): Uint8Array[] => {
+  if (!gap) return parts;
+  const out: Uint8Array[] = [];
+  parts.forEach((p, i) => {
+    if (i > 0) out.push(gap);
+    out.push(p);
+  });
+  return out;
+};
+
 for (const chapter of chapters) {
   const segments = splitChapter(chapter.content);
   console.log(`  · ${chapter.id}: ${segments.length} segment(s)`);
@@ -391,20 +388,32 @@ for (const chapter of chapters) {
   const segmentBufs: Uint8Array[] = [];
   const segmentDurations: Milliseconds[] = [];
 
-  for (const seg of segments) {
+  for (const [i, seg] of segments.entries()) {
     let buf: Uint8Array;
     if (mock) {
       const wordCount = seg.text.split(/\s+/).filter(Boolean).length || 1;
       const estMs = asMs(Math.round(((wordCount / rate) * 60 + 0.25) * 1000));
       buf = await pipeline.silence(estMs);
     } else {
-      buf = await tts.synthesize(seg.text);
+      // Cross-segment prosody context (see methodology.md). When this segment
+      // continues the previous one, hand the engine the prior segment's text
+      // and just-synthesized audio so it can avoid a fresh-paragraph restart.
+      // This is best-effort and intentionally NOT part of the cache key, so a
+      // cached segment is reused even if its neighbor later changes.
+      const context: SegmentContext = seg.continuesPrevious
+        ? {
+            continuesPrevious: true,
+            previousText: segments[i - 1]?.text,
+            previousAudio: segmentBufs[i - 1],
+          }
+        : { continuesPrevious: false };
+      buf = await tts.synthesize(seg.text, context);
     }
     segmentBufs.push(buf);
     segmentDurations.push(await pipeline.duration(buf));
   }
 
-  const combined = pipeline.concat(segmentBufs);
+  const combined = pipeline.concat(interleave(segmentBufs, segmentGap));
 
   // Trim the leading silence so chapter seeks land on speech, not silence.
   // Everything inside the chapter shifts earlier by the trimmed duration;
@@ -423,10 +432,13 @@ for (const chapter of chapters) {
   const chapterPath = join(outDir, `${chapter.id}${pipeline.deliveryExt}`);
   await Bun.write(chapterPath, chapterDelivered);
 
-  // Compute mark times relative to the trimmed chapter's start.
+  // Compute mark times relative to the trimmed chapter's start. The same gap
+  // we spliced into `combined` precedes every segment after the first, so it
+  // must advance `t` here too or marks would drift later than their audio.
   const localMarks: { name: string; time: Milliseconds; text: string }[] = [];
   let t = asMs(0);
   for (const [i, seg] of segments.entries()) {
+    if (i > 0) t = asMs(t + segmentGapMs);
     if (seg.markName) {
       localMarks.push({
         name: seg.markName,
@@ -450,7 +462,7 @@ for (const chapter of chapters) {
 // the result for delivery. Doing the encode at the end (rather than per
 // chapter and concatenating MP3s) avoids the brittleness of MP3 concatenation
 // and keeps cumulative encoder padding to a single occurrence per file.
-const fullBuf = pipeline.concat(artifacts.map((a) => a.buffer));
+const fullBuf = pipeline.concat(interleave(artifacts.map((a) => a.buffer), segmentGap));
 const fullDelivered = await pipeline.encode(fullBuf);
 const fullPath = join(outDir, `full${pipeline.deliveryExt}`);
 await Bun.write(fullPath, fullDelivered);
@@ -463,7 +475,9 @@ await Bun.write(fullPath, fullDelivered);
 const manifestChapters: { id: string; title: string; startTime: Milliseconds; endTime: Milliseconds }[] = [];
 const manifestMarks: { name: string; time: Milliseconds; chapter: string; text: string }[] = [];
 let offset = asMs(0);
-for (const a of artifacts) {
+for (const [i, a] of artifacts.entries()) {
+  // Same gap is spliced before every chapter after the first (see fullBuf).
+  if (i > 0) offset = asMs(offset + segmentGapMs);
   const start = offset;
   const end = asMs(offset + a.duration);
   manifestChapters.push({ id: a.id, title: a.title, startTime: start, endTime: end });

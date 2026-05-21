@@ -192,6 +192,38 @@ test("createMossProvider accepts a real reference and reports its identity", () 
   });
 });
 
+test("createMossProvider rejects an invalid MOSS_TTS_CONTINUATION mode", () => {
+  const { dir, reference } = fakeMossEnv();
+  const saved = process.env.MOSS_TTS_CONTINUATION;
+  process.env.MOSS_TTS_CONTINUATION = "bogus";
+  try {
+    withMossEnv({ MOSS_TTS_DIR: dir }, () => {
+      expect(() => createMossProvider(mossConfig({ voice: reference }))).toThrow(
+        /MOSS_TTS_CONTINUATION must be instruction\|acoustic\|off/,
+      );
+    });
+  } finally {
+    if (saved === undefined) delete process.env.MOSS_TTS_CONTINUATION;
+    else process.env.MOSS_TTS_CONTINUATION = saved;
+  }
+});
+
+test("createMossProvider accepts each valid MOSS_TTS_CONTINUATION mode", () => {
+  const { dir, reference } = fakeMossEnv();
+  const saved = process.env.MOSS_TTS_CONTINUATION;
+  try {
+    for (const mode of ["instruction", "acoustic", "off"]) {
+      process.env.MOSS_TTS_CONTINUATION = mode;
+      withMossEnv({ MOSS_TTS_DIR: dir }, () => {
+        expect(createMossProvider(mossConfig({ voice: reference })).name).toBe("moss");
+      });
+    }
+  } finally {
+    if (saved === undefined) delete process.env.MOSS_TTS_CONTINUATION;
+    else process.env.MOSS_TTS_CONTINUATION = saved;
+  }
+});
+
 test("createMossProvider warns when a PLS lexicon is passed (MOSS has no PLS support)", () => {
   const { dir, reference } = fakeMossEnv();
   const lexicon: PlsLexicon = {
