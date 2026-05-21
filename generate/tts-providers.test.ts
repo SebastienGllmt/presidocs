@@ -224,20 +224,28 @@ test("createMossProvider accepts each valid MOSS_TTS_CONTINUATION mode", () => {
   }
 });
 
-test("createMossProvider warns when a PLS lexicon is passed (MOSS has no PLS support)", () => {
+test("createMossProvider consumes (does not ignore) a PLS lexicon", () => {
   const { dir, reference } = fakeMossEnv();
   const lexicon: PlsLexicon = {
     sources: ["posts/common-terms.pls"],
-    xml: "<?xml version=\"1.0\"?><lexicon/>",
+    xml:
+      "<lexicon><lexeme><grapheme>SHA-256</grapheme><alias>sha two fifty six</alias></lexeme></lexicon>",
   };
   const warn = spyOn(console, "warn").mockImplementation(() => {});
+  const log = spyOn(console, "log").mockImplementation(() => {});
   try {
     withMossEnv({ MOSS_TTS_DIR: dir }, () => {
       createMossProvider(mossConfig({ voice: reference, lexicon }));
     });
-    expect(warn.mock.calls.some((c) => /ignoring PLS lexicon/.test(String(c[0])))).toBe(true);
+    // MOSS now honors PLS via substitution — it must NOT warn that it's ignored…
+    expect(warn.mock.calls.some((c) => /ignoring PLS/.test(String(c[0])))).toBe(false);
+    // …and it logs that it's applying the entry it parsed.
+    expect(log.mock.calls.some((c) => /applying 1 pronunciation entry/.test(String(c[0])))).toBe(
+      true,
+    );
   } finally {
     warn.mockRestore();
+    log.mockRestore();
   }
 });
 
@@ -252,4 +260,36 @@ test("createMossProvider warns that --rate is ignored when non-default", () => {
   } finally {
     warn.mockRestore();
   }
+});
+
+// cacheVoiceId must be machine-independent so a shared cache hits across
+// machines: it hashes the clip CONTENTS, not the (per-machine) path.
+test("createMossProvider: cacheVoiceId is a content hash, independent of path", () => {
+  const a = fakeMossEnv();
+  const b = fakeMossEnv();
+  // Identical clip CONTENTS at two different paths (different MOSS_TTS_DIRs).
+  writeFileSync(a.reference, "IDENTICAL-CLIP-BYTES");
+  writeFileSync(b.reference, "IDENTICAL-CLIP-BYTES");
+  let idA: string | undefined;
+  let idB: string | undefined;
+  withMossEnv({ MOSS_TTS_DIR: a.dir }, () => {
+    idA = createMossProvider(mossConfig({ voice: a.reference })).cacheVoiceId;
+  });
+  withMossEnv({ MOSS_TTS_DIR: b.dir }, () => {
+    idB = createMossProvider(mossConfig({ voice: b.reference })).cacheVoiceId;
+  });
+  expect(idA).toMatch(/^moss-clip:[0-9a-f]{64}$/);
+  expect(idB).toBe(idA); // same contents → same key, despite different paths
+
+  // Different contents → different key.
+  writeFileSync(b.reference, "DIFFERENT-CLIP-BYTES");
+  let idC: string | undefined;
+  withMossEnv({ MOSS_TTS_DIR: b.dir }, () => {
+    idC = createMossProvider(mossConfig({ voice: b.reference })).cacheVoiceId;
+  });
+  expect(idC).not.toBe(idA);
+});
+
+test("createSayProvider: no cacheVoiceId (cache falls back to the voice name)", () => {
+  expect(createSayProvider(baseConfig()).cacheVoiceId).toBeUndefined();
 });

@@ -53,11 +53,21 @@ The user gives a post **slug** (the stem under `posts/`, e.g. `hash-functions`).
 6. **Remind the author of the follow-up steps** (don't run these yourself unless asked):
 
    ```bash
-   bun run generate        # re-synthesize any narration segments you edited
+   # Re-synthesize the narration for this post. The per-segment audio cache
+   # means ONLY the sentences whose text you changed are re-rendered — every
+   # unchanged segment is an instant cache hit — so this is cheap, no matter
+   # how long the post is. Pick the render that matches what they want:
+   bun run generate posts/<slug>.html        # quick draft render (fast — for listening back while iterating)
+   bun run generate:prod posts/<slug>.html   # production render (higher quality, slower)
+
+   # Then ship it:
    bun run build && wrangler deploy
    ```
 
-   The build step records the new post version hash (so readers get the "doc updated" banner); you don't need a separate version bump.
+   Notes:
+   - The two `generate` scripts differ only in which audio engine they use (configured in `package.json`); you don't choose or name the engine here — just the script. `generate` is the fast iteration render; `generate:prod` is the production one.
+   - You normally don't need to re-render the *whole* post or clear any cache — editing a sentence invalidates exactly that segment. (A pronunciation fix to the shared `posts/common-terms.pls` is the one exception, but that file is outside this skill's edit scope; leave it to the author.)
+   - The build step records the new post version hash (so readers get the "doc updated" banner); you don't need a separate version bump.
 
 ## Guardrails
 

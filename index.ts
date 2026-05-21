@@ -15,6 +15,7 @@ import { fsAdapter } from "./server/comments/fsAdapter.ts";
 import { loadDevPostMetaIndex } from "./server/postMeta.dev.ts";
 import { loadDevPostVersionIndex } from "./server/postVersions.dev.ts";
 import { handlePostVersionRequest } from "./server/postVersionsRoute.ts";
+import { handleRegenerateRequest } from "./server/regenerate.dev.ts";
 
 const projectRoot = import.meta.dir;
 
@@ -61,7 +62,10 @@ function serveFromDir(dir: string) {
     }
     const file = Bun.file(join(projectRoot, dir, safe));
     if (!(await file.exists())) return new Response("not found", { status: 404 });
-    return new Response(file);
+    // `no-cache` (revalidate, don't blind-cache) so a regenerated manifest /
+    // full.mp3 is picked up on the very next reload — the author's per-segment
+    // re-roll loop depends on this.
+    return new Response(file, { headers: { "Cache-Control": "no-cache" } });
   };
 }
 
@@ -106,6 +110,11 @@ const server = Bun.serve({
         postVersions: postVersionsIndex,
         postMeta: postMetaIndex,
       }),
+    // Dev-only, author-only: re-roll one segment's audio by shelling out to the
+    // offline generate pipeline. Deliberately absent from worker.ts (the prod
+    // edge server stays dumb and never runs the build).
+    "/dev/regenerate": (req) =>
+      handleRegenerateRequest(req, { projectRoot, postMeta: postMetaIndex }),
   },
   development: { hmr: true, console: true },
   fetch() {

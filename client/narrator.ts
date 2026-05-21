@@ -64,6 +64,10 @@ class Narrator {
   private drawerTabBtn: HTMLButtonElement | null = null;
   private segmentEls = new Map<string, HTMLElement>();
   private drawerOpen = false;
+  // The post's URL path (e.g. `/posts/hash-functions`) — the key both
+  // `/post-version` and `/dev/regenerate` expect (the server indexes posts by
+  // URL path, not bare slug; matches how comments.ts identifies the post).
+  private postPath = "";
   // Cached progress-bar element so the rAF ticker can update its width directly
   // (see comment on `updateBar` for why we drive the bar ourselves).
   private playedBarEl: HTMLElement | null = null;
@@ -91,6 +95,7 @@ class Narrator {
       return;
     }
     this.manifest = manifest;
+    this.postPath = window.location.pathname;
 
     this.player = new Player({
       container: this.playerContainer,
@@ -126,6 +131,7 @@ class Narrator {
     this.setupSmoothBar();
     this.setupKeyboardShortcuts();
     this.buildDrawer(manifest);
+    void this.maybeEnableAuthorTools();
     this.applyHashIfMatching();
     window.addEventListener("hashchange", () => this.applyHashIfMatching());
 
@@ -674,6 +680,139 @@ class Narrator {
       seg.scrollIntoView({ behavior: "smooth", block: "center" });
       seg.focus({ preventScroll: true });
     });
+  }
+
+  // Author-only, dev-only per-segment "regenerate audio" tool. Gated on BOTH:
+  //   - localhost — the `/dev/regenerate` endpoint that shells out to the
+  //     generate pipeline exists only on the dev Bun server, never the prod
+  //     Worker (see server/regenerate.dev.ts). On any other host the button
+  //     would 404, so we don't show it.
+  //   - the server-authoritative `isAuthor` flag from `/post-version` — the
+  //     same check the comments UI uses. Never trust the DOM for this.
+  // Non-localhost visitors short-circuit before any fetch, so this is a no-op
+  // for ordinary readers.
+  private async maybeEnableAuthorTools() {
+    const isLocal =
+      location.hostname === "localhost" || location.hostname === "127.0.0.1";
+    if (!isLocal || !this.postPath) return;
+    let isAuthor = false;
+    try {
+      const res = await fetch(`/post-version?post=${encodeURIComponent(this.postPath)}`, {
+        credentials: "same-origin",
+      });
+      if (res.ok) isAuthor = (await res.json())?.isAuthor === true;
+    } catch {
+      return;
+    }
+    if (!isAuthor) return;
+    for (const [markName, seg] of this.segmentEls) this.addRegenButton(seg, markName);
+  }
+
+  private addRegenButton(seg: HTMLElement, markName: string) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "spoken-regen";
+    btn.title = "Regenerate this segment's audio (MOSS, author-only)";
+    btn.setAttribute("aria-label", `Regenerate audio for ${markName}`);
+    btn.innerHTML =
+      '<svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true">' +
+      '<path d="M12 5V2L8 6l4 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z" fill="currentColor"/></svg>';
+    btn.addEventListener("click", () => void this.regenerateSegment(btn, markName));
+    // Sit between the play button and the spoken text.
+    const play = seg.querySelector(".spoken-play");
+    if (play?.nextSibling) seg.insertBefore(btn, play.nextSibling);
+    else seg.appendChild(btn);
+  }
+
+  // Re-roll one segment, then hard-reload so the rebuilt manifest + audio are
+  // picked up cleanly (MOSS is probabilistic, so each click is a fresh take).
+  // We land back on this segment with the drawer open via the URL hash, so the
+  // loop is: click → wait → reload here → press play → repeat. A full reload
+  // (vs. surgically swapping Shikwasa's source) is deliberate: it's bulletproof
+  // and the model-load latency dwarfs a page reload.
+  //
+  // The job runs ASYNCHRONOUSLY on the server (a full render is minutes, longer
+  // than any HTTP idle timeout), so we POST to *start* it and then POLL for
+  // completion — the spinner reflects the actual job, not the request. A naive
+  // long-lived request would have its connection killed mid-render, clearing
+  // the spinner while generation silently continued.
+  private async regenerateSegment(btn: HTMLButtonElement, markName: string) {
+    if (btn.dataset.busy === "true") return;
+    btn.dataset.busy = "true";
+    btn.classList.add("is-busy");
+    btn.disabled = true;
+    btn.title = "Regenerating… (full render is slow; don't stop the dev server)";
+    try {
+      const start = await fetch(
+        `/dev/regenerate?post=${encodeURIComponent(this.postPath)}&mark=${encodeURIComponent(markName)}`,
+        { method: "POST", credentials: "same-origin" },
+      );
+      if (start.status === 409) {
+        window.alert("A regeneration is already in progress — try again once it finishes.");
+        return;
+      }
+      if (start.status !== 202) {
+        window.alert(await this.regenErrorMessage(start));
+        return;
+      }
+      // Poll until the server reports the job done.
+      const result = await this.pollRegenStatus();
+      if (result.ok) {
+        window.location.hash = SPOKEN_ID_PREFIX + markName;
+        window.location.reload();
+        return;
+      }
+      window.alert(`Regeneration failed.${result.error ? `\n\n${result.error}` : ""}`);
+    } catch (err) {
+      window.alert(
+        `Regeneration request failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      // Reached on every non-reload path (error / 409); on success the page has
+      // already navigated away.
+      btn.dataset.busy = "false";
+      btn.classList.remove("is-busy");
+      btn.disabled = false;
+      btn.title = "Regenerate this segment's audio (MOSS, author-only)";
+    }
+  }
+
+  // Poll GET /dev/regenerate every few seconds until the job stops running.
+  // Capped so a hung/never-finishing job doesn't spin forever.
+  private async pollRegenStatus(): Promise<{ ok: boolean; error?: string }> {
+    const intervalMs = 2500;
+    const maxMs = 30 * 60 * 1000; // 30 min ceiling for a worst-case cold render
+    const deadline = Date.now() + maxMs;
+    for (;;) {
+      await new Promise((r) => setTimeout(r, intervalMs));
+      let body: { running?: boolean; ok?: boolean; error?: string };
+      try {
+        const res = await fetch("/dev/regenerate", { credentials: "same-origin" });
+        if (!res.ok) return { ok: false, error: `status poll failed (HTTP ${res.status})` };
+        body = await res.json();
+      } catch (err) {
+        return {
+          ok: false,
+          error: `status poll failed: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+      if (body.running === false) return { ok: body.ok === true, error: body.error };
+      if (Date.now() > deadline) {
+        return { ok: false, error: "timed out waiting for regeneration to finish" };
+      }
+    }
+  }
+
+  private async regenErrorMessage(res: Response): Promise<string> {
+    let msg = `Could not start regeneration (HTTP ${res.status}).`;
+    try {
+      const body = await res.json();
+      if (body?.error) msg += `\n\n${body.error}`;
+    } catch {
+      const text = await res.text().catch(() => "");
+      if (text) msg += `\n\n${text}`;
+    }
+    return msg;
   }
 }
 

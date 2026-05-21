@@ -16,13 +16,15 @@
 
 import { $ } from "bun";
 import { rm } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import {
   type AudioFormat,
   trailingArtifactTrimMs,
   truncateToMs,
 } from "./audio-pipeline.ts";
+import { parseLexicon, applyLexicon, type LexEntry } from "./pronunciation.ts";
 
 export interface PlsLexicon {
   // Where the lexemes came from, in merge order. Used for log messages and
@@ -91,11 +93,24 @@ export interface TtsProvider {
   // adapter, [] for a pure-HTTP cloud adapter). Unioned with the pipeline's
   // binaries at preflight.
   readonly requiredBinaries: readonly string[];
+  // A MACHINE-INDEPENDENT identifier for the voice, used in the TTS cache key
+  // in place of the raw `voice` config. The default (`voice` itself) is right
+  // when the voice is a stable name (`say`'s "Samantha"). It's WRONG when the
+  // voice is a per-machine filesystem path (MOSS's reference clip), because
+  // the absolute path would bust the cache on every other machine — so MOSS
+  // overrides this with a content hash of the clip (same clip → same audio →
+  // same key, wherever it lives). Omit to fall back to `voice`.
+  readonly cacheVoiceId?: string;
   // Synthesize one segment into a WAV buffer matching `outputFormat`. The
   // caller does not filter empty/whitespace input — providers must still
   // return a valid (possibly minimal-silent) WAV in that case. `context` is
   // optional cross-segment prosody info; providers ignore what they can't use.
   synthesize(text: string, context?: SegmentContext): Promise<Uint8Array>;
+  // Release any long-lived resources once the run is done. Providers that hold
+  // a persistent child process (e.g. MOSS's worker) MUST implement this — an
+  // open worker keeps Bun's event loop alive, so `generate` would otherwise
+  // hang after its final log line. Stateless providers (`say`) omit it.
+  close?(): Promise<void> | void;
 }
 
 export type TtsProviderFactory = (config: TtsProviderConfig) => TtsProvider;
@@ -170,8 +185,13 @@ export function createSayProvider(config: TtsProviderConfig): TtsProvider {
 // via the MOSS_TTS_DIR env var — there's no portable default path. The
 // `voice` config is repurposed as the path to the voice-clone reference clip
 // (it already feeds the cache key, so two reference clips cache separately).
-// MOSS supports neither PLS nor a words/min rate, so both are warned-and-
-// ignored like the `say` adapter does for PLS.
+//
+// PLS: MOSS has no native PLS API, but it reads whatever text we hand it, so
+// we honor the lexicon by SUBSTITUTION — rewriting each matched grapheme to
+// its pronunciation before synthesis (see generate/pronunciation.ts). MOSS is
+// IPA-capable (it accepts phoneme sequences wrapped in `/.../`), so an entry's
+// <phoneme> wins over its <alias> here; engines that aren't (`say`) still warn-
+// and-ignore. The rate knob has no MOSS equivalent and is still warned-ignored.
 
 const MOSS_MODEL_ID = "OpenMOSS-Team/MOSS-TTS-Local-Transformer";
 
@@ -266,9 +286,22 @@ function mossWorkerEnv(): Record<string, string | undefined> {
 
 export function createMossProvider(config: TtsProviderConfig): TtsProvider {
   const { format, voice, rate, lexicon } = config;
-  if (lexicon) {
-    console.warn(
-      `  · moss: ignoring PLS lexicon from ${lexicon.sources.join(", ")} (MOSS has no PLS support)`,
+  // Parse the lexicon once at construction. Unlike `say`, MOSS consumes it: we
+  // rewrite matched graphemes to their pronunciation in each segment's text
+  // (and in the prior-segment text fed back in `acoustic` mode, so the two
+  // stay consistent). MOSS is IPA-capable, so prefer <phoneme> over <alias>.
+  const lexEntries: LexEntry[] = lexicon ? parseLexicon(lexicon.xml) : [];
+  // ipaSupported is FALSE for the local MOSS model: empirically it does NOT
+  // interpret `/.../` IPA — it reads the slashes literally ("slash"). IPA
+  // appears to be a flagship/larger-MOSS feature (same story as acoustic
+  // continuity). So MOSS uses the `<alias>` respelling and ignores `<phoneme>`.
+  // Flip to true (or make env-configurable) only if wired to a MOSS model that
+  // genuinely renders IPA.
+  const pronounce = (text: string): string =>
+    applyLexicon(text, lexEntries, { ipaSupported: false });
+  if (lexEntries.length > 0) {
+    console.log(
+      `  · moss: applying ${lexEntries.length} pronunciation entr${lexEntries.length === 1 ? "y" : "ies"} from ${lexicon!.sources.join(", ")} via text substitution`,
     );
   }
   // MOSS clones tone/cadence from the reference clip; words/min isn't a knob.
@@ -311,6 +344,14 @@ export function createMossProvider(config: TtsProviderConfig): TtsProvider {
         `(got ${JSON.stringify(reference)}). Pass e.g. --voice=/path/to/my_voice.wav.`,
     );
   }
+  // Content-hash the reference clip for the cache identity (see `cacheVoiceId`
+  // on TtsProvider). The synthesized audio depends on the clip's CONTENTS, not
+  // its filesystem path — and the path is per-machine (it lives outside the
+  // repo, under MOSS_TTS_DIR), so keying the cache on it would miss on every
+  // other machine and cache the same clip twice if it ever moved. Read once at
+  // construction; reference clips are small.
+  const cacheVoiceId =
+    "moss-clip:" + createHash("sha256").update(readFileSync(reference)).digest("hex");
   const workerScript = join(import.meta.dir, "moss_worker.py");
   const device = process.env.MOSS_TTS_DEVICE; // optional; worker auto-detects
 
@@ -421,9 +462,12 @@ export function createMossProvider(config: TtsProviderConfig): TtsProvider {
 
   async function doSynthesize(text: string, context?: SegmentContext): Promise<Uint8Array> {
     const w = await ensureWorker();
+    // Apply the pronunciation lexicon (no-op when none) before anything else,
+    // so the empty-input check and the worker both see the substituted text.
+    const pronounced = pronounce(text);
     // MOSS can't synthesize empty input; mirror `say`'s minimal-utterance
     // fallback so blank segments still yield a valid (tiny) WAV.
-    const spoken = text.trim().length === 0 ? "..." : text;
+    const spoken = pronounced.trim().length === 0 ? "..." : pronounced;
     const rawPath = tmpWav("moss");
     // How a continuation is rendered depends on `continuationMode` (see the
     // factory). `off` ignores context; `instruction` adds a delivery hint
@@ -440,7 +484,9 @@ export function createMossProvider(config: TtsProviderConfig): TtsProvider {
         // Instruction for `instruction` mode (and as the fallback if
         // `acoustic` is selected but no prior audio is available).
         instruction: continues && !useAcoustic ? MOSS_CONTINUATION_INSTRUCTION : undefined,
-        prev_text: useAcoustic ? context!.previousText : undefined,
+        // Substitute the prior text too: in `acoustic` mode the prev audio was
+        // synthesized from the substituted form, so the paired text must match.
+        prev_text: useAcoustic ? pronounce(context!.previousText ?? "") : undefined,
         prev_audio: prevAudioPath ?? undefined,
       };
       w.stdin.write(JSON.stringify(req) + "\n");
@@ -468,6 +514,30 @@ export function createMossProvider(config: TtsProviderConfig): TtsProvider {
     }
   }
 
+  // Shut the worker down so the build process can exit. The worker is a
+  // long-lived Python child whose stdout we read in a never-ending loop
+  // (jsonLineReader); that pending read keeps Bun's event loop alive, so
+  // without this `generate` hangs forever after writing its output (the
+  // benign "leaked semaphore" warning is torch's own shutdown noise). Closing
+  // stdin signals EOF to the worker's read loop; the kill is a backstop in
+  // case torch's teardown is slow. Idempotent and safe if the worker never
+  // started (a fully-cached or `--mock` run never spawns it).
+  async function close() {
+    const w = worker;
+    worker = null;
+    starting = null;
+    if (!w) return;
+    try {
+      w.stdin.end();
+    } catch {}
+    try {
+      w.proc.kill();
+    } catch {}
+    try {
+      await w.proc.exited;
+    } catch {}
+  }
+
   return {
     name: "moss",
     outputFormat: format,
@@ -476,7 +546,9 @@ export function createMossProvider(config: TtsProviderConfig): TtsProvider {
     // Bun.which on `requiredBinaries`. We only declare the PATH binary we
     // shell out to here (ffmpeg, for the resample).
     requiredBinaries: ["ffmpeg"],
+    cacheVoiceId,
     synthesize,
+    close,
   };
 }
 

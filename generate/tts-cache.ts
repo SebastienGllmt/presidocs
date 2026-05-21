@@ -72,6 +72,13 @@ export interface TtsCacheIdentity {
 export interface TtsCacheConfig {
   cacheDir: string;
   identity: TtsCacheIdentity;
+  // Optional per-text override that forces a fresh synthesis even on a cache
+  // hit, overwriting the stored bytes. Used by the author's "regenerate this
+  // segment" action (generate --force-mark=…): MOSS is probabilistic, so
+  // re-rolling means bypassing the deterministic cache for exactly the chosen
+  // segment(s) — every other segment still hits, keeping the rebuild fast.
+  // The newly-rolled take then becomes the cached one.
+  forceResynthesize?: (text: string) => boolean;
 }
 
 export interface CachedTtsProvider extends TtsProvider {
@@ -136,8 +143,12 @@ export function wrapWithCache(
     name: inner.name,
     outputFormat: inner.outputFormat,
     requiredBinaries: inner.requiredBinaries,
+    cacheVoiceId: inner.cacheVoiceId,
     stats,
     textHashes,
+    // Teardown is a provider concern (e.g. MOSS's worker); the cache holds no
+    // long-lived resources, so it just forwards.
+    close: inner.close ? () => inner.close!() : undefined,
     async synthesize(text, context) {
       const textHash = computeTextHash(text);
       const fullHash = computeCacheKey(config.identity, text);
@@ -145,7 +156,8 @@ export function wrapWithCache(
       const bucket = join(config.cacheDir, textHash);
       const path = join(bucket, `${fullHash}.wav`);
       const file = Bun.file(path);
-      if (await file.exists()) {
+      const forced = config.forceResynthesize?.(text) ?? false;
+      if (!forced && (await file.exists())) {
         // Cache hit ignores `context` by design: cross-segment prosody is
         // best-effort and deliberately NOT part of the key (see SegmentContext
         // in tts-providers.ts). So a hit returns whatever flavor was cached,

@@ -242,6 +242,69 @@ test("wrapWithCache: SegmentContext is NOT part of the key (best-effort, stale-t
   expect(readdirSync(join(cacheDir, buckets[0]!)).length).toBe(1);
 });
 
+test("wrapWithCache: forceResynthesize re-rolls a hit and overwrites the stored bytes", async () => {
+  // Simulate a nondeterministic engine (like MOSS): each synth returns a
+  // different "take", so we can prove a re-roll actually replaced the cache.
+  let n = 0;
+  const provider: TtsProvider = {
+    name: "fake",
+    outputFormat: monoFmt,
+    requiredBinaries: [],
+    async synthesize(text) {
+      n++;
+      return new TextEncoder().encode(`take${n}:${text}`);
+    },
+  };
+
+  // First run: miss, stores take1.
+  const a = wrapWithCache(provider, { cacheDir, identity: baseIdentity });
+  expect(new TextDecoder().decode(await a.synthesize("hi"))).toBe("take1:hi");
+
+  // Normal re-run: hit, serves the stored take1 (engine not called).
+  const b = wrapWithCache(provider, { cacheDir, identity: baseIdentity });
+  expect(new TextDecoder().decode(await b.synthesize("hi"))).toBe("take1:hi");
+  expect(b.stats).toEqual({ hits: 1, misses: 0 });
+
+  // Forced run: bypass the hit, re-roll (take2), overwrite, count as a miss.
+  const c = wrapWithCache(provider, {
+    cacheDir,
+    identity: baseIdentity,
+    forceResynthesize: (t) => t === "hi",
+  });
+  expect(new TextDecoder().decode(await c.synthesize("hi"))).toBe("take2:hi");
+  expect(c.stats).toEqual({ hits: 0, misses: 1 });
+
+  // The new take is now what an ordinary read returns — the overwrite stuck.
+  const d = wrapWithCache(provider, { cacheDir, identity: baseIdentity });
+  expect(new TextDecoder().decode(await d.synthesize("hi"))).toBe("take2:hi");
+  expect(d.stats).toEqual({ hits: 1, misses: 0 });
+
+  // Still exactly one bucket / one file — re-rolling reuses the same key.
+  const buckets = readdirSync(cacheDir);
+  expect(buckets.length).toBe(1);
+  expect(readdirSync(join(cacheDir, buckets[0]!)).length).toBe(1);
+});
+
+test("wrapWithCache: forceResynthesize only re-rolls matching text", async () => {
+  const fake = makeFake();
+  // Seed two cached entries.
+  const seed = wrapWithCache(fake, { cacheDir, identity: baseIdentity });
+  await seed.synthesize("keep");
+  await seed.synthesize("roll");
+  expect(fake.calls).toEqual(["keep", "roll"]);
+
+  // Force only "roll": "keep" still hits, "roll" re-synthesizes.
+  const forced = wrapWithCache(fake, {
+    cacheDir,
+    identity: baseIdentity,
+    forceResynthesize: (t) => t === "roll",
+  });
+  await forced.synthesize("keep");
+  await forced.synthesize("roll");
+  expect(forced.stats).toEqual({ hits: 1, misses: 1 });
+  expect(fake.calls).toEqual(["keep", "roll", "roll"]); // only "roll" called again
+});
+
 test("wrapWithCache: creates cacheDir lazily on first miss", async () => {
   const subdir = join(cacheDir, "nested", "deeper");
   const fake = makeFake();

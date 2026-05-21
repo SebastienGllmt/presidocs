@@ -702,6 +702,34 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 
 .spoken-segment .spoken-play svg { flex: 0 0 auto; }
 
+/* Author-only, dev-only per-segment regenerate button. Injected at runtime
+   (see narrator.ts maybeEnableAuthorTools); ordinary readers never see it. */
+.spoken-segment .spoken-regen {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 4px;
+  padding: 3px;
+  border: 1px solid rgba(15, 25, 40, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--page-fg-muted);
+  cursor: pointer;
+  transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease;
+}
+.spoken-segment .spoken-regen:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.spoken-segment .spoken-regen:disabled { cursor: progress; opacity: 0.7; }
+.spoken-segment .spoken-regen svg { flex: 0 0 auto; display: block; }
+.spoken-segment .spoken-regen.is-busy svg { animation: spoken-regen-spin 0.8s linear infinite; }
+
+@keyframes spoken-regen-spin {
+  to { transform: rotate(360deg); }
+}
+
 .spoken-segment .spoken-text {
   margin: 0;
   font-size: 0.92rem;

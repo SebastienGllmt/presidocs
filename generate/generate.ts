@@ -39,7 +39,7 @@
 // audio of estimated duration so the player can still be demoed end-to-end.
 
 import { mkdir } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import {
   createMp3AudioPipeline,
   type AudioFormat,
@@ -65,7 +65,7 @@ for (const arg of argv) {
 
 const htmlPath = positional[0];
 if (!htmlPath) {
-  console.error("usage: bun run generate/generate.ts <post.html> [--tts=say] [--voice=Samantha] [--segment-gap=200] [--mock]");
+  console.error("usage: bun run generate/generate.ts <post.html> [--tts=say] [--voice=Samantha] [--segment-gap=200] [--force-mark=NAME] [--mock]");
   process.exit(1);
 }
 
@@ -93,6 +93,18 @@ const mp3Bitrate = flags.get("bitrate") ?? "64k";
 // continuation prompting. Mark times below are computed against this gapped
 // layout so highlighting stays in sync. Set --segment-gap=0 to disable.
 const segmentGapMs = asMs(Math.max(0, Number(flags.get("segment-gap") ?? "200")));
+
+// `--force-mark=NAME[,NAME...]` re-rolls specific segment(s): the named marks'
+// segments bypass the cache (forcing a fresh, possibly different MOSS take)
+// while every other segment still hits, so the rebuild is fast. This backs the
+// author's per-segment "regenerate" button (see methodology.md). No-op for
+// `--mock` (which skips the cache entirely).
+const forceMarks = new Set(
+  (flags.get("force-mark") ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
 
 const html = await Bun.file(htmlPath).text();
 const slug = basename(htmlPath).replace(/\.html?$/i, "");
@@ -223,14 +235,23 @@ const sharedPlsPath = join(dirname(htmlPath), "common-terms.pls");
 type PlsSource = { label: string; xml: string };
 const sharedPlsSources: PlsSource[] = [];
 const localPlsSources: PlsSource[] = [];
+// Label lexicon sources by their path RELATIVE TO THE REPO ROOT, never the
+// absolute/invocation path. The merged local lexicon XML feeds the TTS cache
+// key (see tts-cache.ts), and the label rides along inside it as a
+// `<!-- from ... -->` comment — so an absolute path would make the key depend
+// on the machine and on HOW generate was invoked (absolute from the regenerate
+// endpoint vs. relative from the CLI vs. different cwds), busting the cache
+// both between equivalent runs and across machines sharing a cache. A
+// repo-relative path is stable across all of those and still debuggable.
+const repoRel = (p: string) => relative(projectRoot, resolve(p));
 if (await Bun.file(sharedPlsPath).exists()) {
   sharedPlsSources.push({
-    label: sharedPlsPath,
+    label: repoRel(sharedPlsPath),
     xml: await Bun.file(sharedPlsPath).text(),
   });
 }
 inlinePlsBlocks.forEach((xml, i) => {
-  localPlsSources.push({ label: `inline:${htmlPath}#${i}`, xml });
+  localPlsSources.push({ label: `inline:${repoRel(htmlPath)}#${i}`, xml });
 });
 const plsSources: PlsSource[] = [...sharedPlsSources, ...localPlsSources];
 
@@ -289,17 +310,47 @@ const rawTts = ttsFactory({
 // Mock runs bypass the cache: the silent-audio shortcut is already cheap,
 // and caching it would just waste disk on never-played placeholders.
 const cacheDir = join(projectRoot, "generated", ".tts-cache");
+
+// Resolve --force-mark names to the raw segment texts the cache keys on (the
+// cache predicate is matched against `seg.text`, pre-substitution — the same
+// string handed to `tts.synthesize`). Warn on any name that matches no mark so
+// a typo doesn't silently regenerate nothing.
+const forcedTexts = new Set<string>();
+if (forceMarks.size > 0) {
+  const seen = new Set<string>();
+  for (const chapter of chapters) {
+    for (const seg of splitChapter(chapter.content)) {
+      if (seg.markName && forceMarks.has(seg.markName)) {
+        forcedTexts.add(seg.text);
+        seen.add(seg.markName);
+      }
+    }
+  }
+  const missing = [...forceMarks].filter((m) => !seen.has(m));
+  if (missing.length > 0) {
+    console.warn(`  · --force-mark: no segment found for mark(s): ${missing.join(", ")}`);
+  }
+  if (seen.size > 0) {
+    console.log(`Force-regenerating segment(s): ${[...seen].join(", ")}`);
+  }
+}
+
 const cachedTts: CachedTtsProvider | null = mock
   ? null
   : wrapWithCache(rawTts, {
       cacheDir,
       identity: {
         providerName: rawTts.name,
-        voice,
+        // Use the provider's machine-independent voice id when it has one
+        // (MOSS hashes its reference clip's contents); fall back to the raw
+        // voice name otherwise (`say`). Keeps an absolute, per-machine clip
+        // path out of the cache key so a shared cache hits across machines.
+        voice: rawTts.cacheVoiceId ?? voice,
         rate,
         format: workingFormat,
         localLexiconXml: localLexicon?.xml ?? null,
       },
+      forceResynthesize: forcedTexts.size > 0 ? (text) => forcedTexts.has(text) : undefined,
     });
 const tts = cachedTts ?? rawTts;
 
@@ -526,3 +577,9 @@ if (cachedTts) {
   const current = Array.from(cachedTts.textHashes).sort();
   await Bun.write(keysPath, JSON.stringify(current, null, 2));
 }
+
+// Release the provider's long-lived resources (e.g. MOSS's worker process).
+// Without this the worker keeps the event loop alive and the process hangs
+// after this point instead of exiting — which also leaves the regenerate
+// endpoint's `proc.exited` unresolved, so its job never reports done.
+await tts.close?.();
