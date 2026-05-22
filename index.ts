@@ -16,8 +16,21 @@ import { loadDevPostMetaIndex } from "./server/postMeta.dev.ts";
 import { loadDevPostVersionIndex } from "./server/postVersions.dev.ts";
 import { handlePostVersionRequest } from "./server/postVersionsRoute.ts";
 import { handleRegenerateRequest } from "./server/regenerate.dev.ts";
+import { withSecurityHeaders } from "./shared/securityHeaders.ts";
 
 const projectRoot = import.meta.dir;
+
+// Wrap a function-style route handler so its response carries the security
+// headers (parity with worker.ts). `priv` additionally sets CORP, for the
+// non-asset API responses (comments, auth, post-version). The two
+// HTMLBundle routes ("/" and the post) are served by Bun's bundler and
+// can't be wrapped — see shared/securityHeaders.ts; the document CSP is
+// verified against the Worker (`wrangler dev`), not this dev server.
+type DevHandler = (req: Bun.BunRequest) => Response | Promise<Response>;
+const pub = (h: DevHandler): DevHandler => async (req) =>
+  withSecurityHeaders(await h(req));
+const priv = (h: DevHandler): DevHandler => async (req) =>
+  withSecurityHeaders(await h(req), { private: true });
 
 // Automerge ships its WebAssembly module as a binary file in its `dist/`.
 // We serve it directly here so the browser can `fetch()` it once and
@@ -72,49 +85,52 @@ function serveFromDir(dir: string) {
 const server = Bun.serve({
   port: Number(process.env.PORT ?? 3000),
   routes: {
+    // HTMLBundle routes: served by Bun's bundler, cannot be wrapped with
+    // security headers (see the `pub`/`priv` note above). The document CSP
+    // is applied in worker.ts and verified via `wrangler dev`.
     "/": index,
     "/posts/hash-functions": hashFunctions,
-    "/generated/*": serveFromDir("generated"),
-    "/assets/automerge.wasm": async () =>
+    "/generated/*": pub(serveFromDir("generated")),
+    "/assets/automerge.wasm": pub(async () =>
       new Response(Bun.file(AUTOMERGE_WASM_PATH), {
         headers: {
           "Content-Type": "application/wasm",
           // 30-day cache — the WASM only changes when the dep does.
           "Cache-Control": "public, max-age=2592000, immutable",
         },
-      }),
-    "/auth/google": startGoogleAuth,
-    "/auth/google/callback": googleCallback,
-    "/auth/microsoft": startMicrosoftAuth,
-    "/auth/microsoft/callback": microsoftCallback,
-    "/auth/me": whoami,
-    "/auth/logout": { POST: logout },
+      })),
+    "/auth/google": priv(startGoogleAuth),
+    "/auth/google/callback": priv(googleCallback),
+    "/auth/microsoft": priv(startMicrosoftAuth),
+    "/auth/microsoft/callback": priv(microsoftCallback),
+    "/auth/me": priv(whoami),
+    "/auth/logout": { POST: priv(logout) },
     // Comments R2 proxy — same handler as the Worker, but backed by a
     // filesystem adapter in dev. No rate limiting locally (the Workers
     // Rate Limiting API doesn't exist in Bun); per-post author is
     // resolved from posts/*.html `<meta name="author-email">`.
-    "/comments": (req) =>
+    "/comments": priv((req) =>
       handleCommentsRequest(req, {
         store: commentsDevStore,
         postMeta: postMetaIndex,
         rateLimiter: null,
-      }),
-    "/resolutions": (req) =>
+      })),
+    "/resolutions": priv((req) =>
       handleResolutionsRequest(req, {
         store: commentsDevStore,
         postMeta: postMetaIndex,
         rateLimiter: null,
-      }),
-    "/post-version": (req) =>
+      })),
+    "/post-version": priv((req) =>
       handlePostVersionRequest(req, {
         postVersions: postVersionsIndex,
         postMeta: postMetaIndex,
-      }),
+      })),
     // Dev-only, author-only: re-roll one segment's audio by shelling out to the
     // offline generate pipeline. Deliberately absent from worker.ts (the prod
     // edge server stays dumb and never runs the build).
-    "/dev/regenerate": (req) =>
-      handleRegenerateRequest(req, { projectRoot, postMeta: postMetaIndex }),
+    "/dev/regenerate": priv((req) =>
+      handleRegenerateRequest(req, { projectRoot, postMeta: postMetaIndex })),
   },
   development: { hmr: true, console: true },
   fetch() {

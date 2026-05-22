@@ -895,6 +895,48 @@ Validation runs on every PUT:
 
 Stacked together: a max-rate attacker on a fresh account can write at most 10 changes/min × 8 KB = 80 KB/min into their own folder, can't touch anyone else's content (auth check), and once you add them to `BLOCKED_USERS` their next PUT silently goes nowhere. The bucket-wide blast radius per attacker is bounded by storage cost — pennies per month in the absolute worst case.
 
+### HTTP security headers (`shared/securityHeaders.ts`)
+
+The request-auth + validation layer above is about *who can write what*. The response-header layer is the orthogonal floor for an OAuth-gated UGC system that renders reader comments into the article page: the threats it addresses are **XSS via comment content** (every interpolation point uses `textContent` today, but a CSP is the defense-in-depth against a future regression) and **clickjacking of the OAuth flow**. The session cookie flags are already correct (`HttpOnly; Secure` (prod); `SameSite=Lax` — see [Sessions](#sessions-jwt-cookie-hs256-jose)); this is purely additive at the response layer.
+
+**One shared module, two runtimes.** `shared/securityHeaders.ts` exports `withSecurityHeaders(res, { private })`, imported by both `worker.ts` and `index.ts` — the same dev/prod-parity pattern the handlers use. In the **Worker** it wraps *every* response: API routes are wrapped `{ private: true }`, and the `ASSETS.fetch` fall-through (which serves the **article HTML** — see [Static vs dynamic content](#static-vs-dynamic-content)) is wrapped public, so the document CSP genuinely takes effect in prod.
+
+**The dev asymmetry worth knowing.** `Bun.serve`'s `routes` serves the two HTML pages (`/` and the post) as `HTMLBundle` values, not functions, and there's no response-header hook for them — so they **cannot be wrapped**. The Bun dev server therefore applies headers only to the *function*-style routes (auth, comments, `/post-version`, the generated-asset + WASM routes); the two HTML routes go out bare. Consequence: **the document CSP is verified against `wrangler dev` / a deploy, not the Bun dev server.** This is convenient, not just tolerable — it also means Bun's HMR injecting its own inline `<style>`/`<script>` into those HTML routes never trips the policy, so `style-src`/`script-src` stay tight (`'self'`) in both runtimes with no dev-only carve-out.
+
+The Content-Security-Policy (the load-bearing directives are commented in the source):
+
+| Directive | Value | Why |
+|---|---|---|
+| `default-src` | `'none'` | Deny-all base; every used category is opened explicitly below. |
+| `script-src` | `'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com` | **`'wasm-unsafe-eval'` is mandatory** — Automerge instantiates its WASM core from a *fetched buffer* (`client/commentsStore.ts`), which `'self'` alone does **not** permit; omit it and the entire comment system dies under enforcement. No `'unsafe-inline'`: there are zero inline JS `<script>` blocks (the analytics beacon is external-`src` with only a `data-` attribute; narration/PLS scripts are stripped at build time). |
+| `style-src` | `'self'` | **No `'unsafe-inline'`.** `index.html`'s former inline `<style>` was externalized to `client/landing.css`; every other stylesheet is `<link>`ed. The ~21 client-side `.style.x =` writes are CSSOM, which CSP does not govern. |
+| `img-src` | `'self' https://lh3.googleusercontent.com https://graph.microsoft.com https://*.graph.microsoft.com` | Google + Microsoft Graph avatars. **Both the bare host and the wildcard** are listed because a CSP `*.host` matches subdomains but *not* the bare host. Missing avatars degrade to the colored-initial fallback, so this is low-risk. |
+| `connect-src` | `'self' https://static.cloudflareinsights.com` | Same-origin XHRs (`/comments`, `/auth/me`, manifests) + the analytics beacon POST. |
+| `form-action` | `'self' https://accounts.google.com https://login.microsoftonline.com` | **Defensive only, not load-bearing.** Login is an `<a href="/auth/google">` → 302 *navigation*, which spec-compliant `form-action` does not govern (the IdP origins are kept for Safari's broader interpretation and a future POST form). |
+| `frame-ancestors` | `'none'` | Clickjacking protection (the modern `X-Frame-Options: DENY`), for both the article and the OAuth flow. |
+| `media-src` | `'self'` | Audio MP3s served same-origin via the `ASSETS` binding. |
+| others | `base-uri 'self'`, `object-src 'none'`, `worker-src 'self'` (no `blob:` — nothing constructs a `Worker`; the lone Shikwasa `createObjectURL(blob)` is ID3 cover-art governed by `img-src`, and dormant since our mp3s carry no embedded artwork), `font-src 'self'`, `manifest-src 'self'`, `upgrade-insecure-requests` | Cheap deny/scope rules. WASM execution is governed by `script-src` (above), **not** `worker-src`. |
+
+The rest of the set:
+
+- **`Strict-Transport-Security: max-age=63072000`** — **prod only** (gated on `isProd()`, exactly like the `Secure` cookie flag; HSTS over plain-HTTP localhost is meaningless). Deliberately **bare `max-age`**: no `includeSubDomains`/`preload` until the production hostname is confirmed. `preload` is the one near-irreversible line in the whole stack — it's baked into shipped browser binaries globally and de-listing takes months, so "we can make any breaking change pre-launch" does *not* cover it.
+- **`X-Content-Type-Options: nosniff`** — comments are stored/served as `application/octet-stream` (Automerge change bytes); a sniffer mis-identifying user-controlled bytes as HTML would defeat the same-origin protection.
+- **`Referrer-Policy: strict-origin-when-cross-origin`** — pins the modern default explicitly; avoids leaking comment-bearing paths to outbound links / the IdP.
+- **`Permissions-Policy`** — deny every feature except `autoplay`, `fullscreen`, `picture-in-picture` = `(self)` (the narrator/Shikwasa player needs these from same-origin code).
+- **`Cross-Origin-Opener-Policy: same-origin`** — isolates the browsing-context group (cheap; relevant if OAuth ever moves to a popup).
+- **`X-Frame-Options: DENY`** — redundant with `frame-ancestors 'none'` on modern browsers, kept as a free fallback for any ancient UA that ignores CSP (clickjacking the OAuth flow is a named threat).
+- **`Cross-Origin-Resource-Policy: same-origin`** — set **only on private (non-asset) responses** (comments, `/auth/me`, `/post-version`), so a third-party page can't load them as a cross-origin subresource. Not set on the article HTML/JS/CSS/audio.
+- **`Cache-Control: private, no-store`** on the identity/comment responses (`/auth/me`, the comment endpoints) — these echo the logged-in user's email/name/picture or their private comment bytes; CORP stops cross-origin *loads* but not browser/shared-cache *retention*, so these are set per-handler in `server/auth/routes.ts` / `server/comments/routes.ts` (not in the shared wrapper, since assets *should* cache).
+
+**Cookie hardening, paired.** The session cookie carries the **`__Host-` prefix in prod** (`__Host-blog-session`), pinning it to the exact origin (forces Secure + Path=/ + no Domain). The prefix requires `Secure`, which is only set in prod, so dev (`http://localhost`) falls back to the bare `blog-session` name — resolved consistently for set/read/clear within each environment. The logout clear must itself carry Secure + Path=/, or the browser rejects the delete and the cookie survives.
+
+**Verifying / iterating.** `securityHeaders()` reads a `CSP_REPORT_ONLY` env flag: when set, it emits `Content-Security-Policy-Report-Only` instead of the enforcing header, so the policy can be exercised against `wrangler dev` with violations logged (not blocked) before enforcing — the step that catches a forgotten origin or a dropped `'wasm-unsafe-eval'`. `shared/securityHeaders.test.ts` regression-guards the two silent-breakage traps (the WASM keyword; no `'unsafe-inline'` in `style-src`) plus the HSTS/CORP gating and the report-only toggle. Because the site is pre-launch (no traffic to protect, breaking changes acceptable), the multi-phase report-only-then-enforce *rollout* collapsed into shipping the tight end-state in one change, verified locally.
+Two remaining behaviors to double-check at runtime:
+- **the audio player** — Shikwasa's ID3 cover-art path (`createObjectURL(blob)`) would need `img-src blob:`, dormant only as long as our mp3s carry no embedded artwork
+- **the analytics beacon** (only present when `CF_ANALYTICS_TOKEN` is set at build) — modern Cloudflare Web Analytics POSTs to same-origin `/cdn-cgi/rum` (covered by `connect-src 'self'`), but older beacons hit bare `cloudflareinsights.com`, which is *not* allow-listed
+
+**Where they are NOT set.** Not via a Cloudflare Pages `_headers` file — the Workers Static Assets binding doesn't read it (a Pages convention; we run [one Worker, not Pages](#deploy-unit)). Not per-handler at each `new Response(...)` — easy to miss a call site and unreachable for the assets fall-through. The single `withSecurityHeaders` wrapper is the only attachment point.
+
 ### Excluded from v1
 
 - **Separate API and asset deployments** (Pages + Worker). One Worker with the assets binding covers both.
@@ -902,6 +944,10 @@ Stacked together: a max-rate attacker on a fresh account can write at most 10 ch
 - **Durable Objects** — overkill at this scale. The per-user R2 blob already serializes that user's writes; we don't need an actor model on top.
 - **Turnstile / CAPTCHA** — wired in only when rate limits actually start tripping for legit users. The hooks (a 429-with-challenge path) can be added in a few lines later.
 - **Audit log** of every PUT. Cheap insurance, but not load-bearing until something goes wrong.
+- **HSTS `includeSubDomains` + `preload`** — see [HTTP security headers](#http-security-headers-sharedsecurityheadersts); deferred until the production hostname is final (`preload` is effectively irreversible). Today we ship bare `max-age`.
+- **A CSP reporting endpoint** (`Report-To` / a `/csp-report` route) — Cloudflare Web Analytics doesn't ingest CSP reports and there's no off-the-shelf sink; violations live in users' DevTools only. Stand one up (a few lines, `console.log` → `wrangler tail`) if the policy ever needs post-deploy tuning.
+- **A CSP nonce** — buys nothing while there are no inline `<script>` blocks (the analytics beacon is external-`src`). Revisit only if authored post HTML grows inline scripts.
+- **`Cross-Origin-Embedder-Policy`** — `require-corp` would force every cross-origin response we load (avatars, the beacon) to ship CORP headers of their own, for the sole benefit of `SharedArrayBuffer` / high-res timers, which we don't use (Automerge's WASM works without them).
 
 ## Terminology
 

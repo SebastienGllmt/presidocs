@@ -1,0 +1,35 @@
+/* Landing page (index.html) styles. Extracted from an inline <style> block
+   so the served HTML carries no inline styles and the CSP can use
+   `style-src 'self'` with no 'unsafe-inline'. */
+body {
+  margin: 0;
+  font: 16px/1.6 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  background: #fafbfc;
+  color: #1f2328;
+}
+main {
+  max-width: 640px;
+  margin: 10vh auto 0;
+  padding: 0 24px;
+}
+h1 { margin: 0 0 8px; font-size: 2rem; }
+p { color: #57606a; }
+.posts {
+  margin-top: 32px;
+  list-style: none;
+  padding: 0;
+}
+.posts li {
+  margin: 0 0 12px;
+  padding: 16px 20px;
+  background: #fff;
+  border: 1px solid #e1e4e8;
+  border-radius: 10px;
+}
+.posts a {
+  color: #0969da;
+  text-decoration: none;
+  font-weight: 600;
+}
+.posts a:hover { text-decoration: underline; }
+.meta { display: block; font-size: 0.9rem; color: #6e7781; margin-top: 4px; }

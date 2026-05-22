@@ -44,7 +44,7 @@ import {
   type CookieOpts,
 } from "./cookies.ts";
 
-const SESSION_COOKIE = "blog-session";
+const SESSION_COOKIE_BASE = "blog-session";
 const STATE_COOKIE_PREFIX = "blog-oauth-state-";
 const VERIFIER_COOKIE_PREFIX = "blog-oauth-verifier-";
 const RETURN_TO_COOKIE_PREFIX = "blog-oauth-return-to-";
@@ -62,6 +62,16 @@ function safeReturnTo(raw: string | null): string {
 
 function isProd(): boolean {
   return process.env.NODE_ENV === "production";
+}
+
+// The `__Host-` prefix pins the cookie to this exact origin: the browser
+// only accepts it when set with Secure, Path=/, and no Domain attribute
+// (serializeCookie already satisfies the latter two). It requires Secure,
+// which we only set in prod — so in dev (http://localhost, secure=false)
+// the prefix would be rejected and we fall back to the bare name. The name
+// is resolved consistently within an environment, so set/read/clear agree.
+function sessionCookieName(): string {
+  return isProd() ? `__Host-${SESSION_COOKIE_BASE}` : SESSION_COOKIE_BASE;
 }
 
 function tempCookieOpts(): CookieOpts {
@@ -208,7 +218,7 @@ async function handleCallback(
   const headers = new Headers({ Location: returnTo });
   headers.append(
     "Set-Cookie",
-    serializeCookie(SESSION_COOKIE, sessionToken, sessionCookieOpts()),
+    serializeCookie(sessionCookieName(), sessionToken, sessionCookieOpts()),
   );
   headers.append(
     "Set-Cookie",
@@ -230,7 +240,7 @@ async function handleCallback(
 export async function getSessionFromRequest(
   req: Request,
 ): Promise<Session | null> {
-  const token = parseCookies(req.headers.get("cookie"))[SESSION_COOKIE];
+  const token = parseCookies(req.headers.get("cookie"))[sessionCookieName()];
   if (!token) return null;
   return await verifySessionToken(token);
 }
@@ -244,24 +254,37 @@ export async function getSessionFromRequest(
 // enforces the same check on every author-only operation.
 export async function whoami(req: Request): Promise<Response> {
   const session = await getSessionFromRequest(req);
+  // This response echoes the logged-in user's identity (email, name,
+  // picture), so it must not be cached by the browser or any shared cache —
+  // same `private, no-store` the comment endpoints use.
+  const noStore = { "Cache-Control": "private, no-store" };
   if (!session) {
     return new Response("null", {
       status: 200,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...noStore },
     });
   }
-  return Response.json({
-    userId: session.userId,
-    email: session.email,
-    emailVerified: session.emailVerified,
-    name: session.name ?? null,
-    picture: session.picture ?? null,
-    provider: session.provider,
-  });
+  return Response.json(
+    {
+      userId: session.userId,
+      email: session.email,
+      emailVerified: session.emailVerified,
+      name: session.name ?? null,
+      picture: session.picture ?? null,
+      provider: session.provider,
+    },
+    { headers: noStore },
+  );
 }
 
 export function logout(_req: Request): Response {
   const headers = new Headers({ "Content-Type": "application/json" });
-  headers.append("Set-Cookie", clearCookie(SESSION_COOKIE));
+  // A `__Host-` cookie's clearing Set-Cookie must itself carry Secure +
+  // Path=/ or the browser rejects it (the prefix rules apply to deletes
+  // too), leaving the session cookie in place. Mirror sessionCookieOpts.
+  headers.append(
+    "Set-Cookie",
+    clearCookie(sessionCookieName(), { secure: isProd(), path: "/" }),
+  );
   return new Response("null", { status: 200, headers });
 }
