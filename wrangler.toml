@@ -17,6 +17,14 @@ main = "worker.ts"
 compatibility_date = "2026-05-19"
 compatibility_flags = ["nodejs_compat"]
 
+# Workers does not set NODE_ENV at runtime; with nodejs_compat,
+# `process.env.NODE_ENV` is only what we declare here. The auth code's
+# `isProd()` gates the session cookie's `Secure` attribute on this, so
+# without it the deployed cookie would ship WITHOUT `Secure`. (Dev/Bun
+# leaves it unset → `Secure` off, correct for plaintext localhost.)
+[vars]
+NODE_ENV = "production"
+
 # Built artifact directory from `bun run build`. Worker fetch handler
 # falls through to this binding for anything that doesn't match an API
 # route.

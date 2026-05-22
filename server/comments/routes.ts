@@ -68,7 +68,7 @@ export async function handleCommentsRequest(
   req: Request,
   deps: CommentsDeps,
 ): Promise<Response> {
-  const session = getSessionFromRequest(req);
+  const session = await getSessionFromRequest(req);
   if (!session) return unauthorized();
 
   const url = new URL(req.url);

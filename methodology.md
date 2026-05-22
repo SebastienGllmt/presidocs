@@ -600,9 +600,19 @@ The trust model is the same either way: in both flows we trust that we're talkin
 
 One Microsoft-specific wrinkle: the OIDC `email` claim is sometimes blank for work accounts whose admin configured a non-mail UPN; in those cases `preferred_username` is the address. We fall back to it. Microsoft doesn't emit `email_verified` because Entra owns the address namespace — anything it returns is verified by definition.
 
-### Sessions: HMAC-signed cookie
+### Sessions: JWT cookie (HS256, `jose`)
 
-Sessions are stored entirely in a single `HttpOnly` cookie, format `<base64url(json)>.<base64url(hmac-sha256)>` — JWT-shaped but without the JOSE header (we only ever sign with one algorithm, so the header would be dead weight). Verification is constant-time. TTL is 400 days, which is the practical max — Chrome (since v104), Firefox, and Safari all clamp any cookie `Max-Age` beyond that to 400 days. Sliding-window refresh (re-mint on each authenticated request to keep active users logged in indefinitely) is a follow-up. The only revocation mechanism is rotating `SESSION_SECRET`, which invalidates every active session.
+Sessions are stored entirely in a single `HttpOnly` cookie holding a standard **JWT** (RFC 7519), HS256-signed via [`jose`](https://github.com/panva/jose) — a real `<header>.<payload>.<signature>` JWS compact serialization, so jwt.io / the `jose` CLI / any JWT debugger reads it, and `jose` owns the constant-time verify plus the algorithm allowlist (`{ algorithms: ["HS256"] }`, the standard `alg:none`/confusion defense). `iat`/`exp` are seconds since epoch per the spec. TTL is 400 days, which is the practical max — Chrome (since v104), Firefox, and Safari all clamp any cookie `Max-Age` beyond that to 400 days. Sliding-window refresh (re-mint on each authenticated request to keep active users logged in indefinitely) is a follow-up. `jose` runs on Web Crypto (`globalThis.crypto.subtle`), so `verifySessionToken` — and the `getSessionFromRequest` → `whoami` callers it feeds — became `async`; the migration also drops the `node:crypto` HMAC the bespoke format relied on.
+
+**Revocation is by key rotation, via the JWT `kid`.** Every token's header carries a `kid` (`v1` today); the verifier resolves the signing key from a small in-memory map built from env. Two accepted shapes: `SESSION_SECRET=<secret>` (single key, becomes `v1`) or `SESSION_SECRETS=v1:<secret>,v2:<secret>` (explicit `kid`→secret map for rotation). To rotate: add a new key, bump `ACTIVE_KID` so new tokens sign with it, and old tokens keep verifying against their `kid`'s key until you drop it — zero-downtime, and dropping a key force-logs-out *exactly* that cohort. This closes the gap the previous bespoke format had, where the only revocation was rotating the one secret and invalidating **every** active session at once.
+
+**Why [JWT] and not [PASETO], and why no `iss`/`aud`.** PASETO removes the `alg`-confusion footgun at the *format* level (the algorithm is implied by the version — `v4.local`, `v4.public` — so there's no `alg` field to lie about and no `none`). We use JWT anyway: it's what the OAuth/OIDC stack we already speak talks (arctic, Google, and Microsoft all issue JWTs), it has the debugger tooling (jwt.io, the `jose` CLI) PASETO lacks, and `jose`'s hard-pinned allowlist neutralizes the `alg` footgun for us without changing formats. PASETO would only win for a greenfield system with no OIDC neighbors — not us. We also deliberately omit `iss`/`aud`: for an open-source tool with many *independent* deployments, the security boundary is the **per-deployment `SESSION_SECRET`**, not the shared codebase — a token minted at one site fails the HMAC check at another *before* `aud` is ever consulted, so the signature already **is** the cross-deployment audience check. `aud` adds protection only when two verifiers *share* a key (and even then "use a distinct secret per site" closes it for free); a constant `iss="presidocs"` is identical across deployments, distinguishing nothing the signature doesn't. Both are ~30 harmless bytes, trivially added later if a key-sharing second service ever appears (`kid` would already be in place).
+
+**What the user experiences at expiry (after 400 days, or any invalid cookie).** Identity is loaded once at boot from `/auth/me` and cached for the page's lifetime (`client/identity.ts`); the cookie's `Max-Age` and the JWT `exp` are both 400 days, so they lapse together. Two cases:
+- **Next visit after expiry** (the common path): the browser has already evicted the expired cookie, so `/auth/me` returns `null` and the page renders the logged-out state with provider login buttons. Clicking one runs the normal OAuth flow with `return_to` set to the current path, landing the user right back where they were — usually a single redirect, since the IdP session typically persists. No error screen, no data prompt; just a "signed out" UI until they click.
+- **Mid-session expiry** (sitting on an already-loaded page as it crosses the boundary — vanishingly rare at a 400-day TTL): identity isn't re-fetched, so the UI keeps *looking* signed-in. New comments still write to `localStorage` immediately (no data loss), but each background sync `PUT` now 401s and is logged to the console — the comment stays local and un-synced until the user reloads and re-authenticates. This is the *"mid-session identity refresh"* gap listed under **Excluded from v1** below: low-impact at 400 days, but the first thing to fix before shortening the TTL.
+
+Either way nothing is silently lost: unsynced comments persist in `localStorage` and flush to R2 on the next authenticated load.
 
 **Why not a server-side session store** (R2 blob keyed by random session id, KV with a TTL, etc.). For comments specifically, the worst case of a stolen cookie is "someone posts as you for up to 400 days." That's not access to anything destructive — no admin panel to walk into, no money to move, no DMs to read. Paying one storage read per authenticated request to gain individual-session revocation isn't worth it at this risk level. If revocation ever does matter, every route handler in `server/auth/routes.ts` goes through `verifySessionToken(token)` exactly once — swap that implementation for a KV / R2 lookup and nothing else changes.
 
@@ -839,7 +849,7 @@ To know which posts are getting traffic, the build step also injects Cloudflare'
 
 ### Secrets
 
-All OAuth client secrets and `SESSION_SECRET` live in Cloudflare's encrypted secret store (`wrangler secret put ...`), *not* in `wrangler.toml`. Names line up with the dev `.env`, so the route handlers read the same `process.env.*` / `env.*` regardless of runtime.
+All OAuth client secrets and `SESSION_SECRET` (or `SESSION_SECRETS=v1:…,v2:…` for [key rotation](#sessions-jwt-cookie-hs256-jose)) live in Cloudflare's encrypted secret store (`wrangler secret put ...`), *not* in `wrangler.toml`. Names line up with the dev `.env`, so the route handlers read the same `process.env.*` / `env.*` regardless of runtime.
 
 ### Why not KV
 
@@ -907,6 +917,7 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 ### In active use
 
 - **Web Annotation Data Model** ([spec][AnnotationModel]): the comments system stores every anchor as a Web Annotation *target* (selectors over the post — `RangeSelector` + `TextQuoteSelector`, or a `FragmentSelector` for graphics), and exports threads as a JSON-LD `AnnotationCollection`. See [Comments → Anchoring](#anchoring-the-web-annotation-target-model) and [Exporting to the Web Annotation wire format](#exporting-to-the-web-annotation-wire-format). (Still *not* used for the narration `<mark>` ↔ `id` pairing — that relation is simple enough to need no annotation vocabulary.)
+- **JWT / JWS / JWA** ([RFC 7519][JWT], [RFC 7515][JWS], [RFC 7518][JWA]): session cookies are HS256-signed JWTs — a compact JWS serialization, `HS256` from the JWA algorithm registry — verified by `jose` with a hard-pinned algorithm allowlist (the [JWT BCP][JWT-BCP], RFC 8725) and a `kid` header for key rotation. See [Sessions](#sessions-jwt-cookie-hs256-jose). Provider ID tokens are *also* JWTs, but we deliberately *don't* verify them — see [Userinfo from `/userinfo`](#userinfo-from-userinfo-not-from-a-decoded-id-token).
 
 ### Possibly usable later
 
@@ -920,6 +931,7 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 - **WebVTT** ([spec][WebVTT]): primarily used to overlay captions on top of video tracks (or audio tracks) via `<track>` elements, but we don't use any overlay like this.
 - **Media Fragments URI** ([spec][MediaFragments]) **as a player/URL feature**: we don't expose time-based URL fragments (ex: `#t=12,18`) for linking into the audio. The Media Fragments `t=` syntax *does* appear inside the comments data model (a narration comment carries the audio time range of its segment as a Web Annotation Media Fragments selector), but it's **best-effort, not authoritative** — audio is regenerated each revision, so a stored `t=` is only exactly valid for its build. The resolve-on-edit loop usually retires a comment before its timestamps drift — but [per-segment regeneration](#per-segment-regeneration-dev-author-only) can drift them with no text change at all (and cascades to every later segment), so the durable anchor is always the narration *text*. See [Comments → Anchoring](#anchoring-the-web-annotation-target-model) for the full staleness reasoning.
 - **Spoken HTML** ([spec][SpokenHtml]) allows inlining SSML notation directly in HTML elements with attributes. However, our audio content is too different from the blog context for this to be useful (and instead use script tags)
+- **PASETO** ([spec][PASETO]) for session tokens: removes JWT's `alg`-confusion footgun at the format level (algorithm implied by the version, no `alg` field, no `none`). Rejected in favour of [JWT] — smaller ecosystem, weaker Workers story, ~zero debugger tooling, and JWT is what our OIDC neighbours (arctic, Google, Microsoft) already speak, while `jose`'s pinned allowlist neutralizes the footgun anyway. See [Sessions](#sessions-jwt-cookie-hs256-jose).
 
 ---
 
@@ -935,6 +947,11 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 [SSML]: https://www.w3.org/TR/speech-synthesis11/
 [SSML-mark]: https://www.w3.org/TR/speech-synthesis11/#S3.3.2
 [MediaSession]: https://www.w3.org/TR/mediasession/
+[JWT]: https://datatracker.ietf.org/doc/html/rfc7519
+[JWS]: https://datatracker.ietf.org/doc/html/rfc7515
+[JWA]: https://datatracker.ietf.org/doc/html/rfc7518
+[JWT-BCP]: https://datatracker.ietf.org/doc/html/rfc8725
+[PASETO]: https://paseto.io/
 
 <!-- For LLMs: local copies of the specs above.
 [EPUB]: ./specs/EPUB3-spec.html
@@ -948,5 +965,10 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 [SSML]: ./specs/SSML-spec.html
 [SSML-mark]: ./specs/SSML-spec.html (section 3.3.2)
 [MediaSession]: ./specs/MediaSession-spec.html
+[JWT]: ./specs/JWT-spec.html
+[JWS]: ./specs/JWS-spec.html
+[JWA]: ./specs/JWA-spec.html
+[JWT-BCP]: ./specs/JWT-BCP-spec.html
+[PASETO]: ./specs/PASETO-spec.html
 -->
 

@@ -49,7 +49,7 @@ export async function handleResolutionsRequest(
   req: Request,
   deps: ResolutionsDeps,
 ): Promise<Response> {
-  const session = getSessionFromRequest(req);
+  const session = await getSessionFromRequest(req);
   if (!session) return unauthorized();
 
   const url = new URL(req.url);

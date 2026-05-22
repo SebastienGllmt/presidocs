@@ -59,7 +59,7 @@ export async function handleRegenerateRequest(
 ): Promise<Response> {
   // Both verbs require a logged-in session; POST additionally requires being
   // the post's author (checked below, once we know which post).
-  const session = getSessionFromRequest(req);
+  const session = await getSessionFromRequest(req);
   if (!session) return new Response("unauthorized", { status: 401 });
 
   // GET = poll the current job's status.

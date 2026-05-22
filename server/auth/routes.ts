@@ -192,7 +192,7 @@ async function handleCallback(
     return new Response("could not load user info", { status: 502 });
   }
 
-  const sessionToken = createSessionToken({
+  const sessionToken = await createSessionToken({
     userId: `${provider}:${userInfo.sub}`,
     email: userInfo.email,
     emailVerified: userInfo.emailVerified,
@@ -227,10 +227,12 @@ async function handleCallback(
 
 // ===== Session inspection / logout =====
 
-export function getSessionFromRequest(req: Request): Session | null {
+export async function getSessionFromRequest(
+  req: Request,
+): Promise<Session | null> {
   const token = parseCookies(req.headers.get("cookie"))[SESSION_COOKIE];
   if (!token) return null;
-  return verifySessionToken(token);
+  return await verifySessionToken(token);
 }
 
 // `GET /auth/me` — returns the public subset of the session as JSON, or
@@ -240,8 +242,8 @@ export function getSessionFromRequest(req: Request): Session | null {
 // `email` against the post's `<meta name="author-email">` tag (per-post,
 // not site-wide — see `server/postMeta.ts`). The server independently
 // enforces the same check on every author-only operation.
-export function whoami(req: Request): Response {
-  const session = getSessionFromRequest(req);
+export async function whoami(req: Request): Promise<Response> {
+  const session = await getSessionFromRequest(req);
   if (!session) {
     return new Response("null", {
       status: 200,

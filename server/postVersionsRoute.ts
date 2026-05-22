@@ -24,7 +24,7 @@ export async function handlePostVersionRequest(
   req: Request,
   deps: PostVersionDeps,
 ): Promise<Response> {
-  const session = getSessionFromRequest(req);
+  const session = await getSessionFromRequest(req);
   if (!session) return new Response("unauthorized", { status: 401 });
 
   if (req.method !== "GET") {
