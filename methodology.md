@@ -6,7 +6,7 @@ This document summarizes the goal, methodology for reaching the goal esp. in rel
 
 A way to build explanatory technical blog posts that doubles as a talk via associated audio.
 
-To ensure ease of AI authoring, each post is a self-contained HTML file that contains all relevant information inline (text, graphics, spoken script, etc.). Generator tools then parse this file to power things like a "Listen" button that plays a narration of the post.
+To ensure ease of AI authoring, each post is a self-contained HTML file that contains all relevant information inline (text, graphics — including animated, interactive figures — spoken script, etc.). Generator tools then parse this file to power things like a "Listen" button that plays a narration of the post.
 
 The spoken track is deliberately **not** a read-aloud of the article - it's a parallel narrative that can paraphrase, reorder, skip over, or revisit visual elements the way a presenter does.
 
@@ -19,6 +19,7 @@ Key design decisions that shape the architecture:
 - **Segment-level audio cache.** Edit one sentence and only that sentence is re-synthesized — the rest comes from cache. See [Audio caching](#audio-caching).
 - **Non-linear narration is a first-class case.** Presenters reference earlier slides; our highlight/scroll logic has to handle going backwards as gracefully as forwards.
 - **No light/dark toggle**: we will never support a dark-mode/light-mode switch, because we need to ensure generated visuals for charts, etc. appear correctly (too hard to do this for both modes)
+- **Figures are live and interactive.** Diagrams aren't static images or pre-rendered video — the `<figure>`'s markup is authored in the post and progressively enhanced into an animated, interactive diagram by a referenced [GSAP](#animated-figures) module (kept external, like the player's code, because the prod CSP forbids inline scripts/styles). The figure stays [comment-anchorable as a graphic](#anchoring-graphics) and can sync to narration. See [Animated figures](#animated-figures).
 - **Objects are CRDT-based; the *production* server is dumb storage.** Objects are managed via Automerge (CRDT library) and synced as content-addressed change objects in R2. Following this CRDT paradigm, the **production** server (the Cloudflare Worker) never runs Automerge or holds any other reconciliation logic — it just shuffles bytes. This is a *production deployment* constraint, not a universal one: it's what lets the comment data survive a malicious / buggy / different-version edge server, and it's why per-reader writes don't need server-side merge. **Localhost is exempt.** The dev Bun server and the offline build/authoring tools (`bun run generate`, `authoring/*`) run on the developer's machine, fully trusted, and freely run Automerge — merging every reader's blob, snapshotting, serializing to other formats. So "the server is dumb" should be read as "the *edge* server is dumb"; anything that only ever runs on localhost may be as smart as it likes.
 - **Cloudflare ecosystem in prod, Bun in dev.** We focus on leveraging the Cloudflare ecosyhstem for production (Workers for the HTTP layer, R2 for any dynamic blob, the Static Assets binding for static content). Bun is dev-only (`bun --hot index.ts`) and build-time only (`bun run generate`)
 - **Commenting as a core feature** Comments are done via OAuth login with the user's email. This allows us to not only apply recommended changes if relevant, but also follow-up with any commenter (via email or otherwise) to engage.
@@ -37,6 +38,44 @@ Each top-level folder is one concern, so finding code is "pick the folder that m
 - `specs/` — local copies of the W3C specs referenced above
 
 Folder boundaries follow runtime/process boundaries (offline build vs. browser runtime vs. authored input vs. derived output), not file kind — co-locate types and tests with the code that owns them rather than splitting them into `types/` or `tests/`.
+
+## Animated figures
+
+A static SVG diagram only carries so much. Since every post is already HTML running in a browser, we want figures that *move and respond*: a hash visibly scrambling under the avalanche effect, a value tracing a curve, a step-through the reader can scrub or drive. The long-term goal is an animated, interactive educational book for math topics — so "more than a fade-in" is the baseline, not a stretch.
+
+The figure's **markup is authored in the post** — a `<figure id="…">` the author edits inline alongside the prose — and is progressively enhanced into the live diagram by a small **referenced module** (its animation code and styles), exactly the way the post already pulls in the player (`client/narrator.ts`) and comments (`client/comments.ts`). We'd have preferred the animation *code* inline in the post too, but the production CSP is `script-src 'self'` / `style-src 'self'` with no `'unsafe-inline'` (see [HTTP security headers](#http-security-headers-sharedsecurityheadersts)) — executable inline scripts and inline `<style>`/`style=` are blocked — and Bun's bundler doesn't cleanly externalize an inline `<script>` (it duplicates rather than strips it). So the behaviour lives in a bundled module under [`client/figures/`](#how-its-wired-clientfigures); the post owns the markup and the `<script src>`/`<link>` references. The figure still renders into a real `<figure id="…">`, which keeps it [comment-anchorable as a graphic](#anchoring-graphics) and live in the DOM — not a baked asset we can only point at as a flat box.
+
+### Requirements
+
+What we need from an animation approach, in priority order:
+
+- **Text-only input.** The animation is specified entirely in text we can author and diff — no binary scene files, no GUI-only tool.
+- **No React, in or out.** Neither the authoring format nor the runtime may depend on React (the rest of the site is React-free and stays that way).
+- **Runs in the browser.** Output is HTML-compatible and executes client-side — not a pre-rendered video we can only embed.
+- **More than basic animation.** Sequenced timelines, staggering, SVG path drawing, shape morphing, motion along a path — the vocabulary a math explainer needs, not just fades and slides.
+- **No custom DSL of our own.** We'll happily write whatever text format an existing tool already uses (its JS/TS API, JSON, …); we just won't invent and maintain a bespoke animation language.
+- **In-repo source, authored near the post.** The animation is plain source in our repo (the figure's markup in the post; its code in a bundled module), edited and diffed as text — not a separate external project rendered to an opaque asset. (Strict literal *inline-in-the-HTML* turned out to be blocked by the prod CSP; see below.)
+- **Interactive (nice-to-have).** Readers can type, drag, hover, scrub. Lower priority than the above, but it's where the format pays off for an explorable book, and it's a natural fit for the project's existing interactivity (comments, the player).
+
+### Library choice — GSAP
+
+We prototyped the *same* figure (real in-browser SHA-256 with the avalanche effect) under multiple options before committing. What we considered:
+
+- **Hand-written SVG / CSS / WAAPI.** Zero dependencies and fine for simple motion, but sequenced multi-step educational animations get verbose fast and there's no real timeline-scrubbing story. Kept as the **no-JS fallback** (the figure's initial frame), not the animation engine.
+- **anime.js (v4).** Small, MIT, clean modern ESM API; we built a complete prototype in it. Great for simpler cases, but its timeline is less mature and it has no equivalent of the SVG-drawing / morph / motion-path toolkit a math book leans on.
+- **Motion Canvas.** Best *authoring experience* for complex scripted animation (TypeScript generator functions, live-preview editor — "Manim-class in TS"). Rejected as the default on three structural mismatches: it's *playback*, not interactive; its scenes live in a **separate project rendered to a video/canvas asset**, breaking "one file per post"; and its tooling is **Vite-coupled**, against our Bun rule.
+- **Manim.** The gold standard for cinematic math video, text-specified in Python — but it outputs *video* (no interactivity; comment-anchorable only as a flat box) and lives outside the post. Same back-pocket slot as Motion Canvas: a non-interactive **cinematic set-piece** could be rendered offline via `bun run generate` and served static like the audio, but it's not our default.
+- **GSAP — picked.** Mature timeline control (`seek` / reverse / `timeScale` / labels / nesting) that suits step-throughs, and that lets a figure be slaved to the [narration player's existing rAF clock](#player--sync-clientnarratorts) for audio-synced animation; a free (since 2025, all plugins included) toolkit — `DrawSVG`, `MotionPath`, `MorphSVG` — that maps almost one-to-one onto math-explainer primitives; and ergonomic imperative re-animation (`gsap.quickTo`) for input-driven explorables. No React. In production the library is **vendored and bundled locally** (`bun add gsap`; Bun bundles the module import into the post's `'self'` asset), never loaded from a CDN, so it satisfies the document's Content-Security-Policy. GSAP only writes `element.style` (CSSOM), which CSP does not govern — so the animation needs no policy relaxation.
+
+### How it's wired (`client/figures/`)
+
+The first animated figure is the hash diagram in `posts/hash-functions.html`, implemented by `client/figures/hashAvalanche.{ts,css}`. The shape it establishes for future figures:
+
+- **Progressive enhancement over a static fallback.** The post ships a static `<svg class="hash-static">` inside the `<figure>` as the no-JS / initial frame. On load the module hides it (adds `.hash-enhanced`) and injects the live stage. A reader with JS disabled, or a crawler, still sees a meaningful diagram.
+- **Real computation, real interactivity.** The figure computes genuine SHA-256 via `crypto.subtle`, so typing any input — or the "flip one character" button — shows the *true* avalanche effect (≈ how many of the 64 hex digits change from a one-character edit), not a canned animation.
+- **Narration-synced with no new player API.** The player already toggles a `narration-active` class on the element whose `<mark>` is playing (see [Player & sync](#player--sync-clientnarratorts)). The figure `MutationObserver`s that class on its own `<figure id="diagram">` and replays the intro when the "diagram" mark is reached, so a listener sees it move on cue. An `IntersectionObserver` covers the silent reader (play once when scrolled into view). This rides the [`<mark name>` ↔ `id` pairing](#connecting-spoken-text-to-blog-content) the narration already depends on, so the audio script needed no change.
+- **Reduced-motion aware.** Under `prefers-reduced-motion: reduce` the module skips the scramble/pop-in and renders the final fingerprint directly.
+- **CSP-clean by construction.** No inline `style=` (all classes, toggled in JS); dynamic visuals are GSAP CSSOM writes or class toggles, both ungoverned by `style-src`.
 
 ## SSML usage
 

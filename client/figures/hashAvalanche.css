@@ -1,0 +1,157 @@
+/* Styles for the interactive hash-function figure (posts/hash-functions.html).
+ *
+ * Lives in an external stylesheet, not an inline <style>, because the
+ * production CSP is `style-src 'self'` with no 'unsafe-inline' (see
+ * shared/securityHeaders.ts). All dynamic visual changes are done by
+ * toggling these classes or via GSAP's CSSOM writes — never inline
+ * `style=` attributes, which CSP would block.
+ *
+ * Everything is scoped under `.hash-fig` (the JS-injected stage) so it
+ * can't leak into the rest of the article. */
+
+/* Progressive enhancement: the static SVG ships in the HTML as the no-JS
+ * fallback / initial frame; once the module enhances the figure it adds
+ * `.hash-enhanced` and the SVG is replaced by the live stage. */
+#diagram.hash-enhanced .hash-static {
+  display: none;
+}
+
+.hash-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+}
+
+.hash-fig .stage {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 1.2rem;
+  align-items: center;
+}
+
+.hash-fig .label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #888;
+  margin-bottom: 0.4rem;
+}
+
+/* input characters */
+.hash-fig .chars {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  max-width: 168px;
+}
+.hash-fig .char {
+  width: 22px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  background: #eef;
+  border: 1px solid #88a;
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 14px;
+}
+.hash-fig .char.flipped {
+  background: #fff0bd;
+  border-color: #c89000;
+}
+
+/* the hash() machine */
+.hash-fig .machine-box {
+  width: 90px;
+  height: 72px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  background: #fed;
+  border: 1px solid #a83;
+  border-radius: 8px;
+  font-family: ui-monospace, monospace;
+  font-weight: 600;
+  line-height: 1.3;
+  transform-origin: center;
+}
+.hash-fig .machine-box small {
+  font-weight: 400;
+  color: #a83;
+  font-size: 10px;
+}
+
+/* output fingerprint grid (64 hex digits = 256 bits) */
+.hash-fig .hex-grid {
+  display: grid;
+  grid-template-columns: repeat(16, 1fr);
+  gap: 3px;
+  max-width: 384px;
+}
+.hash-fig .cell {
+  aspect-ratio: 1 / 1;
+  min-width: 0;
+  display: grid;
+  place-items: center;
+  background: #efe;
+  border: 1px solid #8a8;
+  border-radius: 3px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: #161;
+}
+.hash-fig .cell.scrambling {
+  color: #aaa;
+  background: #f5f5f5;
+  border-color: #d4d4d4;
+}
+.hash-fig .cell.changed {
+  background: #ffe1e1;
+  border-color: #e07a7a;
+  color: #a00;
+}
+
+/* controls */
+.hash-fig .controls {
+  margin-top: 1.1rem;
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.hash-fig .controls input {
+  font-family: ui-monospace, monospace;
+  font-size: 14px;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #bbb;
+  border-radius: 6px;
+  min-width: 180px;
+}
+.hash-fig .controls button {
+  padding: 0.42rem 0.8rem;
+  border: 1px solid #88a;
+  background: #eef;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.hash-fig .controls button:hover {
+  background: #dde;
+}
+.hash-fig .hint {
+  width: 100%;
+  margin: 0.45rem 0 0;
+  font-size: 13px;
+  color: #555;
+  min-height: 1.2em;
+}
+.hash-fig .hint b {
+  color: #a00;
+}
+
+/* Narrow screens: let the columns stack so the grid never overflows. */
+@media (max-width: 560px) {
+  .hash-fig .stage {
+    grid-template-columns: 1fr;
+    justify-items: start;
+  }
+}
