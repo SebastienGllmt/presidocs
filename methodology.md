@@ -248,6 +248,17 @@ The audio player is managed by [shikwasa](https://shikwasa.js.org/), and exposes
     - **Narrow viewport (≤1000px)**: the dock spans almost the full width, so the floating pill would otherwise sit on top of the dock's right edge when open. Instead of relocating the pill, we hide it while the dock is open and inject a close × (`.narrate-close-btn`) into the top-right corner of the player card. The pill returns as the *open* affordance once the dock is dismissed.
     - Shikwasa's own breakpoint switches the player to a vertically-stacked flex layout at ≤640px, so in the band between 641px and 1000px the player is still horizontal *and* our × is already showing. The highlight-toggle button (the rightmost item in the controls row) would otherwise collide with the corner × in that band, so an extra `padding-right: 44px` is applied to `.shk-player` there to push the controls inward and leave the corner clear.
 
+### Chapter strip (`client/narrator.ts` + `client/narrator.css`)
+
+Above the player sits a strip of chapter pills (one per [chapter](#chapters)), each jumping to that chapter. To avoid a post with many chapters wrapping this strip into a tall multi-row block that pushed the article down, it's instead a **single horizontally-scrolling row** with a fixed height. Scrolling is offered three ways so it's discoverable on every device:
+- native swipe on touch
+- mouse-wheel-over-strip (we translate vertical wheel to horizontal scroll ourselves, since browsers don't do it reliably)
+- press-and-hold ‹ / › arrows that appear on fine-pointer (desktop) devices only when the strip actually overflows. The hold eases its scroll speed in rather than jumping to full speed, the active chapter's pill auto-scrolls into view as playback crosses chapters, and a fading mask on whichever edge has more pills hints there's more to scroll to.
+
+Two non-obvious constraints shaped it, both worth recording so they aren't reintroduced:
+- **The strip floats over the white article, not the dark player card** (only the card below it has the dark background). So the arrows — like the pills — need the dark fill; styled to match the dock's palette they'd be invisible white-on-white against the page.
+- **No CSS scroll-snap.** Snapping pills to center looks tempting, but it reverts any sub-pill scroll increment back to the nearest pill, which silently swallows the hold-arrow's per-frame nudges and the wheel handler's small deltas. Smooth continuous scrolling is the requirement, so snap is left off.
+
 *Note*:
 - `Shikwasa`s `seek(time)` calls `parseInt(time)` internally (truncating fractions), so we bypass it with our own `seekToMs`
 - `Shikwasa` has built-in chapter detection, but to avoid the edge-case of briefly showing the wrong chapter when seeking to exactly the chapter boundary, we add `+ 0.01` to the chapter start time when seeking so that it reliably considers us *inside* the new chapter range

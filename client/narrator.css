@@ -204,17 +204,117 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 
 /* --- Chapter pill strip ----------------------------------------------------- */
 
+/* Flex rail: ‹ arrow | scrolling strip | › arrow. The strip is the only
+   flexible child so the arrows hug the edges and it scrolls between them. */
+.chapter-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+/* Hold-to-scroll arrows. Shown whenever the strip overflows (see
+   `.has-overflow` below); hidden on touch-only devices, which have native
+   swipe and don't need the redundant control. Default-hidden until the rail
+   reports overflow. */
+.chapter-arrow {
+  display: none;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  /* The strip sits on the transparent dock, OVER the white article — not on
+     the dark player card. So the arrows need the same dark fill as the pills
+     (a white-on-white arrow is invisible against the page). */
+  background: rgba(22, 27, 34, 0.9);
+  -webkit-backdrop-filter: saturate(180%) blur(14px);
+  backdrop-filter: saturate(180%) blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #fff;
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.4);
+  transition: background-color 160ms ease, color 160ms ease, opacity 160ms ease;
+}
+.chapter-arrow:hover:not(:disabled) {
+  background: rgba(40, 48, 60, 0.95);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+.chapter-arrow:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.chapter-nav.has-overflow .chapter-arrow { display: inline-flex; }
+/* Touch-only devices rely on native swipe — drop the redundant arrows. This
+   rule comes after (equal specificity) so it wins on coarse pointers. */
+@media (hover: none) and (pointer: coarse) {
+  .chapter-nav.has-overflow .chapter-arrow { display: none; }
+}
+
 .chapter-strip {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
+  flex-wrap: nowrap;
+  /* As a flex item in the row rail (.chapter-nav), the strip must be allowed
+     to shrink below its content width — otherwise it overflows the dock,
+     pushes both arrows off-screen, and never scrolls internally. The default
+     `min-width: auto` prevents that, so override it. */
+  min-width: 0;
+  /* `safe center` centers the pills when they fit but falls back to
+     start-alignment once they overflow — plain `center` would clip the
+     first pills past the left edge with no way to scroll back to them. */
+  justify-content: safe center;
   gap: 6px;
+  /* Vertical room for the active pill's glow and the hover lift: overflow-x
+     forces overflow-y to compute to `auto`, which would otherwise clip them
+     (or surface a stray vertical scrollbar). */
+  padding-block: 8px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  /* No scroll-snap: it snaps any sub-pill scroll increment back to the
+     current pill's center, which silently eats the hold-arrow's per-frame
+     nudges and the wheel handler's small deltas (verified — a 12px set reads
+     back as 0). Smooth continuous scrolling is what we want here. */
+  -webkit-overflow-scrolling: touch;
+  /* Hide the scrollbar — the edge fades signal scrollability instead, and a
+     visible bar would add height back to this single-row strip. */
+  scrollbar-width: none;
+  /* Edge fades: JS sets --fade-l / --fade-r to a non-zero width on whichever
+     side has off-screen pills (see updateChapterFades), so the strip dissolves
+     into the dock only where there's more to scroll to. */
+  --fade-l: 0px;
+  --fade-r: 0px;
+  --fade-w: 22px;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--fade-l),
+    #000 calc(100% - var(--fade-r)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--fade-l),
+    #000 calc(100% - var(--fade-r)),
+    transparent 100%
+  );
 }
+.chapter-strip::-webkit-scrollbar { display: none; }
 
 .chapter-pill {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  /* Hold size in the horizontal scroller — never let pills squeeze. */
+  flex: 0 0 auto;
   padding: 5px 12px 5px 6px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.85);
@@ -513,6 +613,7 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 @media (prefers-reduced-motion: reduce) {
   .chapter-pill { transition: none; }
   .chapter-pill:hover { transform: none; }
+  .chapter-arrow { transition: none; }
 }
 
 /* ============================================================================

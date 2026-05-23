@@ -55,6 +55,16 @@ class Narrator {
   private rafHandle = 0;
   private playing = false;
   private pillEls = new Map<string, HTMLButtonElement>();
+  // Last chapter we auto-scrolled the strip to. `updateActiveChapter` runs
+  // every rAF tick, so we only scroll the active pill into view when the
+  // active chapter actually changes — not on every frame.
+  private lastActiveChapterId: string | null = null;
+  // Chapter strip's hold-to-scroll arrows (desktop only) + their flex wrapper,
+  // and the rAF handle for an in-progress hold.
+  private navEl: HTMLElement | null = null;
+  private prevArrow: HTMLButtonElement | null = null;
+  private nextArrow: HTMLButtonElement | null = null;
+  private arrowRaf: number | null = null;
   private dockEl: HTMLElement | null = null;
   private toggleBtn: HTMLButtonElement | null = null;
   private highlightEnabled = true;
@@ -125,6 +135,7 @@ class Narrator {
     });
 
     this.renderChapters(manifest);
+    this.setupChapterStrip();
     this.setupVisibilityToggle();
     this.setupHighlightToggle();
     this.setupCloseButton();
@@ -392,7 +403,170 @@ class Narrator {
       this.pillEls.set(chapter.id, btn);
       this.chapterContainer!.appendChild(btn);
     });
+    this.lastActiveChapterId = null;
+    this.updateChapterFades();
     this.updateActiveChapter();
+  }
+
+  // Wraps the chapter strip in a flex row flanked by hold-to-scroll ‹ / ›
+  // arrows, and wires the scroll/resize listeners that keep the edge fades and
+  // arrow states current. Runs once (the strip element persists across
+  // re-renders, so the wrapper and listeners must not be rebound per render).
+  private setupChapterStrip() {
+    const strip = this.chapterContainer;
+    if (!strip) return;
+    const parent = strip.parentElement;
+    if (parent) {
+      const nav = document.createElement("div");
+      nav.className = "chapter-nav";
+      parent.insertBefore(nav, strip);
+      this.prevArrow = this.makeChapterArrow(-1, "Scroll to earlier chapters");
+      this.nextArrow = this.makeChapterArrow(1, "Scroll to later chapters");
+      // Moves `strip` out of `parent` and between the two arrows.
+      nav.append(this.prevArrow, strip, this.nextArrow);
+      this.navEl = nav;
+    }
+    // Recompute fades/arrow state as the strip scrolls (passive — read-only)
+    // and whenever its width changes (orientation flip, dock resize).
+    strip.addEventListener("scroll", () => this.updateChapterFades(), {
+      passive: true,
+    });
+    new ResizeObserver(() => this.updateChapterFades()).observe(strip);
+    // Translate vertical (and horizontal) wheel input into horizontal scroll.
+    // Browsers don't reliably map a vertical wheel onto a horizontally-only
+    // scrollable element (Firefox doesn't at all), so we do it ourselves —
+    // but only when the strip can still scroll that way, otherwise we let the
+    // event through so the page keeps scrolling at the edges.
+    strip.addEventListener(
+      "wheel",
+      (e) => {
+        const max = strip.scrollWidth - strip.clientWidth;
+        if (max <= 0) return;
+        const unit = e.deltaMode === 1 ? 16 : 1; // line vs. pixel mode
+        const raw =
+          Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+        const delta = raw * unit;
+        if (delta === 0) return;
+        const atStart = strip.scrollLeft <= 0;
+        const atEnd = strip.scrollLeft >= max;
+        if ((delta < 0 && atStart) || (delta > 0 && atEnd)) return;
+        e.preventDefault();
+        strip.scrollLeft += delta;
+      },
+      { passive: false },
+    );
+    this.updateChapterFades();
+  }
+
+  // A press-and-hold scroll arrow. Holding scrolls the strip continuously via
+  // rAF (mouse/touch through pointer events); a keyboard activation — which
+  // fires `click` with `detail === 0` and no pointer sequence — nudges one
+  // step. The arrow disables itself at the matching edge (see
+  // updateChapterFades) and stops mid-hold if it reaches that edge.
+  private makeChapterArrow(dir: 1 | -1, label: string): HTMLButtonElement {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `chapter-arrow chapter-arrow-${dir < 0 ? "prev" : "next"}`;
+    btn.setAttribute("aria-label", label);
+    // Decorative glyph; the aria-label carries the accessible name.
+    btn.innerHTML = `<span aria-hidden="true">${dir < 0 ? "‹" : "›"}</span>`;
+    const release = () => this.stopArrowScroll();
+    btn.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      e.preventDefault(); // don't steal focus / start a text selection
+      btn.setPointerCapture(e.pointerId);
+      this.startArrowScroll(dir);
+    });
+    btn.addEventListener("pointerup", release);
+    btn.addEventListener("pointercancel", release);
+    btn.addEventListener("click", (e) => {
+      if (e.detail === 0) this.nudgeChapterStrip(dir); // keyboard activation
+    });
+    return btn;
+  }
+
+  private startArrowScroll(dir: 1 | -1) {
+    const strip = this.chapterContainer;
+    if (!strip || this.arrowRaf != null) return;
+    // Time-based (frame-rate-independent) velocity that eases in, so a hold
+    // ramps up smoothly instead of snapping straight to full speed. A small
+    // starting floor keeps a quick tap responsive rather than barely moving.
+    const MAX_V = 0.85; // px/ms at full speed (~850px/s)
+    const RAMP_MS = 450; // time to reach full speed
+    const BASE = 0.18; // fraction of MAX_V applied immediately
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let startTs: number | null = null;
+    let lastTs = 0;
+    const step = (ts: number) => {
+      if (startTs == null) startTs = lastTs = ts;
+      const dt = ts - lastTs;
+      lastTs = ts;
+      const t = reduce ? 1 : Math.min(1, (ts - startTs) / RAMP_MS);
+      const eased = t * t * (3 - 2 * t); // smoothstep
+      const v = MAX_V * (BASE + (1 - BASE) * eased);
+      const max = strip.scrollWidth - strip.clientWidth;
+      strip.scrollLeft = Math.max(0, Math.min(max, strip.scrollLeft + dir * v * dt));
+      // Stop once we reach the edge we're heading toward (direction-aware, so
+      // the first frame — when dt is 0 and we sit at scrollLeft 0 — doesn't
+      // immediately satisfy a naive `<= 0` check and kill the hold).
+      const atTargetEdge = dir > 0 ? strip.scrollLeft >= max : strip.scrollLeft <= 0;
+      if (atTargetEdge) {
+        this.stopArrowScroll();
+        return;
+      }
+      this.arrowRaf = requestAnimationFrame(step);
+    };
+    this.arrowRaf = requestAnimationFrame(step);
+  }
+
+  private stopArrowScroll() {
+    if (this.arrowRaf != null) {
+      cancelAnimationFrame(this.arrowRaf);
+      this.arrowRaf = null;
+    }
+  }
+
+  private nudgeChapterStrip(dir: 1 | -1) {
+    const strip = this.chapterContainer;
+    if (!strip) return;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    strip.scrollBy({
+      left: dir * strip.clientWidth * 0.8,
+      behavior: reduce ? "auto" : "smooth",
+    });
+  }
+
+  // Toggle the strip's left/right fade masks (and the matching arrow's disabled
+  // state) based on how much is scrolled out of view on each side, so the strip
+  // only dissolves — and an arrow only stays live — where there's more to reach.
+  private updateChapterFades() {
+    const strip = this.chapterContainer;
+    if (!strip) return;
+    const max = strip.scrollWidth - strip.clientWidth;
+    // 1px slack absorbs sub-pixel rounding so a fully-scrolled edge reads as 0.
+    const atStart = strip.scrollLeft <= 1;
+    const atEnd = strip.scrollLeft >= max - 1;
+    strip.style.setProperty("--fade-l", atStart ? "0px" : "var(--fade-w)");
+    strip.style.setProperty("--fade-r", atEnd ? "0px" : "var(--fade-w)");
+    if (this.prevArrow) this.prevArrow.disabled = atStart;
+    if (this.nextArrow) this.nextArrow.disabled = atEnd;
+    // Hide the arrow rail entirely when nothing overflows (CSS also gates it to
+    // fine-pointer devices, so touch viewports never show arrows).
+    this.navEl?.classList.toggle("has-overflow", max > 1);
+  }
+
+  // Bring the active chapter pill into the center of the horizontal strip,
+  // scrolling only the strip (never the page — `block: nearest` and a
+  // contained `scrollBy` avoid disturbing vertical position).
+  private scrollPillIntoView(el: HTMLElement) {
+    const strip = this.chapterContainer;
+    if (!strip) return;
+    const stripRect = strip.getBoundingClientRect();
+    const pillRect = el.getBoundingClientRect();
+    const delta =
+      pillRect.left - stripRect.left - (strip.clientWidth - el.clientWidth) / 2;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    strip.scrollBy({ left: delta, behavior: reduce ? "auto" : "smooth" });
   }
 
   // Shikwasa's `player.seek(time)` internally calls `parseInt(time)`, which
@@ -421,6 +595,13 @@ class Narrator {
       const isActive = id === active?.id;
       el.toggleAttribute("data-active", isActive);
       el.setAttribute("aria-current", isActive ? "true" : "false");
+    }
+    // Keep the active pill in view, but only when the chapter actually
+    // changed (this runs every rAF tick via updateActive).
+    if (active && active.id !== this.lastActiveChapterId) {
+      this.lastActiveChapterId = active.id;
+      const el = this.pillEls.get(active.id);
+      if (el) this.scrollPillIntoView(el);
     }
   }
 
