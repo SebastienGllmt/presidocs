@@ -332,9 +332,20 @@ export async function truncateToMs(buf: Uint8Array, ms: Milliseconds): Promise<U
   }
 }
 
-// MP3 encoder via ffmpeg. Stream-in / stream-out so we never touch disk for
-// the intermediate WAV — important because the working buffers can be tens
-// of megabytes for long posts.
+// MP3 encoder via ffmpeg. We stream the WAV *in* on stdin but write the MP3
+// *out* to a seekable temp file rather than `pipe:1`, then read it back.
+//
+// Why not pipe the output: libmp3lame writes a Xing/Info VBR header into the
+// first frame, which carries the total frame count — i.e. the track's exact
+// duration. That header is reserved up front and backfilled once encoding
+// finishes, which requires seeking to the start of the output. On a
+// non-seekable pipe ffmpeg silently skips it, producing an MP3 with no
+// duration tag. Browsers then can't know the length until the whole file is
+// buffered, so `HTMLMediaElement.duration` resolves to `Infinity` — which
+// makes Shikwasa flip the player into its "LIVE" (unbounded stream) mode
+// instead of showing the time remaining. Writing to a real file lets the
+// header land, so the duration is known immediately. This is the same
+// non-seekable-pipe limitation already documented for the WAV ops above.
 //
 // MP3 encoding adds a small lookahead/padding (~26ms at the head, ~36ms at
 // the tail) per the format spec. Modern decoders honor the LAME tag we
@@ -345,31 +356,35 @@ export async function wavToMp3(
   format: AudioFormat,
   mp3Bitrate: string,
 ): Promise<Uint8Array> {
-  const proc = Bun.spawn({
-    cmd: [
-      "ffmpeg",
-      "-hide_banner",
-      "-loglevel", "error",
-      "-f", "wav",
-      "-i", "pipe:0",
-      "-codec:a", "libmp3lame",
-      "-b:a", mp3Bitrate,
-      "-ac", String(format.channels),
-      "-ar", String(format.sampleRate),
-      "-f", "mp3",
-      "pipe:1",
-    ],
-    stdin: new Blob([wavBuf as BlobPart]),
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [outBytes, errText, code] = await Promise.all([
-    new Response(proc.stdout).arrayBuffer(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  if (code !== 0) throw new Error(`ffmpeg (mp3) exited ${code}:\n${errText}`);
-  return new Uint8Array(outBytes);
+  const outPath = tmpName("mp3", ".mp3");
+  try {
+    const proc = Bun.spawn({
+      cmd: [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-f", "wav",
+        "-i", "pipe:0",
+        "-codec:a", "libmp3lame",
+        "-b:a", mp3Bitrate,
+        "-ac", String(format.channels),
+        "-ar", String(format.sampleRate),
+        "-f", "mp3",
+        "-y", outPath,
+      ],
+      stdin: new Blob([wavBuf as BlobPart]),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [errText, code] = await Promise.all([
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    if (code !== 0) throw new Error(`ffmpeg (mp3) exited ${code}:\n${errText}`);
+    return new Uint8Array(await Bun.file(outPath).arrayBuffer());
+  } finally {
+    await rm(outPath, { force: true });
+  }
 }
 
 // --- Factory -----------------------------------------------------------------

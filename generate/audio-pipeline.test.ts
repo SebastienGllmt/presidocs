@@ -114,6 +114,13 @@ test("wavToMp3 produces a playable MP3 of similar duration", async () => {
   const isId3 = mp3[0] === 0x49 && mp3[1] === 0x44 && mp3[2] === 0x33;
   const isSync = mp3[0] === 0xff && (mp3[1]! & 0xe0) === 0xe0;
   expect(isId3 || isSync).toBe(true);
+  // The encode must carry a Xing/Info VBR header (the frame holding the total
+  // frame count, i.e. the exact duration). Without it browsers report
+  // `duration === Infinity` and Shikwasa shows "LIVE" instead of the time
+  // remaining. ffmpeg only writes this header to a seekable output, so this
+  // guards against regressing back to piping the encode to stdout.
+  const ascii = new TextDecoder("latin1").decode(mp3.subarray(0, 2048));
+  expect(ascii.includes("Xing") || ascii.includes("Info")).toBe(true);
   const dur = await durationViaFfmpeg(mp3);
   // LAME adds ~26ms head + ~36ms tail of encoder padding per file. Stay
   // loose so this doesn't fail on encoder version bumps.

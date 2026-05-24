@@ -1000,6 +1000,17 @@ class CommentSystem {
   private renderAll() {
     if (!this.column) return;
 
+    // Capture the composer the user is actively typing in, if any. This
+    // method tears down and rebuilds every card below, and a poll tick
+    // re-renders unconditionally (see `pollOnce`) every 60s and on tab
+    // re-focus — wholly independent of any keystroke. Without this, that
+    // teardown destroys the live textarea mid-sentence: focus jumps out
+    // (the "randomly un-focuses" report) and, for a *reply* — whose
+    // in-progress text, unlike a draft's, is never persisted — the typed
+    // text is lost outright. We re-apply the captured value, caret, and
+    // focus onto the freshly built card at the end of the render.
+    const activeComposer = this.captureActiveComposer();
+
     // Highlights: wipe and re-apply (only for non-stale, non-resolved
     // text threads — resolved threads must leave no visual trace).
     document.querySelectorAll<HTMLElement>(".cmt-highlight").forEach((s) =>
@@ -1067,6 +1078,58 @@ class CommentSystem {
 
     this.updateGraphicIndicators();
     this.repositionCards();
+
+    this.restoreActiveComposer(activeComposer);
+  }
+
+  // Snapshot of an in-progress composer textarea, taken before a render
+  // tears its card down so the rebuilt card can be restored to the same
+  // state (text, caret, focus). See `renderAll` for why this matters.
+  private captureActiveComposer(): {
+    threadId: string;
+    value: string;
+    selectionStart: number;
+    selectionEnd: number;
+  } | null {
+    const el = document.activeElement;
+    if (!(el instanceof HTMLTextAreaElement)) return null;
+    if (!el.classList.contains("cmt-reply-input")) return null;
+    for (const [threadId, card] of this.cardEls) {
+      if (card.contains(el)) {
+        const end = el.value.length;
+        return {
+          threadId,
+          value: el.value,
+          selectionStart: el.selectionStart ?? end,
+          selectionEnd: el.selectionEnd ?? end,
+        };
+      }
+    }
+    return null;
+  }
+
+  // Re-apply a captured composer onto its rebuilt card. The thread may be
+  // gone (resolved/cancelled out from under the render) — then there's
+  // nothing to restore and we no-op. For a reply this is also what carries
+  // the typed text across the render, since reply bodies (unlike draft
+  // bodies) aren't persisted in `draftBodies`.
+  private restoreActiveComposer(
+    state: ReturnType<CommentSystem["captureActiveComposer"]>,
+  ) {
+    if (!state) return;
+    const card = this.cardEls.get(state.threadId);
+    const ta = card?.querySelector<HTMLTextAreaElement>(".cmt-reply-input");
+    if (!ta) return;
+    ta.value = state.value;
+    // `preventScroll` so restoring focus doesn't yank the viewport to the
+    // card on a background poll re-render while the user reads elsewhere.
+    ta.focus({ preventScroll: true });
+    try {
+      ta.setSelectionRange(state.selectionStart, state.selectionEnd);
+    } catch {
+      // setSelectionRange throws on some input types / detached nodes;
+      // focus alone is still the important part.
+    }
   }
 
   // Build a single card. Cards reflect both saved threads and unsubmitted
