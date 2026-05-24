@@ -1,0 +1,68 @@
+/* Styles for the L2 consensus-spectrum figure (posts/offer-files.html).
+ * External stylesheet for the production CSP (`style-src 'self'`); dynamic
+ * visuals are class toggles + GSAP CSSOM writes. Scoped under `.cns-fig`. */
+
+#consensus-figure.consensus-enhanced .cns-static {
+  display: none;
+}
+
+.cns-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+}
+
+.cns-const {
+  font-size: 0.78rem;
+  color: #2f7d4d;
+  background: #e6f5ec;
+  border: 1px solid #5bb87a;
+  border-radius: 8px;
+  padding: 0.45rem 0.7rem;
+  margin-bottom: 0.7rem;
+}
+.cns-const b { font-weight: 700; }
+
+.cns-tabs { display: flex; gap: 0.3rem; flex-wrap: wrap; margin-bottom: 0.6rem; }
+.cns-tabs button {
+  appearance: none;
+  border: 1px solid #d2d2dc;
+  background: #fafafc;
+  border-radius: 7px;
+  padding: 0.4rem 0.7rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #777;
+  cursor: pointer;
+}
+.cns-tabs button:hover { color: #555; }
+.cns-tabs button[aria-selected="true"] {
+  color: #4b3b8f;
+  border-color: #9a82d8;
+  background: #f3f0fb;
+}
+
+.cns-diagram { width: 100%; max-width: 420px; height: auto; display: block; margin: 0.2rem auto 0.8rem; }
+
+.cns-meters { display: flex; flex-direction: column; gap: 0.45rem; max-width: 460px; }
+.cns-metric { display: grid; grid-template-columns: 13rem auto 4rem; align-items: center; gap: 0.6rem; font-size: 0.76rem; }
+.cns-metric .m-label { color: #555; }
+.cns-metric .m-bar { display: inline-flex; gap: 3px; }
+.cns-metric .seg { width: 26px; height: 9px; border-radius: 3px; background: #e6e6ee; transform-box: fill-box; }
+.cns-metric .seg.on.l1 { background: #d98a8a; }
+.cns-metric .seg.on.l2 { background: #e0b06a; }
+.cns-metric .seg.on.l3 { background: #5bb87a; }
+.cns-metric .m-val { font-size: 0.72rem; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.03em; }
+
+.cns-readout {
+  margin: 0.75rem 0 0;
+  font-size: 0.86rem;
+  color: #555;
+  line-height: 1.45;
+  min-height: 3.6em;
+}
+.cns-readout b { color: #4b3b8f; }
+
+@media (max-width: 560px) {
+  .cns-metric { grid-template-columns: 9rem auto 3.5rem; }
+  .cns-metric .seg { width: 18px; }
+}

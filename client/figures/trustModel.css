@@ -1,0 +1,155 @@
+/* Styles for the trust-model contrast figure.
+ *
+ * External stylesheet for the production CSP (`style-src 'self'`, no
+ * 'unsafe-inline'; see shared/securityHeaders.ts). Dynamic visuals are class
+ * toggles and GSAP CSSOM writes. Scoped under `.tm-fig`.
+ *
+ * Consistent color per mechanism so the layers visibly SWAP between columns:
+ *   cryptographic (math)  = purple #6a4fb0
+ *   TEE (hardware trust)  = amber  #c08a1e
+ */
+
+#trustmodel-figure.tm-enhanced .tm-static {
+  display: none;
+}
+
+.tm-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+}
+
+/* Legend */
+.tm-fig .tm-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: center;
+  margin-bottom: 1rem;
+  font-size: 0.78rem;
+  color: #555;
+}
+.tm-fig .tm-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.tm-fig .tm-swatch {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 3px;
+  display: inline-block;
+}
+.tm-fig .tm-swatch.crypto { background: #6a4fb0; }
+.tm-fig .tm-swatch.tee { background: #c08a1e; }
+
+/* Two-column layout */
+.tm-fig .tm-cols {
+  display: flex;
+  gap: 1.2rem;
+  align-items: flex-start;
+}
+.tm-fig .tm-col {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+}
+.tm-fig .tm-col-name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #333;
+  margin-bottom: 0.6rem;
+}
+
+/* Nested "wrapped" boxes. Color comes from the mechanism class
+ * (.crypto / .tee), applied to BOTH the outer and inner box so the reader
+ * sees the same color attach to the same tool across columns. */
+.tm-fig .tm-outer,
+.tm-fig .tm-inner {
+  border-radius: 14px;
+  border: 2px solid;
+  padding: 0.75rem 0.7rem;
+  transform-origin: center;
+}
+.tm-fig .tm-outer {
+  padding-bottom: 0.85rem;
+}
+.tm-fig .tm-inner {
+  margin-top: 0.7rem;
+}
+
+/* purple = cryptographic / math */
+.tm-fig .tm-outer.crypto,
+.tm-fig .tm-inner.crypto {
+  border-color: #6a4fb0;
+  background: #f1edf9;
+  color: #3f2e74;
+}
+/* amber = TEE / hardware */
+.tm-fig .tm-outer.tee,
+.tm-fig .tm-inner.tee {
+  border-color: #c08a1e;
+  background: #faf2dd;
+  color: #7a560d;
+}
+
+.tm-fig .tm-layer-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+  margin-bottom: 0.25rem;
+}
+.tm-fig .tm-trusted {
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  opacity: 0.75;
+}
+.tm-fig .tm-box-body {
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.tm-fig .tm-box-body small {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 400;
+  opacity: 0.8;
+}
+
+/* Consequence note under each column */
+.tm-fig .tm-note {
+  margin: 0.7rem 0 0;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  border-radius: 8px;
+  padding: 0.5rem 0.6rem;
+}
+.tm-fig .tm-note.bad {
+  background: #fdecec;
+  border: 1px solid #e6a3a3;
+  color: #8c2b2b;
+}
+.tm-fig .tm-note.good {
+  background: #e9f7ec;
+  border: 1px solid #9bd2a8;
+  color: #1f6b34;
+}
+
+.tm-fig .tm-takeaway {
+  margin: 1.1rem 0 0;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: #444;
+  text-align: center;
+}
+
+/* Stack the columns on narrow screens. */
+@media (max-width: 560px) {
+  .tm-fig .tm-cols {
+    flex-direction: column;
+    gap: 1.6rem;
+  }
+}

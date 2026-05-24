@@ -1,0 +1,105 @@
+/* Styles for the DA-abstraction figure (posts/offer-files.html, Scaling pt 3).
+ * External stylesheet for the production CSP (`style-src 'self'`); dynamic
+ * visuals are class toggles + GSAP CSSOM writes. Scoped under `.da-fig`. */
+
+#da-figure.da-enhanced .da-static {
+  display: none;
+}
+#da-figure .da-static {
+  display: block;
+  margin: 0 auto; /* center the no-JS fallback too */
+  max-width: 460px;
+  width: 100%;
+  height: auto;
+}
+
+.da-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+  max-width: 460px;
+  margin: 0 auto; /* center the figure within the article column */
+}
+
+.da-cap {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #999;
+  margin-bottom: 0.4rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.da-tag {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  font-size: 0.66rem;
+}
+.da-tag.fixed { color: #2f7d4d; background: #e6f5ec; }
+.da-tag.choice { color: #6a4fb0; background: #efeafb; }
+
+.da-user, .da-backends {
+  border: 1px solid #d8d8e0;
+  border-radius: 10px;
+  padding: 0.7rem 0.8rem;
+  background: #fafafc;
+}
+.da-user { border-color: #bfe3cd; background: #f5fbf7; }
+.da-user-body { font-size: 0.85rem; line-height: 1.45; color: #333; }
+
+.da-l2 {
+  text-align: center;
+  font-weight: 700;
+  color: #4b3b8f;
+  background: #f3f0fb;
+  border: 1px solid #9a82d8;
+  border-radius: 10px;
+  padding: 0.5rem;
+}
+
+.da-pipe {
+  text-align: center;
+  color: #aaa;
+  font-size: 1.1rem;
+  line-height: 1.2;
+  margin: 0.3rem 0;
+}
+.da-pipe span { font-size: 0.66rem; vertical-align: middle; }
+
+.da-chips { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+.da-chips button {
+  appearance: none;
+  border: 1px solid #c8c8d4;
+  background: #fff;
+  color: #666;
+  border-radius: 999px;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.da-chips button:hover { border-color: #9a82d8; }
+.da-chips button[aria-pressed="true"] {
+  background: #efeafb;
+  border-color: #9a82d8;
+  color: #4b3b8f;
+}
+.da-note {
+  font-size: 0.78rem;
+  color: #555;
+  min-height: 2.4em;
+  line-height: 1.4;
+}
+.da-note b { color: #4b3b8f; font-family: ui-monospace, monospace; }
+
+.da-readout {
+  margin: 0.8rem 0 0;
+  font-size: 0.86rem;
+  color: #555;
+  line-height: 1.45;
+}
+.da-readout b { color: #4b3b8f; }

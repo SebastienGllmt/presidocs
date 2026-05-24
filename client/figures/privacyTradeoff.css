@@ -1,0 +1,119 @@
+/* Styles for the "what do you hide?" privacy-tradeoff figure
+ * (posts/offer-files.html). External stylesheet for the production CSP
+ * (`style-src 'self'`); dynamic visuals are class toggles + GSAP CSSOM writes.
+ * Scoped under `.pt-fig`. */
+
+#privacy-figure.privacy-enhanced .pt-static {
+  display: none;
+}
+
+.pt-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+}
+
+.pt-toggles {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: #777;
+  margin-bottom: 0.7rem;
+  flex-wrap: wrap;
+}
+.pt-toggles button {
+  appearance: none;
+  border: 1px solid #c8c8d4;
+  background: #f3f3f7;
+  color: #777;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pt-toggles button::before { content: "👁 "; }
+.pt-toggles button[aria-pressed="true"] {
+  background: #efeafb;
+  border-color: #9a82d8;
+  color: #4b3b8f;
+}
+.pt-toggles button[aria-pressed="true"]::before { content: "🕶 "; }
+
+.pt-title {
+  font-weight: 800;
+  font-size: 1rem;
+  margin-bottom: 0.5rem;
+  color: #555;
+}
+#privacy-figure.is-sweet .pt-title { color: #2f7d4d; }
+#privacy-figure.is-private .pt-title { color: #b06a2f; }
+
+.pt-grid {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+/* order book */
+.pt-book {
+  border: 1px solid #e6e6ee;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+}
+#privacy-figure.is-sweet .pt-book { border-color: #bfe3cd; }
+.pt-row {
+  display: grid;
+  grid-template-columns: 3rem 1fr 5.5rem 4rem;
+  gap: 0.4rem;
+  align-items: center;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.8rem;
+  border-top: 1px solid #f0f0f4;
+}
+.pt-row.pt-head {
+  border-top: none;
+  background: #fafafc;
+  font-size: 0.64rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #999;
+}
+.pt-row .side { font-weight: 700; text-transform: uppercase; font-size: 0.62rem; }
+.pt-row .side.buy { color: #2f7d4d; }
+.pt-row .side.sell { color: #b23b3b; }
+.pt-row .who { font-family: ui-monospace, monospace; color: #555; }
+.pt-row .amt, .pt-row .px { font-family: ui-monospace, monospace; }
+.pt-row .redact {
+  color: #b9b9c4;
+  letter-spacing: 1px;
+  background: #f1f1f5;
+  border-radius: 4px;
+  padding: 0 0.3rem;
+}
+
+/* verdict checklist */
+.pt-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+.pt-checks li {
+  font-size: 0.8rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: 6px;
+  line-height: 1.3;
+}
+.pt-checks li.ok { color: #2f7d4d; background: #eef7f1; }
+.pt-checks li.bad { color: #b23b3b; background: #fbeded; }
+
+.pt-readout {
+  margin: 0.8rem 0 0;
+  font-size: 0.86rem;
+  color: #555;
+  line-height: 1.45;
+  min-height: 3.4em;
+}
+.pt-readout b { color: #4b3b8f; }
+
+@media (max-width: 560px) {
+  .pt-grid { grid-template-columns: 1fr; }
+}

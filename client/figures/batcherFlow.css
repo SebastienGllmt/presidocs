@@ -1,0 +1,178 @@
+/* Styles for the animated "batcher pays the fee" figure.
+ *
+ * External stylesheet for the production CSP (`style-src 'self'`, no
+ * 'unsafe-inline'; see shared/securityHeaders.ts). Dynamic visuals are class
+ * toggles and GSAP CSSOM writes. Scoped under `.bat-fig`. */
+
+#batcher-figure.bat-enhanced .bat-static {
+  display: none;
+}
+
+.bat-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+}
+
+.bat-fig .flow {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.bat-fig .node {
+  flex: 1 1 120px;
+  min-width: 120px;
+  border: 1px solid #d2d2dc;
+  border-radius: 10px;
+  background: #f7f7fb;
+  padding: 0.7rem 0.5rem;
+  text-align: center;
+  opacity: 0.5;
+  transition: opacity 0.3s, border-color 0.3s, background 0.3s, box-shadow 0.3s;
+  transform-origin: center;
+}
+.bat-fig .node.lit {
+  opacity: 1;
+  background: #f3f0fb;
+  border-color: #9a82d8;
+  box-shadow: 0 2px 10px rgba(106, 79, 176, 0.18);
+}
+.bat-fig .icon {
+  font-size: 1.6rem;
+  line-height: 1;
+  margin-bottom: 0.35rem;
+}
+.bat-fig .n-title {
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: #333;
+  line-height: 1.2;
+}
+.bat-fig .n-note {
+  font-size: 0.72rem;
+  color: #666;
+  line-height: 1.25;
+  margin-top: 0.2rem;
+}
+
+/* connector between nodes */
+.bat-fig .link {
+  flex: 0 0 24px;
+  align-self: center;
+  height: 3px;
+  background: #ddd;
+  border-radius: 999px;
+  position: relative;
+  overflow: hidden;
+}
+.bat-fig .link-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: #8a6fd0;
+}
+
+/* the traveling-packet lane, sits under the flow */
+.bat-fig .track {
+  position: relative;
+  height: 2.4rem;
+  margin-top: 0.5rem;
+}
+.bat-fig .packet,
+.bat-fig .fee-tag,
+.bat-fig .posted {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform-origin: center;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0.3em 0.55em;
+  border-radius: 999px;
+  opacity: 0;
+  margin-top: -0.85rem;
+}
+.bat-fig .packet {
+  background: #6a4fb0;
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(106, 79, 176, 0.35);
+}
+.bat-fig .fee-tag {
+  background: #f3b13a;
+  color: #4a3300;
+  margin-top: 0.55rem;
+  box-shadow: 0 2px 8px rgba(180, 130, 20, 0.35);
+}
+.bat-fig .posted {
+  background: #2e9e5b;
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(30, 120, 70, 0.35);
+}
+
+.bat-fig .controls {
+  margin-top: 1rem;
+}
+.bat-fig .replay {
+  padding: 0.4rem 0.85rem;
+  border: 1px solid #9a82d8;
+  background: #efeafb;
+  color: #4b3b8f;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.bat-fig .replay:hover { background: #e4dcf8; }
+/* Fixed-height caption: a hidden sizer (longest step) reserves the height, the
+ * active caption is overlaid, so step swaps never shift the page below. */
+.bat-fig .cap-wrap {
+  position: relative;
+  margin-top: 0.7rem;
+}
+.bat-fig .step-caption-sizer {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  visibility: hidden;
+}
+.bat-fig .step-caption {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  font-size: 0.9rem;
+  color: #555;
+  line-height: 1.45;
+}
+.bat-fig .step-caption code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+  background: #efeafb;
+  padding: 0.05em 0.3em;
+  border-radius: 4px;
+}
+
+/* On narrow screens the flow wraps; the horizontal connectors look odd
+ * mid-wrap, so collapse them to small vertical gaps. */
+@media (max-width: 560px) {
+  .bat-fig .flow {
+    flex-direction: column;
+  }
+  .bat-fig .node {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    text-align: left;
+  }
+  .bat-fig .icon { margin-bottom: 0; }
+  .bat-fig .n-title { flex: 0 0 auto; }
+  .bat-fig .link {
+    width: 3px;
+    height: 14px;
+    flex-basis: 14px;
+    margin-left: 1.3rem;
+  }
+  .bat-fig .link-fill { inset: 0 0 auto 0; height: 0; width: 100% !important; }
+}

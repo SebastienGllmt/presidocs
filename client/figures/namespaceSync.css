@@ -1,0 +1,166 @@
+/* Styles for the animated namespace-sync figure.
+ *
+ * External stylesheet for the production CSP (`style-src 'self'`, no
+ * 'unsafe-inline'; see shared/securityHeaders.ts). All dynamics are class
+ * toggles and GSAP CSSOM writes. Everything is scoped under `.ns-fig`.
+ *
+ * Accent for the Celestia namespace lane: #6a4fb0 (blurple). */
+
+#namespace-figure.ns-enhanced .ns-static {
+  display: none;
+}
+
+.ns-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+}
+
+.ns-fig .ns-board {
+  display: flex;
+  gap: 1rem;
+  align-items: stretch;
+}
+
+.ns-fig .ns-side {
+  flex: 1 1 0;
+  min-width: 0;
+  border: 1px solid #d2d2dc;
+  border-radius: 12px;
+  background: #f7f7fb;
+  padding: 0.8rem;
+}
+.ns-fig .ns-side.tia {
+  border-color: #c9bdee;
+  background: #f5f2fc;
+}
+
+.ns-fig .ns-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  margin-bottom: 0.6rem;
+}
+.ns-fig .ns-chain {
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+.ns-fig .ns-side.tia .ns-chain {
+  color: #6a4fb0;
+}
+.ns-fig .ns-sub {
+  font-size: 0.72rem;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* The stack of rows. `position: relative` so the cursor can ride it. */
+.ns-fig .ns-stack {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-left: 14px; /* room for the cursor gutter */
+}
+
+.ns-fig .ns-row {
+  height: 16px;
+  border-radius: 4px;
+  background: #d7d7e2;
+  border: 1px solid #c4c4d2;
+  opacity: 0.85;
+  transform-origin: left center;
+  transition: opacity 0.25s, transform 0.25s, background 0.25s,
+    border-color 0.25s, box-shadow 0.25s;
+}
+
+/* Rows that belong to YOUR namespace (the Offer-File lane). */
+.ns-fig .ns-row.mine {
+  background: #b9a7e6;
+  border-color: #6a4fb0;
+}
+/* On the Celestia side, make the lane really pop as a contiguous accent. */
+.ns-fig .ns-side.tia .ns-row.mine {
+  background: #8e74cf;
+  border-color: #6a4fb0;
+}
+
+/* The moment a row is being read by the cursor. */
+.ns-fig .ns-row.scanning {
+  box-shadow: 0 0 0 2px rgba(106, 79, 176, 0.35);
+}
+
+/* A row that has been ingested/pulled into the client. */
+.ns-fig .ns-row.pulled {
+  opacity: 1;
+  transform: translateX(4px) scaleX(1.02);
+}
+.ns-fig .ns-side.eth .ns-row.pulled {
+  background: #9aa0ad;
+  border-color: #7e8492;
+}
+.ns-fig .ns-side.tia .ns-row.mine.pulled {
+  background: #6a4fb0;
+  border-color: #553e93;
+  box-shadow: 0 2px 10px rgba(106, 79, 176, 0.4);
+}
+
+/* A row the namespace client deliberately ignores. */
+.ns-fig .ns-row.skipped {
+  opacity: 0.22;
+  transform: scaleX(0.92);
+  filter: grayscale(1);
+}
+
+/* The crawling read cursor: a thin marker in the left gutter of each stack. */
+.ns-fig .ns-cursor {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 8px;
+  height: 22px;
+  margin-top: -11px;
+  border-radius: 3px;
+  background: #6a4fb0;
+  opacity: 0;
+  box-shadow: 0 0 8px rgba(106, 79, 176, 0.6);
+  pointer-events: none;
+}
+.ns-fig .ns-side.eth .ns-cursor {
+  background: #d08a3a;
+  box-shadow: 0 0 8px rgba(208, 138, 58, 0.6);
+}
+
+.ns-fig .ns-foot {
+  margin-top: 0.7rem;
+  font-size: 0.78rem;
+  color: #888;
+  line-height: 1.3;
+  transition: color 0.3s;
+}
+.ns-fig .ns-foot b {
+  font-weight: 700;
+}
+.ns-fig .ns-side.eth .ns-foot.done {
+  color: #b4561f;
+}
+.ns-fig .ns-side.tia .ns-foot.done {
+  color: #6a4fb0;
+}
+
+.ns-fig .ns-takeaway {
+  margin: 1rem 0 0;
+  font-size: 0.9rem;
+  color: #555;
+  line-height: 1.45;
+}
+.ns-fig .ns-takeaway b {
+  color: #6a4fb0;
+}
+
+/* Narrow screens: stack the two sides vertically. */
+@media (max-width: 560px) {
+  .ns-fig .ns-board {
+    flex-direction: column;
+  }
+}

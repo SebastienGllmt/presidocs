@@ -1,0 +1,122 @@
+/* Styles for the animated offer-lifecycle figure (posts/offer-files.html).
+ *
+ * External stylesheet for the production CSP (`style-src 'self'`, no
+ * 'unsafe-inline'; see shared/securityHeaders.ts). Dynamic visuals are class
+ * toggles and GSAP CSSOM writes. Scoped under `.lifecycle-fig`. */
+
+#lifecycle-figure.lifecycle-enhanced .lifecycle-static {
+  display: none;
+}
+
+.lifecycle-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+}
+
+.lifecycle-fig .flow {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.lifecycle-fig .stage {
+  flex: 1 1 90px;
+  min-width: 90px;
+  border: 1px solid #d2d2dc;
+  border-radius: 10px;
+  background: #f7f7fb;
+  padding: 0.7rem 0.5rem;
+  text-align: center;
+  opacity: 0.5;
+  transition: opacity 0.3s, border-color 0.3s, background 0.3s, box-shadow 0.3s;
+  transform-origin: center;
+  cursor: pointer;
+}
+.lifecycle-fig .stage:hover { border-color: #9a82d8; }
+.lifecycle-fig .stage.lit {
+  opacity: 1;
+  background: #f3f0fb;
+  border-color: #9a82d8;
+  box-shadow: 0 2px 10px rgba(106, 79, 176, 0.18);
+}
+.lifecycle-fig .icon {
+  font-size: 1.5rem;
+  line-height: 1;
+  margin-bottom: 0.35rem;
+}
+.lifecycle-fig .s-title {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #444;
+  line-height: 1.2;
+}
+
+/* connector between stages */
+.lifecycle-fig .link {
+  flex: 0 0 18px;
+  align-self: center;
+  height: 3px;
+  background: #ddd;
+  border-radius: 999px;
+  position: relative;
+  overflow: hidden;
+}
+.lifecycle-fig .link-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: #8a6fd0;
+}
+
+.lifecycle-fig .controls {
+  margin-top: 1rem;
+}
+.lifecycle-fig .replay {
+  padding: 0.4rem 0.85rem;
+  border: 1px solid #9a82d8;
+  background: #efeafb;
+  color: #4b3b8f;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.lifecycle-fig .replay:hover { background: #e4dcf8; }
+.lifecycle-fig .lc-hint { margin-left: 0.5rem; font-size: 0.74rem; color: #999; }
+.lifecycle-fig .step-caption {
+  margin: 0.7rem 0 0;
+  font-size: 0.9rem;
+  color: #555;
+  min-height: 2.6em;
+  line-height: 1.45;
+}
+.lifecycle-fig .step-caption code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+  background: #efeafb;
+  padding: 0.05em 0.3em;
+  border-radius: 4px;
+}
+
+/* On narrow screens the flow wraps; the horizontal connectors look odd
+ * mid-wrap, so collapse them to small vertical gaps. */
+@media (max-width: 560px) {
+  .lifecycle-fig .flow {
+    flex-direction: column;
+  }
+  .lifecycle-fig .stage {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    text-align: left;
+  }
+  .lifecycle-fig .icon { margin-bottom: 0; }
+  .lifecycle-fig .link {
+    width: 3px;
+    height: 14px;
+    flex-basis: 14px;
+    margin-left: 1.3rem;
+  }
+  .lifecycle-fig .link-fill { inset: 0 0 auto 0; height: 0; width: 100% !important; }
+}

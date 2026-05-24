@@ -1,0 +1,90 @@
+/* Styles for the offboarding figure (posts/offer-files.html). External
+ * stylesheet for the production CSP (`style-src 'self'`); dynamic visuals are
+ * class toggles + GSAP CSSOM writes. Scoped under `.ob-fig`. */
+
+#offboard-figure.offboard-enhanced .ob-static {
+  display: none;
+}
+
+.ob-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+.ob-cap {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #999;
+  margin-bottom: 0.6rem;
+  text-align: center;
+}
+
+.ob-lane {
+  position: relative;
+  border: 1px solid #d8d8e0;
+  border-radius: 10px;
+  padding: 0.7rem 0.8rem 0.7rem 2.4rem;
+  background: #fafafc;
+}
+.ob-lane.l2 { border-color: #b9a9e6; background: #f6f3fc; }
+.ob-lane.l1 { border-color: #c8c8d4; }
+#offboard-figure.ob-ok .ob-lane.l1 { border-color: #5bb87a; background: #f5fbf7; }
+#offboard-figure.ob-blocked .ob-lane.l1 { border-color: #d98a8a; background: #fdf3f3; }
+
+.ob-tag {
+  position: absolute;
+  left: 0.6rem;
+  top: 0.7rem;
+  font-size: 0.62rem;
+  font-weight: 800;
+  color: #6a4fb0;
+  writing-mode: vertical-rl;
+  letter-spacing: 0.08em;
+}
+.ob-lane.l1 .ob-tag { color: #555; }
+
+.ob-card-t { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.04em; color: #888; margin-bottom: 0.3rem; }
+.ob-card-b { font-size: 0.88rem; line-height: 1.4; color: #333; }
+.ob-card-b small { color: #888; }
+.ob-addr { margin-top: 0.4rem; font-size: 0.72rem; color: #777; }
+.ob-addr code, .ob-claim code, .ob-link code, .ob-card-b code { font-family: ui-monospace, monospace; }
+
+.ob-bridge { text-align: center; padding: 0.5rem 0; }
+.ob-proof { display: block; font-size: 0.7rem; color: #6a4fb0; }
+.ob-link {
+  display: inline-block;
+  margin-top: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 0.12rem 0.6rem;
+}
+#offboard-figure.ob-ok .ob-link { color: #2f7d4d; background: #e6f5ec; }
+#offboard-figure.ob-blocked .ob-link { color: #b23b3b; background: #fbeded; }
+
+.ob-claim { margin-top: 0.5rem; font-size: 0.74rem; color: #777; display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+.ob-claim button {
+  appearance: none;
+  border: 1px solid #c8c8d4;
+  background: #fff;
+  color: #666;
+  border-radius: 999px;
+  padding: 0.22rem 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: ui-monospace, monospace;
+}
+.ob-claim button[aria-pressed="true"] { background: #efeafb; border-color: #9a82d8; color: #4b3b8f; }
+
+.ob-readout {
+  margin: 0.75rem 0 0;
+  font-size: 0.86rem;
+  color: #555;
+  line-height: 1.45;
+  min-height: 3.8em;
+}
+.ob-readout b { color: #4b3b8f; }

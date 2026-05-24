@@ -1,0 +1,162 @@
+/* Styles for the looping file-wrap figure (posts/offer-files.html).
+ *
+ * External stylesheet for the production CSP (`style-src 'self'`, no
+ * 'unsafe-inline'; see shared/securityHeaders.ts). Dynamic visuals are class
+ * toggles and GSAP CSSOM writes. Scoped under `.fw-fig`. */
+
+#filewrap-figure.fw-enhanced .fw-static {
+  display: none;
+}
+
+.fw-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+}
+
+.fw-fig .fw-track {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.fw-fig .fw-step {
+  flex: 1 1 90px;
+  min-width: 90px;
+  border: 1px solid #d2d2dc;
+  border-radius: 10px;
+  background: #f7f7fb;
+  padding: 0.7rem 0.5rem;
+  text-align: center;
+  opacity: 0.5;
+  transition: opacity 0.3s, border-color 0.3s, background 0.3s, box-shadow 0.3s;
+  transform-origin: center;
+}
+.fw-fig .fw-step.lit {
+  opacity: 1;
+  background: #f3f0fb;
+  border-color: #9a82d8;
+  box-shadow: 0 2px 10px rgba(106, 79, 176, 0.18);
+}
+.fw-fig .fw-icon {
+  font-size: 1.5rem;
+  line-height: 1;
+  margin-bottom: 0.35rem;
+}
+.fw-fig .fw-title {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #444;
+  line-height: 1.2;
+}
+
+/* connector between steps */
+.fw-fig .fw-link {
+  flex: 0 0 18px;
+  align-self: center;
+  height: 3px;
+  background: #ddd;
+  border-radius: 999px;
+  position: relative;
+  overflow: hidden;
+}
+.fw-fig .fw-link-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: #8a6fd0;
+}
+
+/* the wrapped-up package that emerges mid-cycle */
+.fw-fig .fw-pkg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 0.9rem;
+  min-height: 2.4em;
+  opacity: 0;
+}
+.fw-fig .fw-pkg.show {
+  opacity: 1;
+}
+.fw-fig .fw-pkg-glyph {
+  font-size: 1.4rem;
+  line-height: 1;
+  display: inline-block;
+}
+.fw-fig .fw-pkg-label {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  color: #6c6c7a;
+  background: #f3f0fb;
+  border: 1px dashed #c9bdee;
+  border-radius: 6px;
+  padding: 0.2em 0.5em;
+  transition: color 0.3s, border-color 0.3s, border-style 0.3s, background 0.3s;
+}
+.fw-fig .fw-pkg.wrapped .fw-pkg-label {
+  color: #4b3b8f;
+  background: #efeafb;
+  border-style: solid;
+  border-color: #9a82d8;
+}
+
+.fw-fig .fw-controls {
+  margin-top: 1rem;
+}
+.fw-fig .fw-replay {
+  padding: 0.4rem 0.85rem;
+  border: 1px solid #9a82d8;
+  background: #efeafb;
+  color: #4b3b8f;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.fw-fig .fw-replay:hover { background: #e4dcf8; }
+.fw-fig .fw-caption {
+  margin: 0.7rem 0 0;
+  font-size: 0.9rem;
+  color: #555;
+  min-height: 2.6em;
+  line-height: 1.45;
+}
+.fw-fig .fw-caption code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+  background: #efeafb;
+  padding: 0.05em 0.3em;
+  border-radius: 4px;
+}
+
+/* On narrow screens the track wraps; the horizontal connectors look odd
+ * mid-wrap, so collapse them to small vertical gaps. */
+@media (max-width: 560px) {
+  .fw-fig .fw-track {
+    flex-direction: column;
+  }
+  .fw-fig .fw-step {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    text-align: left;
+  }
+  .fw-fig .fw-icon { margin-bottom: 0; }
+  .fw-fig .fw-link {
+    width: 3px;
+    height: 14px;
+    flex-basis: 14px;
+    margin-left: 1.3rem;
+  }
+  .fw-fig .fw-link-fill { inset: 0 0 auto 0; height: 0; width: 100% !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-fig .fw-step,
+  .fw-fig .fw-pkg-label,
+  .fw-fig .fw-pkg-glyph {
+    transition: none;
+  }
+}

@@ -1,0 +1,39 @@
+/* Styles for the "TEE off the hot path" figure (posts/offer-files.html).
+ * External stylesheet for the production CSP (`style-src 'self'`); dynamic
+ * visuals are GSAP CSSOM / SVG-attribute writes. Scoped under `.hp-fig`. */
+
+#hotpath-figure.hotpath-enhanced .hp-static {
+  display: none;
+}
+
+.hp-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+}
+
+.hp-svg {
+  width: 100%;
+  max-width: 600px;
+  height: auto;
+  display: block;
+}
+
+.hp-controls {
+  margin-top: 0.6rem;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+.hp-replay {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid #9a82d8;
+  background: #efeafb;
+  color: #4b3b8f;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+.hp-replay:hover { background: #e4dcf8; }
+.hp-hint { font-size: 0.74rem; color: #999; max-width: 30rem; }

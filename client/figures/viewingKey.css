@@ -1,0 +1,117 @@
+/* Styles for the viewing-key / prove-your-balance figure
+ * (posts/offer-files.html). External stylesheet for the production CSP
+ * (`style-src 'self'`); dynamic visuals are class toggles + GSAP CSSOM writes.
+ * Scoped under `.vk-fig`. */
+
+#viewingkey-figure.vk-enhanced .vk-static {
+  display: none;
+}
+
+.vk-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+}
+
+.vk-fig .vk-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.7rem;
+}
+.vk-fig .vk-controls label { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.82rem; color: #555; }
+.vk-fig .vk-controls input[type="range"] { width: 150px; accent-color: #6a4fb0; }
+.vk-fig .vk-controls label b { font-family: ui-monospace, monospace; color: #333; }
+.vk-fig .vk-controls button {
+  padding: 0.42rem 0.75rem;
+  border-radius: 7px;
+  border: 1px solid #88a;
+  background: #eef;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+.vk-fig .vk-controls button[data-act="key"] { border-color: #6a4fb0; background: #efeafb; color: #4b3b8f; }
+.vk-fig .vk-controls button[data-act="prove"] { border-color: #e0a13a; background: #fdf1e0; color: #9a5b1e; }
+.vk-fig .vk-controls button:hover { filter: brightness(0.96); }
+
+/* the swap-history grid */
+.vk-fig .vk-grid {
+  display: grid;
+  grid-template-columns: repeat(20, 1fr);
+  gap: 3px;
+  margin-bottom: 0.7rem;
+}
+.vk-fig .vk-cell {
+  aspect-ratio: 1 / 1;
+  display: grid;
+  place-items: center;
+  border-radius: 3px;
+  background: #ececf1;
+  color: #b8b8c2;
+  font-size: 10px;
+  font-family: ui-monospace, monospace;
+  transition: background 0.12s, color 0.12s, transform 0.12s;
+}
+.vk-fig .vk-cell.notmine { background: #f1f1f5; color: #c4c4cc; }
+.vk-fig .vk-cell.mine {
+  background: #e7defb;
+  color: #4b3b8f;
+  font-weight: 700;
+  box-shadow: 0 0 0 1px #9a82d8 inset;
+}
+.vk-fig .vk-cell.scan {
+  background: #fde6c8;
+  color: #9a5b1e;
+  transform: scale(1.18);
+}
+
+.vk-fig .vk-stats {
+  display: flex;
+  gap: 1.1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+}
+.vk-fig .stat { font-size: 0.72rem; color: #777; display: inline-flex; flex-direction: column; }
+.vk-fig .stat b { font-size: 1rem; font-family: ui-monospace, monospace; color: #333; }
+.vk-fig .stat.mine b { color: #4b3b8f; }
+.vk-fig .stat.cover b { color: #b23b3b; }
+
+/* feasibility meter */
+.vk-fig .vk-meter { margin-bottom: 0.4rem; }
+.vk-fig .vk-bar {
+  position: relative;
+  height: 12px;
+  background: #fdecec;
+  border-radius: 999px;
+  overflow: hidden;
+}
+.vk-fig .vk-bar .fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: #5bb87a;
+  border-radius: 999px;
+}
+.vk-fig .vk-bar .budget {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 16px;
+  background: #2f7d4d;
+}
+.vk-fig .vk-meter-label { font-size: 0.78rem; color: #555; margin-top: 0.35rem; }
+.vk-fig .vk-meter-label b { font-family: ui-monospace, monospace; }
+.vk-fig .vk-meter-label b.bad { color: #b23b3b; font-family: inherit; }
+
+.vk-fig .vk-readout {
+  margin: 0.5rem 0 0;
+  font-size: 0.86rem;
+  color: #555;
+  line-height: 1.45;
+  min-height: 3.4em;
+}
+.vk-fig .vk-readout b { color: #4b3b8f; }
+
+@media (max-width: 560px) {
+  .vk-fig .vk-grid { grid-template-columns: repeat(12, 1fr); }
+}

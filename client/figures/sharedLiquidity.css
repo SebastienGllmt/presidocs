@@ -1,0 +1,188 @@
+/* Styles for the animated shared-liquidity figure (presidocs blog).
+ *
+ * External stylesheet for the production CSP (`style-src 'self'`, no
+ * 'unsafe-inline'; see shared/securityHeaders.ts). Dynamic visuals are class
+ * toggles and GSAP CSSOM writes. Scoped under `.sl-fig`. */
+
+#sharedliquidity-figure.sl-enhanced .sl-static {
+  display: none;
+}
+
+.sl-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+}
+
+/* Three-column grid: sources | hub | consumers, with a caption row on top.
+ * The chips layer is an absolutely positioned overlay over the whole grid. */
+.sl-fig .sl-diagram {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  grid-template-rows: auto 1fr;
+  align-items: center;
+  gap: 0.5rem 1.4rem;
+}
+
+.sl-fig .sl-col-cap {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #8a7fb0;
+  text-align: center;
+}
+.sl-fig .sl-cap-src { grid-column: 1; grid-row: 1; }
+.sl-fig .sl-cap-hub { grid-column: 2; grid-row: 1; }
+.sl-fig .sl-cap-dst { grid-column: 3; grid-row: 1; }
+
+.sl-fig .sl-col {
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.5rem;
+}
+.sl-fig .sl-col-src { grid-column: 1; align-items: flex-end; }
+.sl-fig .sl-col-dst { grid-column: 3; align-items: flex-start; }
+
+.sl-fig .sl-hub-col {
+  grid-column: 2;
+  grid-row: 2;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.sl-fig .sl-node {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid #d2d2dc;
+  border-radius: 10px;
+  background: #f7f7fb;
+  padding: 0.45rem 0.65rem;
+  opacity: 0.55;
+  transition: opacity 0.3s, border-color 0.3s, background 0.3s, box-shadow 0.3s;
+  white-space: nowrap;
+}
+.sl-fig .sl-col-dst .sl-node {
+  flex-direction: row-reverse;
+}
+.sl-fig .sl-node.lit {
+  opacity: 1;
+  background: #f3f0fb;
+  border-color: #9a82d8;
+  box-shadow: 0 2px 10px rgba(106, 79, 176, 0.18);
+}
+.sl-fig .sl-node-icon {
+  font-size: 1.3rem;
+  line-height: 1;
+}
+.sl-fig .sl-node-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #444;
+}
+
+/* Central hub: the shared Celestia pool. */
+.sl-fig .sl-hub {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.2rem;
+  border: 2px solid #9a82d8;
+  border-radius: 14px;
+  background: #f0ebfb;
+  padding: 0.9rem 0.9rem;
+  min-width: 130px;
+  transform-origin: center;
+}
+.sl-fig .sl-hub-icon {
+  font-size: 1.8rem;
+  line-height: 1;
+}
+.sl-fig .sl-hub-name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #4b3b8f;
+}
+.sl-fig .sl-hub-sub {
+  font-size: 0.7rem;
+  color: #6a5fa0;
+  line-height: 1.25;
+}
+
+/* Overlay for the flying offer-file chips; pointer-events off so it never
+ * eats clicks meant for the replay button. */
+.sl-fig .sl-chips {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+.sl-fig .sl-chip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 16px;
+  height: 12px;
+  border-radius: 3px;
+  background: #8a6fd0;
+  box-shadow: 0 1px 4px rgba(106, 79, 176, 0.4);
+  opacity: 0;
+}
+
+.sl-fig .sl-controls {
+  margin-top: 1rem;
+}
+.sl-fig .sl-replay {
+  padding: 0.4rem 0.85rem;
+  border: 1px solid #9a82d8;
+  background: #efeafb;
+  color: #4b3b8f;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.sl-fig .sl-replay:hover { background: #e4dcf8; }
+/* Fixed-height caption: a hidden sizer (longest caption) reserves the height,
+ * the active caption is overlaid, so swapping captions never shifts layout. */
+.sl-fig .sl-caption-wrap {
+  position: relative;
+  margin-top: 0.7rem;
+}
+.sl-fig .sl-caption-sizer {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  visibility: hidden;
+}
+.sl-fig .sl-caption {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  font-size: 0.9rem;
+  color: #555;
+  line-height: 1.45;
+}
+
+/* On narrow screens stack the three columns vertically; the absolutely
+ * positioned chips still tween between the (recomputed) element centers. */
+@media (max-width: 560px) {
+  .sl-fig .sl-diagram {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto auto auto auto;
+    gap: 0.5rem;
+  }
+  .sl-fig .sl-cap-src { grid-column: 1; grid-row: 1; }
+  .sl-fig .sl-col-src { grid-column: 1; grid-row: 2; align-items: stretch; }
+  .sl-fig .sl-cap-hub { grid-column: 1; grid-row: 3; }
+  .sl-fig .sl-hub-col { grid-column: 1; grid-row: 4; }
+  .sl-fig .sl-cap-dst { grid-column: 1; grid-row: 5; }
+  .sl-fig .sl-col-dst { grid-column: 1; grid-row: 6; align-items: stretch; }
+  .sl-fig .sl-col-dst .sl-node { flex-direction: row; }
+  .sl-fig .sl-node { justify-content: flex-start; }
+}

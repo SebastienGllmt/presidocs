@@ -1,0 +1,176 @@
+/* Styles for the Discord peer-to-peer flow figure (posts/offer-files.html).
+ * External stylesheet for the production CSP (`style-src 'self'`); dynamic
+ * visuals are class toggles + GSAP CSSOM writes. Scoped under `.dc-fig`.
+ *
+ * Layout: one horizontal line between User A and User B, with the #offers
+ * Discord pill centred on it; each user has a wallet stacked beneath them. */
+
+#discord-figure.dc-enhanced .dc-static {
+  display: none;
+}
+
+.dc-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+}
+
+.dc-stage {
+  position: relative;
+  padding: 0.5rem 0;
+}
+
+.dc-row {
+  display: grid;
+  grid-template-columns: 6rem 1fr 6rem;
+  grid-template-rows: auto 1.4rem auto;
+  align-items: center;
+  justify-items: center;
+}
+
+/* nodes */
+.dc-user,
+.dc-wallet {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #d2d2dc;
+  border-radius: 10px;
+  background: #f7f7fb;
+  opacity: 0.55;
+  transition: opacity 0.3s, border-color 0.3s, box-shadow 0.3s;
+  position: relative;
+}
+.dc-user.lit,
+.dc-wallet.lit {
+  opacity: 1;
+  border-color: #9a82d8;
+  box-shadow: 0 2px 10px rgba(106, 79, 176, 0.16);
+}
+.dc-glyph { font-size: 1.4rem; line-height: 1; }
+.dc-lbl { font-size: 0.68rem; font-weight: 600; color: #555; }
+
+.dc-user[data-user-a] { grid-column: 1; grid-row: 1; }
+.dc-user[data-user-b] { grid-column: 3; grid-row: 1; }
+.dc-wallet[data-wallet-a] { grid-column: 1; grid-row: 3; }
+.dc-wallet[data-wallet-b] { grid-column: 3; grid-row: 3; }
+
+/* static vertical connector from each user down to its wallet */
+.dc-wallet::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -1.5rem;
+  width: 2px;
+  height: 1.5rem;
+  background: #d8d8e0;
+  transform: translateX(-50%);
+}
+
+/* the single horizontal line + centred Discord pill */
+.dc-mid {
+  grid-column: 2;
+  grid-row: 1;
+  position: relative;
+  width: 100%;
+  min-height: 2.6rem;
+}
+.dc-hline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+}
+.dc-half {
+  position: relative;
+  flex: 1;
+  height: 3px;
+  background: #e3e3ea;
+  border-radius: 2px;
+}
+.dc-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: #5865f2; /* Discord blurple */
+  border-radius: 2px;
+}
+
+.dc-channel {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.5rem;
+  background: #5865f2;
+  color: #fff;
+  border-radius: 999px;
+  white-space: nowrap;
+  opacity: 0.6;
+  transition: opacity 0.3s;
+}
+.dc-channel.lit { opacity: 1; }
+.dc-ch-glyph { font-size: 0.8rem; }
+.dc-ch-pill { font-size: 0.74rem; font-weight: 700; font-family: ui-monospace, monospace; }
+
+/* the travelling offer chip (anchored at the stage's top-left; GSAP moves it) */
+.dc-chip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  background: #fff;
+  border: 1px solid #9a82d8;
+  border-radius: 6px;
+  padding: 0.18rem 0.4rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+}
+.dc-chip code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  color: #4b3b8f;
+}
+
+/* Fixed-height readout: a hidden sizer stacks ALL steps in one grid cell, so it
+ * reserves the tallest step's height at any width; the active readout is overlaid.
+ * No step swap shifts the layout below. */
+.dc-readout-wrap {
+  position: relative;
+  margin-top: 0.7rem;
+}
+.dc-readout-sizer {
+  display: grid;
+}
+.dc-readout-sizer > p {
+  grid-area: 1 / 1;
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  visibility: hidden;
+}
+.dc-readout {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  font-size: 0.86rem;
+  color: #555;
+  line-height: 1.45;
+}
+.dc-readout code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+  background: #efeafb;
+  padding: 0.05em 0.3em;
+  border-radius: 4px;
+}
+
+@media (max-width: 520px) {
+  .dc-row { grid-template-columns: 4.5rem 1fr 4.5rem; }
+  .dc-ch-pill { font-size: 0.66rem; }
+}

@@ -6,4 +6,5 @@ import type { PostMeta } from "./postMeta.ts";
 
 export const POST_AUTHORS: Record<string, PostMeta> = {
   "/posts/hash-functions": {"authorEmail":"sebastiengllmt@gmail.com"},
+  "/posts/offer-files": {"authorEmail":"sebastiengllmt@gmail.com"},
 };

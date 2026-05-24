@@ -1,0 +1,248 @@
+/* Styles for the market-maker / cancel-storm figure (posts/offer-files.html).
+ * External stylesheet for the production CSP (`style-src 'self'`); dynamic
+ * visuals are class toggles + GSAP CSSOM writes. Scoped under `.mm-fig`. */
+
+#mm-figure.mm-enhanced .mm-static {
+  display: none;
+}
+
+.mm-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+}
+
+/* header: title + chain-speed toggle */
+.mm-fig .mm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.8rem;
+}
+.mm-fig .mm-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: #333;
+}
+.mm-fig .mm-seg {
+  display: inline-flex;
+  border: 1px solid #cbcbe0;
+  border-radius: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.mm-fig .mm-seg button {
+  padding: 0.4rem 0.7rem;
+  border: 0;
+  background: #f3f3f8;
+  cursor: pointer;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: #666;
+}
+.mm-fig .mm-seg button + button { border-left: 1px solid #cbcbe0; }
+.mm-fig .mm-seg button:hover { background: #ececf4; }
+.mm-fig .mm-seg button.on { background: #6a4fb0; color: #fff; }
+.mm-fig.is-slow .mm-seg button[data-chain="slow"].on { background: #b23b3b; }
+
+/* track on the left, a big eye-catching cancels counter on the right */
+.mm-fig .mm-main {
+  display: flex;
+  gap: 1rem;
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+
+/* the vertical price track */
+.mm-fig .mm-track {
+  display: flex;
+  gap: 0.4rem;
+  height: 240px;
+  flex: 1 1 360px;
+  border: 1px solid #e6e6ee;
+  border-radius: 10px;
+  padding: 0.7rem 0.7rem 0.7rem 0.4rem;
+  background: linear-gradient(#fafafc, #f4f4f9);
+}
+
+/* the prominent on-chain-cancels tally */
+.mm-fig .mm-cancels {
+  flex: 0 0 9rem;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #e0c79a;
+  border-radius: 10px;
+  background: #fdf6ec;
+  overflow: hidden;
+  transition: box-shadow 0.3s;
+}
+/* two stacked halves: cancels (top) and the chain-relevant financial (bottom) */
+.mm-fig .mm-cancels-top,
+.mm-fig .mm-cancels-bot {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0.55rem 0.4rem;
+}
+.mm-fig .mm-cancels-bot {
+  border-top: 1px solid #ecd9b6;
+  background: #fffdf8;
+}
+.mm-fig .mm-cancels b {
+  font-size: 2rem;
+  line-height: 1;
+  font-family: ui-monospace, monospace;
+  font-weight: 800;
+}
+.mm-fig .mm-cancels span {
+  margin-top: 0.25rem;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.mm-fig .mm-cancels-top b,
+.mm-fig .mm-cancels-top span { color: #9a5b1e; }
+/* bottom half: green spread earned on the fast chain, red loss on Midnight */
+.mm-fig .mm-cancels-bot b,
+.mm-fig .mm-cancels-bot span { color: #2f7d4d; }
+.mm-fig.is-slow .mm-cancels-bot b,
+.mm-fig.is-slow .mm-cancels-bot span { color: #b23b3b; }
+.mm-fig .mm-cancels.flash {
+  box-shadow: 0 0 0 2px #e0a13a inset;
+}
+.mm-fig .axis {
+  position: relative;
+  width: 2.7rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.66rem;
+  color: #999;
+  flex-shrink: 0;
+}
+.mm-fig .axis .ax-hi { position: absolute; top: 0; right: 0; }
+.mm-fig .axis .ax-lo { position: absolute; bottom: 0; right: 0; }
+
+.mm-fig .lane {
+  position: relative;
+  flex: 1;
+  border-left: 1px solid #ddd;
+}
+
+/* the spread band between bid and ask */
+.mm-fig .band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 6%;
+  background: rgba(106, 79, 176, 0.1);
+  border-radius: 4px;
+}
+
+/* a quote / fair-price line */
+.mm-fig .line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  display: flex;
+  align-items: center;
+  height: 0;
+  transform: translateY(-50%);
+}
+.mm-fig .line::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 2px;
+}
+.mm-fig .line .lbl {
+  position: relative;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 0.05rem 0.35rem;
+  border-radius: 4px;
+  white-space: nowrap;
+  margin-left: 0.3rem;
+}
+.mm-fig .line .lbl b { font-family: ui-monospace, monospace; font-weight: 700; }
+
+.mm-fig .line.ask::before { background: #d96b6b; }
+.mm-fig .line.ask .lbl { color: #b23b3b; background: #fbe7e7; }
+.mm-fig .line.bid::before { background: #4fae72; }
+.mm-fig .line.bid .lbl { color: #2f7d4d; background: #e3f4ea; }
+
+.mm-fig .line.fair::before {
+  background: #6a4fb0;
+  height: 0;
+  border-top: 2px dashed #6a4fb0;
+}
+.mm-fig .line.fair .lbl { color: #4b3b8f; background: #efeafb; }
+
+/* while a quote is stale (price moved, not yet re-quoted) the lines dim */
+.mm-fig.stale .line.ask::before,
+.mm-fig.stale .line.bid::before { opacity: 0.45; }
+.mm-fig.stale .line.ask .lbl,
+.mm-fig.stale .line.bid .lbl { opacity: 0.6; text-decoration: line-through; }
+
+/* pick-off flash */
+.mm-fig .pickoff {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%) scale(0.9);
+  background: #b23b3b;
+  color: #fff;
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 0.35rem 0.6rem;
+  border-radius: 6px;
+  box-shadow: 0 2px 10px rgba(178, 59, 59, 0.4);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.mm-fig .pickoff.show {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+.mm-fig.picked .lane { box-shadow: inset 0 0 0 2px rgba(178, 59, 59, 0.5); border-radius: 6px; }
+
+/* stats */
+.mm-fig .mm-stats {
+  display: flex;
+  gap: 1.4rem;
+  flex-wrap: wrap;
+  margin-top: 0.9rem;
+}
+.mm-fig .stat {
+  font-size: 0.7rem;
+  color: #888;
+  display: inline-flex;
+  flex-direction: column;
+}
+.mm-fig .stat b { font-size: 1.1rem; font-family: ui-monospace, monospace; color: #333; }
+.mm-fig .stat.earn b { color: #2f7d4d; }
+.mm-fig .stat.loss b { color: #b23b3b; }
+.mm-fig .stat.tx b { color: #9a5b1e; }
+
+/* readout */
+.mm-fig .readout {
+  margin: 0.8rem 0 0;
+  font-size: 0.86rem;
+  color: #555;
+  line-height: 1.5;
+  min-height: 3.4em;
+}
+.mm-fig .readout b { font-family: ui-monospace, monospace; }
+.mm-fig .readout b.a { color: #b23b3b; }
+.mm-fig .readout b.b { color: #2f7d4d; }
+.mm-fig .readout b.g { color: #2f7d4d; }
+.mm-fig .readout b.r { color: #b23b3b; }

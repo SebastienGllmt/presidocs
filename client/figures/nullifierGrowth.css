@@ -1,0 +1,96 @@
+/* Styles for the nullifier-growth figure (posts/offer-files.html, Open Q #1).
+ * External stylesheet for the production CSP (`style-src 'self'`); dynamic
+ * visuals are class toggles + GSAP CSSOM writes. Scoped under `.nf-fig`. */
+
+#nullifier-figure.nullifier-enhanced .nf-static {
+  display: none;
+}
+
+.nf-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+}
+
+.nf-coin {
+  display: flex;
+  align-items: stretch;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.8rem;
+}
+.nf-coinface {
+  display: grid;
+  place-items: center;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid #d2d2dc;
+  border-radius: 8px;
+  background: #fafafc;
+  font-weight: 600;
+}
+.nf-split { align-self: center; font-size: 0.72rem; color: #999; }
+.nf-face {
+  flex: 1 1 150px;
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.82rem;
+}
+.nf-face small { display: block; font-size: 0.68rem; color: #888; font-weight: 400; margin-top: 0.2rem; line-height: 1.35; }
+.nf-face.null { background: #f3f0fb; border: 1px solid #b9a9e6; }
+.nf-face.null b:first-child { color: #4b3b8f; }
+
+.nf-setbox {
+  border: 1px solid #d8d8e0;
+  border-radius: 10px;
+  padding: 0.7rem;
+  background: #fff;
+}
+.nf-set-cap { font-size: 0.78rem; color: #555; margin-bottom: 0.5rem; }
+.nf-set-cap b { font-family: ui-monospace, monospace; }
+.nf-tags { display: flex; flex-wrap: wrap; gap: 4px; min-height: 1.6rem; }
+.nf-tag {
+  font-family: ui-monospace, monospace;
+  font-size: 0.66rem;
+  color: #4b3b8f;
+  background: #efeafb;
+  border: 1px solid #cdbff0;
+  border-radius: 5px;
+  padding: 0.05rem 0.3rem;
+}
+.nf-tag.nf-more { color: #888; background: #f1f1f5; border-color: #ddd; }
+
+.nf-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.7rem; }
+.nf-actions button {
+  padding: 0.42rem 0.8rem;
+  border-radius: 7px;
+  border: 1px solid #88a;
+  background: #eef;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.nf-actions button[data-act="spend"] { border-color: #9a82d8; background: #efeafb; color: #4b3b8f; }
+.nf-actions button[data-act="double"] { border-color: #d98a8a; background: #fdf3f3; color: #b23b3b; }
+.nf-actions button:hover { filter: brightness(0.97); }
+
+.nf-growth {
+  margin-top: 0.9rem;
+  padding: 0.6rem 0.8rem;
+  border-radius: 8px;
+  background: #f3f3f7;
+}
+.nf-growth label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: #555; flex-wrap: wrap; }
+.nf-growth input[type="range"] { width: 160px; accent-color: #6a4fb0; }
+.nf-growth label b { font-family: ui-monospace, monospace; color: #333; }
+.nf-proj { margin-top: 0.45rem; font-size: 0.84rem; color: #555; }
+.nf-proj b { font-family: ui-monospace, monospace; color: #4b3b8f; }
+#nullifier-figure.nf-heavy .nf-growth { background: #fdecec; }
+#nullifier-figure.nf-heavy .nf-proj b { color: #b23b3b; }
+
+.nf-readout {
+  margin: 0.75rem 0 0;
+  font-size: 0.86rem;
+  color: #555;
+  line-height: 1.45;
+  min-height: 3.8em;
+}
+.nf-readout b { color: #4b3b8f; }

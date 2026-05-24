@@ -1,0 +1,260 @@
+/* Styles for the UTXO / zSwap-cancellation figure (posts/offer-files.html).
+ * External stylesheet for the production CSP (`style-src 'self'`); dynamic
+ * visuals are class toggles + GSAP CSSOM writes. Scoped under `.utxo-fig`.
+ *
+ * Layout teaches the structure: ONE coin (a UTXO) -> ONE offer file -> MANY
+ * copies fanned out to several places, with SVG tether lines drawn from the
+ * single coin to every copy so the shared backing is unmistakable. */
+
+#utxo-figure.utxo-enhanced .utxo-static {
+  display: none;
+}
+
+.utxo-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+}
+
+.utxo-fig .legend {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.7rem;
+}
+.utxo-fig .k {
+  font-size: 0.74rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.utxo-fig .k::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+.utxo-fig .k.offchain { color: #2f7d4d; }
+.utxo-fig .k.offchain::before { background: #cdeeda; border: 1px solid #5bb87a; }
+.utxo-fig .k.onchain { color: #9a5b1e; }
+.utxo-fig .k.onchain::before { background: #fde6c8; border: 1px solid #e0a13a; }
+
+.utxo-fig .utxo-stage {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto auto auto auto 1fr;
+  gap: 0.9rem;
+  align-items: center;
+  background: #fafafc;
+  border: 1px solid #e6e6ee;
+  border-radius: 10px;
+  padding: 1rem 1.1rem;
+  min-height: 150px;
+}
+
+/* connectors that sit ON the flow line between the boxes */
+.utxo-fig .conn {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.1;
+  color: #888;
+}
+.utxo-fig .conn-lbl { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.utxo-fig .conn-arr { font-size: 1.1rem; color: #aaa; }
+
+/* SVG overlay holding the tether lines from the coin to each copy. */
+.utxo-fig .tethers {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+  overflow: visible;
+}
+.utxo-fig .tether {
+  fill: none;
+  stroke: #b9a9e6;
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  transition: stroke 0.3s, opacity 0.3s;
+}
+.utxo-fig .tether.dead {
+  stroke: #d2b9b9;
+  opacity: 0.4;
+}
+
+/* Each column sits above the tether overlay. */
+.utxo-fig .coin-col,
+.utxo-fig .file-col,
+.utxo-fig .copies-col {
+  position: relative;
+  z-index: 1;
+}
+
+.utxo-fig .coin {
+  border: 1px solid #b9a9e6;
+  background: #f3f0fb;
+  border-radius: 10px;
+  padding: 0.6rem 0.8rem;
+  text-align: center;
+  transition: opacity 0.3s, filter 0.3s;
+}
+.utxo-fig .coin.spent {
+  opacity: 0.45;
+  filter: grayscale(0.8);
+}
+.utxo-fig .coin.spent .coin-amt { text-decoration: line-through; }
+.utxo-fig .coin-cap { font-size: 0.66rem; color: #666; margin-bottom: 0.3rem; }
+.utxo-fig .utxo-tag {
+  font-size: 0.6rem;
+  background: #e7defb;
+  color: #6a4fb0;
+  border-radius: 999px;
+  padding: 0.05rem 0.4rem;
+  font-weight: 700;
+}
+.utxo-fig .coin-amt { font-weight: 700; font-size: 1rem; }
+.utxo-fig .coin-state {
+  margin-top: 0.3rem;
+  font-size: 0.66rem;
+  font-family: ui-monospace, monospace;
+  color: #2f7d4d;
+}
+.utxo-fig .coin.spent .coin-state { color: #b23b3b; }
+
+.utxo-fig .arrow {
+  font-size: 0.68rem;
+  color: #999;
+  margin-bottom: 0.4rem;
+}
+
+/* The single proven offer file that fans out into the copies. */
+.utxo-fig .offer-file {
+  border: 1px solid #aab;
+  background: #fff;
+  border-radius: 8px;
+  padding: 0.4rem 0.55rem;
+  text-align: center;
+  transition: opacity 0.3s, border-color 0.3s;
+}
+.utxo-fig .offer-file.void { opacity: 0.45; border-color: #d2b9b9; }
+.utxo-fig .file-cap { font-size: 0.62rem; color: #777; margin-bottom: 0.15rem; }
+.utxo-fig .file-tag {
+  font-family: ui-monospace, monospace;
+  color: #4b3b8f;
+  font-weight: 600;
+  font-size: 0.74rem;
+}
+.utxo-fig .file-tag.strike { text-decoration: line-through; color: #b23b3b; }
+.utxo-fig .file-empty,
+.utxo-fig .copies-empty {
+  color: #aaa;
+  font-size: 0.82rem;
+  font-style: italic;
+}
+
+.utxo-fig .copies {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  align-items: flex-start;
+}
+.utxo-fig .copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+  border: 1px dashed #aab;
+  border-radius: 7px;
+  padding: 0.35rem 0.5rem;
+  background: #fff;
+  font-size: 0.7rem;
+  position: relative;
+}
+.utxo-fig .copy-tag { font-family: ui-monospace, monospace; color: #4b3b8f; font-weight: 600; }
+.utxo-fig .copy-where { color: #888; }
+.utxo-fig .copy-status {
+  font-size: 0.58rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #2f7d4d;
+}
+.utxo-fig .copies.filled .copy { border-color: #5bb87a; }
+/* A killed copy: solid red-ish border, struck text, faded. */
+.utxo-fig .copy.void {
+  opacity: 0.45;
+  border-style: solid;
+  border-color: #d2a3a3;
+}
+.utxo-fig .copy.void .copy-tag,
+.utxo-fig .copy.void .copy-where { text-decoration: line-through; }
+.utxo-fig .copy.void .copy-status { color: #b23b3b; }
+
+.utxo-fig .tx-stamp {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  background: #fde6c8;
+  border: 1px solid #e0a13a;
+  color: #9a5b1e;
+  font-size: 0.72rem;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.utxo-fig .actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.9rem;
+}
+.utxo-fig .actions button {
+  padding: 0.45rem 0.8rem;
+  border-radius: 7px;
+  border: 1px solid #88a;
+  background: #eef;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.utxo-fig .actions button[data-act="create"] { border-color: #5bb87a; background: #e6f5ec; color: #2f7d4d; }
+.utxo-fig .actions button[data-act="fill"],
+.utxo-fig .actions button[data-act="cancel"] { border-color: #e0a13a; background: #fdf1e0; color: #9a5b1e; }
+.utxo-fig .actions button.ghost { border-color: #ccc; background: #fff; color: #777; font-weight: 500; }
+.utxo-fig .actions button:hover:not(:disabled) { filter: brightness(0.96); }
+.utxo-fig .actions button:disabled { opacity: 0.4; cursor: default; }
+
+.utxo-fig .txbar {
+  margin-top: 0.8rem;
+  font-size: 0.85rem;
+  color: #555;
+}
+.utxo-fig .txbar b {
+  font-family: ui-monospace, monospace;
+  font-size: 1.15rem;
+  color: #9a5b1e;
+}
+
+.utxo-fig .readout {
+  margin: 0.6rem 0 0;
+  font-size: 0.86rem;
+  color: #555;
+  line-height: 1.45;
+  min-height: 3.2em;
+}
+.utxo-fig .readout b.ok { color: #2f7d4d; }
+.utxo-fig .readout b.cost { color: #b23b3b; }
+
+@media (max-width: 560px) {
+  .utxo-fig .utxo-stage { grid-template-columns: 1fr; gap: 0.8rem; }
+  /* The tether geometry assumes a horizontal layout; hide on the stacked view. */
+  .utxo-fig .tethers { display: none; }
+  .utxo-fig .arrow { display: none; }
+}

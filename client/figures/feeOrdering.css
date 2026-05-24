@@ -1,0 +1,63 @@
+/* Styles for the fee/ordering-dilemma figure (posts/offer-files.html, Open Q #2).
+ * External stylesheet for the production CSP (`style-src 'self'`); dynamic
+ * visuals are class toggles + GSAP CSSOM writes. Scoped under `.fo-fig`. */
+
+#fee-figure.fee-enhanced .fo-static {
+  display: none;
+}
+
+.fo-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+}
+
+.fo-controls {
+  display: flex;
+  gap: 1.2rem;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 0.8rem;
+}
+.fo-fee { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.82rem; color: #555; }
+.fo-fee input[type="range"] { width: 150px; accent-color: #6a4fb0; }
+.fo-fee b { font-family: ui-monospace, monospace; color: #4b3b8f; min-width: 4rem; }
+.fo-order { font-size: 0.82rem; color: #555; display: inline-flex; align-items: center; gap: 0.3rem; flex-wrap: wrap; }
+.fo-order button {
+  appearance: none;
+  border: 1px solid #c8c8d4;
+  background: #fff;
+  color: #666;
+  border-radius: 999px;
+  padding: 0.28rem 0.7rem;
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.fo-order button[aria-pressed="true"] { background: #efeafb; border-color: #9a82d8; color: #4b3b8f; }
+
+.fo-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+.fo-checks li {
+  font-size: 0.82rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 6px;
+  line-height: 1.35;
+}
+.fo-checks li.ok { color: #2f7d4d; background: #eef7f1; }
+.fo-checks li.warn { color: #9a5b1e; background: #fdf1e0; }
+.fo-checks li.bad { color: #b23b3b; background: #fbeded; }
+
+.fo-readout {
+  margin: 0.8rem 0 0;
+  font-size: 0.86rem;
+  color: #555;
+  line-height: 1.45;
+  min-height: 4.4em;
+}
+.fo-readout b { color: #4b3b8f; }
+
+/* a subtle "best corner, but…" cue when no hard ✗ remains (ordering still amber) */
+#fee-figure.fo-caveat .fo-readout {
+  border-left: 3px solid #e0a13a;
+  padding-left: 0.7rem;
+  background: #fdf7ec;
+}

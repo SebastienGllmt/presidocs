@@ -1,0 +1,101 @@
+/* Styles for the time-to-market figure (posts/offer-files.html, Open Q #3).
+ * External stylesheet for the production CSP (`style-src 'self'`); dynamic
+ * visuals are class toggles + GSAP CSSOM writes. Scoped under `.ttm-fig`. */
+
+#ttm-figure.ttm-enhanced .ttm-static {
+  display: none;
+}
+
+.ttm-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+}
+
+.ttm-controls { margin-bottom: 1.4rem; }
+.ttm-controls label { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.82rem; color: #555; }
+.ttm-controls input[type="range"] { width: 180px; accent-color: #6a4fb0; }
+.ttm-controls b { font-family: ui-monospace, monospace; color: #4b3b8f; min-width: 6rem; }
+
+/* timeline */
+.ttm-track {
+  position: relative;
+  height: 64px;
+  border-radius: 8px;
+  background: #f3f3f7;
+  margin-bottom: 0.5rem;
+}
+/* the uncertain "window closes" zone — fuzzier (more opaque) further right */
+.ttm-track::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 0 8px 8px 0;
+  background: linear-gradient(to right, rgba(217, 107, 107, 0), rgba(217, 107, 107, 0.32));
+  pointer-events: none;
+}
+.ttm-now {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #2f7d4d;
+}
+.ttm-window {
+  position: absolute;
+  left: 52%;
+  right: 6px;
+  top: 8px;
+  font-size: 0.68rem;
+  line-height: 1.25;
+  color: #9a3b3b;
+  text-align: right;
+  pointer-events: none;
+}
+.ttm-window em { color: #b46; }
+
+.ttm-ship {
+  position: absolute;
+  left: 6%;
+  bottom: 0;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  z-index: 2;
+}
+.ttm-rocket { font-size: 1.1rem; line-height: 1; }
+.ttm-ship-label {
+  font-size: 0.66rem;
+  font-weight: 700;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+/* a vertical stalk down the track for the ship marker */
+.ttm-ship::before {
+  content: "";
+  position: absolute;
+  top: -14px;
+  bottom: 1.3rem;
+  width: 2px;
+  background: #6a4fb0;
+}
+#ttm-figure.ttm-in .ttm-ship-label { color: #2f7d4d; }
+#ttm-figure.ttm-near .ttm-ship-label { color: #9a5b1e; }
+#ttm-figure.ttm-miss .ttm-ship-label { color: #b23b3b; }
+#ttm-figure.ttm-in .ttm-ship::before { background: #5bb87a; }
+#ttm-figure.ttm-near .ttm-ship::before { background: #e0a13a; }
+#ttm-figure.ttm-miss .ttm-ship::before { background: #d96b6b; }
+
+.ttm-readout {
+  margin: 0.8rem 0 0;
+  font-size: 0.86rem;
+  color: #555;
+  line-height: 1.45;
+  min-height: 3.4em;
+}
+.ttm-readout em { color: #b23b3b; font-style: normal; font-weight: 600; }

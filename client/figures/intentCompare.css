@@ -1,0 +1,221 @@
+/* Styles for the "two ways to run an exchange" side-by-side figure.
+ *
+ * External stylesheet for the production CSP (`style-src 'self'`, no
+ * 'unsafe-inline'; see shared/securityHeaders.ts). Dynamic visuals are class
+ * toggles and GSAP CSSOM writes. Scoped under `.intent-fig`. */
+
+#intent-figure.intent-enhanced .intent-static {
+  display: none;
+}
+
+.intent-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+}
+
+/* two panels side by side: "Fully on-chain" vs "Intent" */
+.intent-fig .compare {
+  display: grid;
+  grid-template-columns: 1fr 1.3fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+.intent-fig .panel {
+  border: 1px solid #d8d8e2;
+  border-radius: 12px;
+  padding: 0.85rem 0.85rem 0.95rem;
+  background: #fafafd;
+}
+.intent-fig .panel-onchain {
+  background: #fdf4f4;
+  border-color: #e6b6b6;
+}
+.intent-fig .panel-intent {
+  background: #f2faf5;
+  border-color: #b6dcc4;
+}
+.intent-fig .panel-title {
+  margin: 0 0 0.65rem;
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+.intent-fig .panel-onchain .panel-title { color: #b23b3b; }
+.intent-fig .panel-intent .panel-title { color: #1f8a4c; }
+
+/* the prominent on-chain transaction counter */
+.intent-fig .counter {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  border-radius: 10px;
+  padding: 0.35rem 0.7rem;
+  margin-bottom: 0.7rem;
+  border: 2px solid #d2d2dc;
+  background: #fff;
+  transform-origin: left center;
+  transition: background 0.3s, border-color 0.3s, box-shadow 0.3s;
+}
+.intent-fig .counter-num {
+  font-size: 2.2rem;
+  font-weight: 800;
+  line-height: 1;
+  color: #777;
+  font-variant-numeric: tabular-nums;
+  transition: color 0.3s;
+}
+.intent-fig .counter-label {
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #888;
+}
+.intent-fig .counter-hot.active {
+  background: #fcefef;
+  border-color: #e08a8a;
+  box-shadow: 0 2px 12px rgba(192, 57, 57, 0.16);
+}
+.intent-fig .counter-hot.active .counter-num { color: #c0392b; }
+.intent-fig .counter-cool.active {
+  background: #eef9f1;
+  border-color: #7fc69a;
+  box-shadow: 0 2px 12px rgba(39, 142, 79, 0.16);
+}
+.intent-fig .counter-cool.active .counter-num { color: #1f8a4c; }
+
+/* columns inside a panel: 1 for on-chain, 2 for intent */
+.intent-fig .cols {
+  display: grid;
+  gap: 0.6rem;
+}
+.intent-fig .cols-1 { grid-template-columns: 1fr; }
+.intent-fig .cols-2 { grid-template-columns: 1fr 1fr; }
+
+.intent-fig .col {
+  border: 1px dashed #c9c9d4;
+  border-radius: 10px;
+  background: #ffffffcc;
+  padding: 0.5rem 0.5rem 0.55rem;
+  min-height: 7rem;
+}
+.intent-fig .col-chain {
+  border-style: solid;
+}
+.intent-fig .panel-onchain .col-chain { border-color: #e0a1a1; }
+.intent-fig .panel-intent .col-chain { border-color: #b6dcc4; }
+.intent-fig .col-off { border-color: #c9c9d4; }
+
+.intent-fig .col-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #8a8a96;
+  margin-bottom: 0.45rem;
+}
+
+.intent-fig .tag {
+  display: inline-block;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+.intent-fig .tag-free {
+  background: #e6f6ec;
+  color: #1f8a4c;
+}
+
+/* a single stacked row in a column */
+.intent-fig .col-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.32rem;
+}
+.intent-fig .row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid #d2d2dc;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: #555;
+}
+.intent-fig .row-dot {
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #b8b8c4;
+}
+.intent-fig .row-label { line-height: 1.2; }
+
+/* on-chain tx rows: the costly red-ish ones */
+.intent-fig .row-tx {
+  border-color: #e0a1a1;
+  background: #fdeeee;
+  color: #9c3636;
+}
+.intent-fig .row-tx .row-dot { background: #c0392b; }
+
+/* free off-chain rows */
+.intent-fig .row-free {
+  border-color: #d2d2dc;
+  background: #f6f6fa;
+  color: #555;
+}
+.intent-fig .row-free .row-dot { background: #9a82d8; }
+
+/* the single settle tx — the only thing that touches the chain */
+.intent-fig .row-settle {
+  border-color: #1f8a4c;
+  background: #e6f6ec;
+  color: #156c3a;
+  font-weight: 700;
+}
+.intent-fig .row-settle .row-dot { background: #1f8a4c; }
+.intent-fig .panel-onchain .row-settle {
+  border-color: #1f8a4c;
+  background: #e6f6ec;
+  color: #156c3a;
+}
+
+/* controls */
+.intent-fig .controls {
+  margin-top: 0.85rem;
+}
+.intent-fig .replay {
+  padding: 0.4rem 0.85rem;
+  border: 1px solid #9a82d8;
+  background: #efeafb;
+  color: #4b3b8f;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.intent-fig .replay:hover { background: #e4dcf8; }
+
+.intent-fig .panel-note {
+  margin: 0.7rem 0 0;
+  font-size: 0.82rem;
+  color: #555;
+  line-height: 1.45;
+}
+.intent-fig .hot-text { color: #c0392b; }
+.intent-fig .cool-text { color: #1f8a4c; }
+
+@media (max-width: 600px) {
+  .intent-fig .compare {
+    grid-template-columns: 1fr;
+  }
+  .intent-fig .counter-num { font-size: 1.9rem; }
+}

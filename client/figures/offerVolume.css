@@ -1,0 +1,133 @@
+/* Styles for the tabbed offer-file adoption figure (posts/offer-files.html).
+ * External stylesheet for the production CSP (`style-src 'self'`); dynamic
+ * visuals are class toggles + GSAP CSSOM writes. Scoped under `.vol-fig`.
+ *
+ * Four tabs, each one clean chart: swaps/week, USD share (donut),
+ * USD volume/week, Chia price. */
+
+#volume-figure.volume-enhanced .vol-static {
+  display: none;
+}
+
+.vol-fig {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #222;
+  --swaps: #6a4fb0;
+  --vol: #c08a1e;
+  --price: #3a7d9b;
+  --usd: #6a4fb0;
+  --other: #d8d4e6;
+}
+
+.vol-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+.vol-big { font-size: 1.05rem; color: #555; }
+.vol-big b {
+  font-size: 1.9rem;
+  font-weight: 800;
+  font-family: ui-monospace, monospace;
+  color: #1d1d1f;
+  letter-spacing: -0.01em;
+}
+.vol-sub { font-size: 0.78rem; color: #999; }
+.vol-preview {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #9a5b1e;
+  background: #fdf1e0;
+  border: 1px solid #e0a13a;
+  border-radius: 999px;
+  padding: 0.08rem 0.5rem;
+}
+
+/* tab bar */
+.vol-tabs {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+  border-bottom: 1px solid #e6e6ee;
+}
+.vol-tabs button {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0.4rem 0.7rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #888;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.vol-tabs button:hover { color: #555; }
+.vol-tabs button[aria-selected="true"] {
+  color: #4b3b8f;
+  border-bottom-color: #6a4fb0;
+}
+
+.vol-chart { position: relative; }
+.vol-svg { width: 100%; height: auto; display: block; touch-action: none; }
+
+.vol-grid { stroke: #ececf1; stroke-width: 1; }
+.vol-grid.year { stroke: #e3e3ea; stroke-dasharray: 2 3; }
+.vol-xtick { fill: #999; font-size: 11px; font-family: ui-monospace, monospace; }
+.vol-ytick { font-size: 10.5px; font-family: ui-monospace, monospace; }
+.vol-ytick.swaps { fill: var(--swaps); }
+.vol-ytick.vol { fill: var(--vol); }
+.vol-ytick.price { fill: var(--price); }
+
+.vol-barseries { transform-box: fill-box; }
+.vol-barseries.swaps { fill: #b9a9e6; }
+.vol-barseries.vol { fill: #e0c79a; }
+.vol-lineseries { stroke-width: 2.25; stroke-linejoin: round; stroke-linecap: round; }
+.vol-lineseries.price { stroke: var(--price); }
+.vol-lineseries.swaps { stroke: var(--swaps); }
+.vol-lineseries.vol { stroke: var(--vol); }
+.vol-area-fill.swaps { fill: var(--swaps); opacity: 0.16; }
+.vol-area-fill.vol { fill: var(--vol); opacity: 0.18; }
+
+/* per-week / cumulative toggle (swaps & volume tabs only) */
+.vol-modes {
+  display: inline-flex;
+  gap: 2px;
+  margin-bottom: 0.5rem;
+  background: #f1f1f5;
+  border-radius: 999px;
+  padding: 2px;
+}
+.vol-modes[hidden] { display: none; }
+.vol-modes button {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #888;
+  cursor: pointer;
+  border-radius: 999px;
+}
+.vol-modes button[aria-selected="true"] { background: #fff; color: #4b3b8f; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+
+.vol-guide { stroke: #bbb; stroke-width: 1; stroke-dasharray: 3 3; }
+
+/* donut */
+.vol-slice.usd { fill: var(--usd); }
+.vol-slice.other { fill: var(--other); }
+.donut-pct { font-size: 28px; font-weight: 800; font-family: ui-monospace, monospace; fill: #4b3b8f; }
+.donut-sub { font-size: 12px; fill: #888; }
+
+.vol-readout {
+  margin: 0.55rem 0 0;
+  font-size: 0.85rem;
+  color: #555;
+  line-height: 1.45;
+  min-height: 3em;
+}
+.vol-readout b { color: #4b3b8f; font-family: ui-monospace, monospace; }
