@@ -8,8 +8,8 @@
 //
 // Data is BAKED INTO THE POST (inline <script type="application/json">), not
 // fetched at runtime (prod CSP is `connect-src 'self'`; one-file-per-post). It's
-// a small weekly aggregate produced offline by scripts/aggregate-charts.ts from
-// a full local crawl (scripts/pull-dexie-all.ts) + the price series — so we ship
+// a small weekly aggregate produced offline by research/dexie-offers/charts/aggregate-charts.ts from
+// a full local crawl (research/dexie-offers/pipeline/crawl-dexie.ts) + the price series — so we ship
 // ~100 points per series, not ~982k raw swaps.
 //
 // External module for the CSP reason in hashAvalanche.ts. GSAP writes CSSOM

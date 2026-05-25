@@ -36,6 +36,15 @@ Each top-level folder is one concern, so finding code is "pick the folder that m
 - `posts/` — authored inputs (one HTML file per post + the shared PLS lexicon)
 - `generated/` — pipeline output (gitignored)
 - `specs/` — local copies of the W3C specs referenced above
+- `research/` — **authoring inputs that are never published**: the context that helps generate a post — committed so it lives in git history (unlike `generated/`), but kept out of `posts/` because `posts/` is the *published* surface. **One self-contained folder per investigation** (e.g. `research/dexie-offers/`), so a reader can follow the whole thing — code, prose, and committed data — in one place rather than chasing it across the tree. The internal layout for a code-heavy investigation:
+  - `README.md` — the entrypoint: dataset provenance, how to reproduce, open threads
+  - `pipeline/` — data acquisition + substrate build (crawlers, `build-*.sql`)
+  - `analysis/` — the per-thesis queries (`NN-*.sql` / `NN-*.ts`), numbered to bind query ↔ finding ↔ chart-data
+  - `charts/` — scripts that turn finding CSVs into the post's figures
+  - `findings/` — prose, one `NN-*.md` per thesis, with committed chart inputs under `findings/data/`
+  - `sources/` — downloaded external docs we want offline (verbatim or clearly-labelled summaries)
+
+  Heavy/regenerable artifacts (multi-GB dumps, DuckDB, parquet) stay in the gitignored `generated/` at repo root; the README documents the path mapping. Scripts are run from the repo root, so their cwd-relative `generated/…` paths resolve regardless of where the script file lives. Keep each investigation scoped to its own topic so it doesn't pollute an unrelated one (e.g. the dexie dataset stays about dexie/Chia, not the post's broader subject).
 
 Folder boundaries follow runtime/process boundaries (offline build vs. browser runtime vs. authored input vs. derived output), not file kind — co-locate types and tests with the code that owns them rather than splitting them into `types/` or `tests/`.
 

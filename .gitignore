@@ -7,7 +7,6 @@ dist
 *.tgz
 generated
 proposals
-research
 
 # code coverage
 coverage
@@ -45,3 +44,14 @@ __pycache__/
 
 # local analysis tooling (DuckDB CLI binary)
 /tools/
+
+# heavy / regenerable data artifacts. Canonical home is generated/ (already
+# ignored above); these extension guards are belt-and-suspenders so a multi-GB
+# dump or the DuckDB file can never be committed by accident if it lands
+# elsewhere. Committed analysis data is .csv, which is intentionally NOT ignored.
+# (Need to commit a deliberate small fixture? `git add -f path.jsonl`.)
+*.jsonl
+*.parquet
+*.duckdb
+*.duckdb.wal
+*.duckdb.tmp

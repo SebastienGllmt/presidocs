@@ -1,0 +1,7 @@
+lifespan_bucket,n_assets,median_offers
+0_single_day,97,1.0
+1-7d,54,9.5
+8-30d,37,11.0
+31-90d,64,10.5
+91-365d,205,47.0
+>365d,403,216.0
