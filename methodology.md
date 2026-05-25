@@ -128,6 +128,16 @@ We call this `text/narration` blocks instead of SSML blocks as we only allow the
 
 These blocks each define a "chapter" for usage in audio narration (which allows skipping between chapters)
 
+### Opting out of narration
+
+Not every post wants a spoken track. A post opts out by setting **`data-narration="none"`** on its `<article>`, and the flag is honored in two places: `generate.ts` skips it cleanly (exit 0, "narration disabled" — so a batch generate over all posts doesn't choke on a post with zero `text/narration` chapters), and the client player's `boot()` hides the dock without fetching a manifest — so there's no empty player box and no "run `bun run generate`" message. That message is deliberately *kept* for the distinct case of a post that **does** want narration but hasn't been built yet (the manifest 404s); the opt-out gives us a real third state instead of conflating "intentionally silent" with "not generated yet".
+
+**Why an explicit attribute, not "infer from the absence of `text/narration` blocks."** The narration blocks are [stripped from the served HTML](#build-time-html-strip-generatestrip-served-htmlts) (they're TTS-only and several KB), so at runtime — in production — the client genuinely *cannot* see whether a post has narration content. The opt-out signal therefore has to live in something that survives the strip: an attribute on the `<article>`. And because the same intent is needed by both the offline build (skip) and the runtime player (don't mount), it's read in both places off that one attribute.
+
+**Keep `data-narration-src` even when opting out.** The comments layer uses `[data-narration-src]` as its [article-root selector](#comments-clientcommentsts), so removing it would silently disable commenting on the post. The opt-out attribute suppresses only the *player*; `data-narration-src` stays (now pointing at a manifest that is intentionally never built) so the post remains fully commentable. (A cleaner decoupling — a dedicated comments-root attribute — is possible but not yet worth it for three posts.)
+
+**Consequence for CSS — a shared `client/base.css`.** A no-narration post drops the `client/narrator.css` `<link>` along with the player markup. But `narrator.css` had been doing triple duty: the player UI, the default-post typography, *and* the **page-global** layer (`* { box-sizing: border-box }`, the `--page-*` design tokens, the `html`/`body` theme). Dropping the file silently reverted the whole page to `content-box` (overflowing inputs, inflated widths) and lost the page background. So that global layer was extracted into **`client/base.css`**, linked *first* by **every** post regardless of narration; `narrator.css` is left with only the player UI and the generic-`article` typography that narration posts rely on. The rule this establishes: anything page-global lives in `base.css`, never in a feature stylesheet a post might legitimately not load.
+
 ### Generation pipeline
 
 The pipeline for generating audio needs to take into account that different models have different requirements:
