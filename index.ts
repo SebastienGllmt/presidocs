@@ -2,6 +2,7 @@ import { join, normalize } from "node:path";
 import index from "./index.html";
 import hashFunctions from "./posts/hash-functions.html";
 import offerFiles from "./posts/offer-files.html";
+import offerFilesData from "./posts/offer-files-data.html";
 import {
   startGoogleAuth,
   startMicrosoftAuth,
@@ -92,6 +93,7 @@ const server = Bun.serve({
     "/": index,
     "/posts/hash-functions": hashFunctions,
     "/posts/offer-files": offerFiles,
+    "/posts/offer-files-data": offerFilesData,
     "/generated/*": pub(serveFromDir("generated")),
     "/assets/automerge.wasm": pub(async () =>
       new Response(Bun.file(AUTOMERGE_WASM_PATH), {

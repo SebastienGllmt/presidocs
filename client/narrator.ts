@@ -998,6 +998,22 @@ class Narrator {
 }
 
 function boot() {
+  // Intentional opt-out: a post can declare `<article data-narration="none">`
+  // to suppress narration entirely. We hide the dock (the markup can stay in
+  // the post for template consistency) and never fetch a manifest, so there's
+  // no empty player box and no "run bun run generate" nudge — that nudge is
+  // reserved for posts that *do* want narration but haven't been built yet.
+  // This is the runtime half of the same flag `generate.ts` honors; both must
+  // key off an attribute that survives the served-HTML strip, since the
+  // narration <script> blocks themselves are removed in production.
+  const optOut = document.querySelector<HTMLElement>('[data-narration="none"]');
+  if (optOut) {
+    document
+      .querySelector<HTMLElement>(".narrate-dock")
+      ?.style.setProperty("display", "none");
+    return;
+  }
+
   const root = document.querySelector<HTMLElement>("[data-narration-src]");
   const container = document.getElementById("narrate-player");
   const chapters = document.getElementById("narrate-chapters");

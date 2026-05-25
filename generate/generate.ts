@@ -135,6 +135,11 @@ type NarrationChapter = { id: string; title: string; content: string };
 
 const chapters: NarrationChapter[] = [];
 const inlinePlsBlocks: string[] = [];
+// Set when the post opts out of narration entirely via
+// `<article data-narration="none">`. Distinct from "no narration written
+// yet": a disabled post is skipped cleanly rather than erroring on zero
+// chapters (so a batch generate over all posts doesn't choke on it).
+let narrationDisabled = false;
 let anonCount = 0;
 let pendingChapter: { id: string; title: string; buf: string[] } | null = null;
 let pendingPlsBuf: string[] | null = null;
@@ -179,7 +184,19 @@ new HTMLRewriter()
       pendingPlsBuf?.push(t.text);
     },
   })
+  .on("article[data-narration]", {
+    element(el) {
+      if ((el.getAttribute("data-narration") ?? "").toLowerCase() === "none") {
+        narrationDisabled = true;
+      }
+    },
+  })
   .transform(html);
+
+if (narrationDisabled) {
+  console.log(`Narration intentionally disabled (data-narration="none") in ${htmlPath}; skipping.`);
+  process.exit(0);
+}
 
 if (chapters.length === 0) {
   console.error(`No <script type="text/narration"> blocks found in ${htmlPath}`);

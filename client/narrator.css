@@ -1,23 +1,13 @@
+/* Narration player + default-post typography. The page-global base layer
+   (box-sizing reset, --page-* tokens, html/body theme) lives in base.css so
+   it survives on posts that don't load this file (see base.css header). */
 :root {
   --narration-bg: rgba(255, 213, 79, 0.18);
   --narration-border: rgba(241, 145, 21, 0.55);
   --narration-shadow: rgba(241, 145, 21, 0.22);
-  --page-fg: #1f2328;
-  --page-fg-muted: #57606a;
-  --page-bg: #fafbfc;
   /* Light blue (GitHub's blue.2) that reads cleanly on the dark dock — the
      darker #0969da was getting lost on rgba(22,27,34,0.85). */
   --accent: #58a6ff;
-}
-
-* { box-sizing: border-box; }
-
-html, body {
-  margin: 0;
-  padding: 0;
-  background: var(--page-bg);
-  color: var(--page-fg);
-  font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 }
 
 article {

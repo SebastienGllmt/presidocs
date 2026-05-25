@@ -1,0 +1,25 @@
+/* Page-global base layer shared by every post, independent of narration.
+   Linked first (before comments/narrator/figure stylesheets) so component
+   sheets can override it.
+
+   This used to live in narrator.css, which coupled the global box model and
+   page theme to the narration player — so a post that opted out of narration
+   (no narrator.css link) silently lost `box-sizing: border-box`, the page
+   background, and the design tokens. Keep anything page-global here, not in
+   narrator.css. */
+
+:root {
+  --page-fg: #1f2328;
+  --page-fg-muted: #57606a;
+  --page-bg: #fafbfc;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--page-bg);
+  color: var(--page-fg);
+  font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
