@@ -1,0 +1,46 @@
+# Cloudflare Workers config for personal-blog. Mirrors the engine's expected
+# bindings (see presidocs/methodology.md → Deploy architecture). Per-blog
+# values — worker name, R2 bucket — live here, NOT in the engine.
+#
+# Secrets are set via `wrangler secret put …` (same names as the engine docs):
+#   SESSION_SECRET, GOOGLE_OAUTH_CLIENT_ID/SECRET,
+#   MICROSOFT_OAUTH_CLIENT_ID/SECRET, OAUTH_REDIRECT_BASE
+
+name = "my-blog"
+main = "worker.ts"
+compatibility_date = "2026-05-19"
+compatibility_flags = ["nodejs_compat"]
+
+# Serve under your own domain (optional). Requires the domain to be a zone on
+# this Cloudflare account; `custom_domain = true` auto-creates the DNS record +
+# managed TLS cert on `wrangler deploy`. Uncomment and set your hostname:
+# [[routes]]
+# pattern = "blog.example.com"
+# custom_domain = true
+
+[vars]
+NODE_ENV = "production"
+
+# Built artifact directory from `bun run build`.
+# `run_worker_first = true` is load-bearing for security: without it, Cloudflare
+# serves matching static assets DIRECTLY and never invokes the Worker, so the
+# document CSP + security headers applied in createWorker.ts (via withSecurityHeaders
+# wrapping the ASSETS.fetch fall-through) would be missing on the HTML/JS/CSS.
+# With it, every request runs the Worker, which fetches the asset and wraps it.
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+run_worker_first = true
+
+# Private R2 bucket holding per-(post,user) Automerge comment blobs.
+# Create out-of-band:  wrangler r2 bucket create my-blog-comments
+[[r2_buckets]]
+binding = "COMMENTS"
+bucket_name = "my-blog-comments"
+
+# Workers Rate Limiting API binding (keyed by userId in the engine).
+[[unsafe.bindings]]
+name = "RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "2001"
+simple = { limit = 10, period = 60 }

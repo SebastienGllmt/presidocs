@@ -1,0 +1,153 @@
+/* Sound-test page styles. Dev-only surface; leans on the page-global tokens in
+   base.css (--page-fg, --page-bg, …) so it matches the rest of the site. */
+
+.st-main {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 4rem;
+}
+
+.st-header h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.6rem;
+}
+
+.st-sub {
+  margin: 0;
+  color: var(--page-fg-muted);
+  font-size: 0.95rem;
+}
+
+.st-sub code {
+  font-size: 0.85em;
+  background: #eef0f2;
+  padding: 0.05em 0.35em;
+  border-radius: 4px;
+}
+
+.st-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 1.5rem 0 1rem;
+  flex-wrap: wrap;
+}
+
+.st-status {
+  color: var(--page-fg-muted);
+  font-size: 0.9rem;
+}
+
+.st-btn {
+  appearance: none;
+  border: 1px solid #d0d7de;
+  background: #fff;
+  color: var(--page-fg);
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.4rem 0.8rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.st-btn:hover:not(:disabled) {
+  background: #f3f4f6;
+}
+
+.st-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.st-btn-primary {
+  background: #0969da;
+  border-color: #0969da;
+  color: #fff;
+}
+
+.st-btn-primary:hover:not(:disabled) {
+  background: #0860c4;
+}
+
+.st-btn-small {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+.st-banner {
+  background: #fff8e5;
+  border: 1px solid #f1d27a;
+  color: #6b5400;
+  padding: 0.7rem 0.9rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}
+
+.st-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.st-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid #e3e6ea;
+  border-radius: 8px;
+  background: #fff;
+  flex-wrap: wrap;
+}
+
+.st-row-main {
+  min-width: 240px;
+  flex: 1 1 280px;
+}
+
+.st-graphemes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.3rem;
+}
+
+.st-chip {
+  background: #eef0f2;
+  border-radius: 4px;
+  padding: 0.1em 0.45em;
+  font-size: 0.85rem;
+}
+
+.st-says {
+  font-size: 0.88rem;
+  color: var(--page-fg-muted);
+}
+
+.st-say {
+  color: var(--page-fg);
+  font-style: italic;
+}
+
+.st-warn {
+  color: #b35900;
+}
+
+.st-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.st-actions audio {
+  height: 36px;
+  max-width: 240px;
+}
+
+.st-missing {
+  color: var(--page-fg-muted);
+  font-size: 0.85rem;
+  font-style: italic;
+}

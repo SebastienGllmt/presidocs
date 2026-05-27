@@ -38,7 +38,7 @@
 // The `--mock` flag is for environments without a TTS — it generates silent
 // audio of estimated duration so the player can still be demoed end-to-end.
 
-import { mkdir } from "node:fs/promises";
+import { mkdir, readdir, unlink } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import {
   createMp3AudioPipeline,
@@ -486,8 +486,11 @@ for (const chapter of chapters) {
   // Trim the leading silence so chapter seeks land on speech, not silence.
   // Everything inside the chapter shifts earlier by the trimmed duration;
   // mark 0 stays pinned to t=0 of the trimmed chapter (it now points to the
-  // first phoneme rather than the silence that preceded it).
-  const trimMs = mock ? asMs(0) : await pipeline.leadingSilenceMs(combined);
+  // first phoneme rather than the silence that preceded it). Uses the GUARDED
+  // trim, which leaves a cushion before the detected onset so a soft word-
+  // initial fricative isn't mistaken for silence and clipped (see
+  // leadingSilenceTrimMs in audio-pipeline.ts).
+  const trimMs = mock ? asMs(0) : await pipeline.leadingSilenceTrimMs(combined);
   const trimmed = trimMs > 0 ? await pipeline.trim(combined, trimMs) : combined;
   if (trimMs > 0) {
     console.log(`    trimmed ${trimMs}ms of leading silence`);
@@ -532,8 +535,32 @@ for (const chapter of chapters) {
 // and keeps cumulative encoder padding to a single occurrence per file.
 const fullBuf = pipeline.concat(interleave(artifacts.map((a) => a.buffer), segmentGap));
 const fullDelivered = await pipeline.encode(fullBuf);
-const fullPath = join(outDir, `full${pipeline.deliveryExt}`);
+
+// Content-hash the final track into its filename (`full.<hash>.mp3`). This is
+// the cache-busting contract for BOTH dev and prod: the URL changes whenever
+// the audio changes, so a regenerated track is always fetched fresh — without
+// relying on revalidation headers, which Chrome's *media* cache notoriously
+// ignores for <audio> (a hard-refresh doesn't even evict it). The flip side is
+// the file can be cached indefinitely while unchanged. The hash goes into the
+// manifest's `audio` URL below; the player only ever reads `manifest.audio`, so
+// nothing downstream needs to know the scheme.
+const ext = pipeline.deliveryExt;
+const audioHash = new Bun.CryptoHasher("sha256").update(fullDelivered).digest("hex").slice(0, 16);
+const fullName = `full.${audioHash}${ext}`;
+const fullPath = join(outDir, fullName);
 await Bun.write(fullPath, fullDelivered);
+
+// Sweep previously-emitted full tracks for this slug — the just-superseded
+// hash, plus any legacy unhashed `full.<ext>`. Otherwise stale tracks pile up
+// across dev iterations and (since copy-static ships every `*.mp3`) bloat the
+// prod bundle with dead audio.
+const staleFullRe = new RegExp(`^full\\.[0-9a-f]{16}${ext.replace(".", "\\.")}$`);
+for (const f of await readdir(outDir)) {
+  if (f === fullName) continue;
+  if (f === `full${ext}` || staleFullRe.test(f)) {
+    await unlink(join(outDir, f)).catch(() => {});
+  }
+}
 
 // `manifestChapters` / `manifestMarks` are the flattened entries that ship
 // in the manifest JSON — distinct from the parsed-input `chapters` array
@@ -563,7 +590,7 @@ for (const [i, a] of artifacts.entries()) {
 const manifest = {
   slug,
   generatedAt: new Date().toISOString(),
-  audio: `/generated/${slug}/full${pipeline.deliveryExt}`,
+  audio: `/generated/${slug}/${fullName}`,
   duration: offset,
   chapters: manifestChapters,
   marks: manifestMarks,

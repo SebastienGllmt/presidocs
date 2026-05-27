@@ -43,7 +43,8 @@
 
 import { existsSync } from "node:fs";
 import { rm, readdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { resolveBlogPaths } from "../shared/blogPaths.ts";
 
 const slug = Bun.argv[2];
 if (!slug) {
@@ -58,9 +59,10 @@ if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
   process.exit(2);
 }
 
-const projectRoot = resolve(import.meta.dir, "..");
-const postPath = join(projectRoot, "posts", `${slug}.html`);
-const targetDir = join(projectRoot, "generated", slug);
+const paths = resolveBlogPaths();
+const projectRoot = paths.contentRoot;
+const postPath = join(paths.postsDir, `${slug}.html`);
+const targetDir = join(paths.generatedDir, slug);
 
 // Safety 2: slug must correspond to a real post.
 if (!existsSync(postPath)) {

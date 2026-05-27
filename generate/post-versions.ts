@@ -8,17 +8,18 @@
 // disk and produces a byte-identical generated TS file.
 
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import {
   sha256Hex,
   type PostVersion,
   type PostVersionRecord,
 } from "../server/postVersions.ts";
+import { resolveBlogPaths } from "../shared/blogPaths.ts";
 
-const ROOT = resolve(import.meta.dir, "..");
-const POSTS_DIR = join(ROOT, "posts");
-const HISTORY_PATH = join(POSTS_DIR, "versions.json");
-const OUT_PATH = join(ROOT, "server", "postVersions.generated.ts");
+const paths = resolveBlogPaths();
+const POSTS_DIR = paths.postsDir;
+const HISTORY_PATH = paths.versionsJson;
+const OUT_PATH = paths.postVersionsMap;
 
 type HistoryFile = Record<string, PostVersion[]>;
 
@@ -76,12 +77,13 @@ async function main(): Promise<void> {
     // Stable key order for the JSON write so git diffs are minimal.
     const sortedHistory: HistoryFile = {};
     for (const k of Object.keys(history).sort()) sortedHistory[k] = history[k]!;
+    await mkdir(dirname(HISTORY_PATH), { recursive: true });
     await writeFile(
       HISTORY_PATH,
       JSON.stringify(sortedHistory, null, 2) + "\n",
       "utf8",
     );
-    console.log(`Wrote ${relative(ROOT, HISTORY_PATH)}`);
+    console.log(`Wrote ${relative(paths.contentRoot, HISTORY_PATH)}`);
   } else {
     console.log("History unchanged.");
   }
@@ -104,10 +106,13 @@ async function main(): Promise<void> {
 // Regenerated as part of \`bun run build\`. Source of truth is the
 // per-post SHA-256 of source HTML; history accumulates in
 // posts/versions.json (also generator-managed).
+// Self-contained (no engine import) so it's portable across content repos;
+// the structural type is checked where the engine consumes it.
 
-import type { PostVersionRecord } from "./postVersions.ts";
-
-export const POST_VERSIONS: Record<string, PostVersionRecord> = {
+export const POST_VERSIONS: Record<
+  string,
+  { currentHash: string; history: { hash: string; builtAt: string }[] }
+> = {
 ${entriesSrc}
 };
 `;
@@ -115,7 +120,7 @@ ${entriesSrc}
   await mkdir(dirname(OUT_PATH), { recursive: true });
   await writeFile(OUT_PATH, tsOut, "utf8");
   console.log(
-    `Wrote ${relative(ROOT, OUT_PATH)} (${Object.keys(out).length} post(s))`,
+    `Wrote ${relative(paths.contentRoot, OUT_PATH)} (${Object.keys(out).length} post(s))`,
   );
 }
 

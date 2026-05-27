@@ -16,8 +16,8 @@
 
 import { initializeWasm, isWasmInitialized } from "@automerge/automerge/slim";
 import * as Automerge from "@automerge/automerge/slim";
-import { join } from "node:path";
 import { fsAdapter } from "../server/comments/fsAdapter.ts";
+import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { SEED_BYTES_B64 } from "../client/commentsStore.ts";
 import type {
   Reply,
@@ -58,15 +58,9 @@ async function ensureWasm(): Promise<void> {
     wasmInited = true;
     return;
   }
-  const wasmPath = join(
-    import.meta.dir,
-    "..",
-    "node_modules",
-    "@automerge",
-    "automerge",
-    "dist",
-    "automerge.wasm",
-  );
+  // Engine-owned vendored asset — resolved via the engine's node_modules even
+  // when this runs from a content repo consuming the engine as a dependency.
+  const wasmPath = resolveBlogPaths().automergeWasm;
   const bytes = await Bun.file(wasmPath).arrayBuffer();
   await initializeWasm(new Uint8Array(bytes));
   wasmInited = true;
@@ -167,19 +161,34 @@ export async function loadUnresolvedThreads(
   const resolutionEntries = await store.listResolutions(opts.postPath);
   const authorResolved = new Set(resolutionEntries.map((e) => e.threadId));
 
-  let totalCount = 0;
-  let resolvedCount = 0;
-  const unresolved: UnresolvedThread[] = [];
-  const all: UnresolvedThread[] = [];
+  // Cross-merge every reader's blob before assembling threads. A thread
+  // object lives only in its *creator's* doc, but replies to it can come
+  // from anyone — most importantly the post author replying to a reader's
+  // thread. So we bucket replies by threadId across ALL docs first, then
+  // attach them to whichever doc owns the thread. Bucketing per-doc (the
+  // old approach) silently dropped any reply whose parent thread was
+  // created in a *different* blob — i.e. every author-on-reader reply —
+  // even though the in-browser author aggregator already merges across
+  // users. Strips the internal `threadId` so the emitted shape matches
+  // the public `Reply`.
+  //
+  // Docs are disjoint (each is loaded only from its own user's changes,
+  // all off the same shared seed), so a given reply id appears in exactly
+  // one doc; `seenReplyIds` is belt-and-suspenders against a malformed
+  // store double-counting.
+  const repliesByThread = new Map<string, Reply[]>();
+  const seenReplyIds = new Set<string>();
+  const threadsById = new Map<
+    string,
+    { thread: StoredThread; ownerUserId: string }
+  >();
 
   for (const { userId, doc } of perUser) {
     const js = Automerge.toJS(doc) as CommentDoc;
 
-    // Bucket replies under their parent thread up-front so the per-
-    // thread assembly below is O(1). Strips the internal `threadId`
-    // back out so the emitted shape matches the public `Reply`.
-    const repliesByThread = new Map<string, Reply[]>();
-    for (const stored of Object.values(js.replies)) {
+    for (const [replyId, stored] of Object.entries(js.replies)) {
+      if (seenReplyIds.has(replyId)) continue;
+      seenReplyIds.add(replyId);
       const { threadId, ...reply } = stored;
       const arr = repliesByThread.get(threadId);
       if (arr) arr.push(reply);
@@ -192,44 +201,57 @@ export async function loadUnresolvedThreads(
       // predate the migration and carry no usable anchor — drop them
       // rather than crash. See client/commentsStore.ts snapshot().
       if (!t.target) continue;
-      totalCount++;
-
-      const replies = (repliesByThread.get(id) ?? [])
-        .filter((r) => r.deletedAt === undefined)
-        .sort((a, b) => a.createdAt - b.createdAt);
-
-      const isResolvedByOwner = t.resolvedAt !== undefined;
-      const isResolvedByAuthor = authorResolved.has(id);
-      // A thread with zero live replies has nothing to say. Self-
-      // resolve already collapses to this on the client (the last
-      // reply delete auto-resolves the thread), but a malformed blob
-      // could still produce one — skip it defensively.
-      const hasNothingToSay = replies.length === 0;
-
-      if (hasNothingToSay) {
-        resolvedCount++;
-        continue;
+      // A thread is owned by exactly one doc (its creator); first writer
+      // wins if a malformed store somehow surfaces the id twice.
+      if (!threadsById.has(id)) {
+        threadsById.set(id, { thread: t, ownerUserId: userId });
       }
-
-      const entry: UnresolvedThread = {
-        ownerUserId: userId,
-        thread: {
-          id,
-          target: t.target,
-          replies,
-          createdAt: t.createdAt,
-          ...(t.resolvedAt !== undefined && { resolvedAt: t.resolvedAt }),
-        },
-      };
-      all.push(entry);
-
-      if (isResolvedByOwner || isResolvedByAuthor) {
-        resolvedCount++;
-        continue;
-      }
-
-      unresolved.push(entry);
     }
+  }
+
+  let totalCount = 0;
+  let resolvedCount = 0;
+  const unresolved: UnresolvedThread[] = [];
+  const all: UnresolvedThread[] = [];
+
+  for (const [id, { thread: t, ownerUserId }] of threadsById) {
+    totalCount++;
+
+    const replies = (repliesByThread.get(id) ?? [])
+      .filter((r) => r.deletedAt === undefined)
+      .sort((a, b) => a.createdAt - b.createdAt);
+
+    const isResolvedByOwner = t.resolvedAt !== undefined;
+    const isResolvedByAuthor = authorResolved.has(id);
+    // A thread with zero live replies has nothing to say. Self-resolve
+    // already collapses to this on the client (the last reply delete
+    // auto-resolves the thread), but a malformed blob could still
+    // produce one — skip it defensively.
+    const hasNothingToSay = replies.length === 0;
+
+    if (hasNothingToSay) {
+      resolvedCount++;
+      continue;
+    }
+
+    const entry: UnresolvedThread = {
+      ownerUserId,
+      thread: {
+        id,
+        target: t.target,
+        replies,
+        createdAt: t.createdAt,
+        ...(t.resolvedAt !== undefined && { resolvedAt: t.resolvedAt }),
+      },
+    };
+    all.push(entry);
+
+    if (isResolvedByOwner || isResolvedByAuthor) {
+      resolvedCount++;
+      continue;
+    }
+
+    unresolved.push(entry);
   }
 
   // Stable order: oldest threads first. Lines up with the in-browser

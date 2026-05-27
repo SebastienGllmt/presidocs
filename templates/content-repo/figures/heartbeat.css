@@ -1,0 +1,23 @@
+/* Starter figure for personal-blog. Content, not engine — it lives in this
+   repo and is referenced directly by posts/hello.html. Demonstrates that a
+   content-owned GSAP figure works across the engine boundary. */
+
+#figure {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 2rem 0;
+}
+
+#figure .heartbeat-static circle {
+  fill: var(--page-accent, #e0245e);
+  /* GSAP animates scale; keep the pulse centered on the dot. */
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+#figure figcaption {
+  font-size: 0.85rem;
+  opacity: 0.7;
+}

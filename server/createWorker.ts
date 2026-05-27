@@ -1,0 +1,181 @@
+// Engine factory for the production Cloudflare Worker. The route wiring used
+// to live inline in `worker.ts`; it's factored here so every content repo
+// (presidocs itself, personal-blog, …) keeps only a thin `worker.ts` that
+// imports its own build-time post maps and calls `createWorkerHandler`.
+//
+// The handler mirrors the dev server's route table (see createDevServer.ts) so
+// dev and prod resolve the same URLs the same way. Static assets (the bundled
+// article + JS + audio) are served via the `ASSETS` binding; anything that
+// doesn't match an API route falls through to it.
+//
+// Bindings live in the content repo's `wrangler.toml`. Secrets (`SESSION_SECRET`,
+// the OAuth `*_CLIENT_*` pairs) are managed via `wrangler secret put …` and
+// exposed through `process.env` by the `nodejs_compat` flag, so the auth code
+// in `server/auth/` reads them via `process.env.*` unchanged — same code path
+// as dev.
+
+import type { ExecutionContext } from "@cloudflare/workers-types";
+import type { Env } from "./env.ts";
+import {
+  startGoogleAuth,
+  startMicrosoftAuth,
+  googleCallback,
+  microsoftCallback,
+  whoami,
+  logout,
+} from "./auth/routes.ts";
+import { handleCommentsRequest } from "./comments/routes.ts";
+import { handleResolutionsRequest } from "./comments/resolutionsRoutes.ts";
+import { r2Adapter } from "./comments/r2Adapter.ts";
+import { createPostMetaIndex, type PostMeta } from "./postMeta.ts";
+import {
+  createPostVersionIndex,
+  type PostVersionRecord,
+} from "./postVersions.ts";
+import { handlePostVersionRequest } from "./postVersionsRoute.ts";
+import { withSecurityHeaders } from "../shared/securityHeaders.ts";
+
+// The two build-time maps, supplied by the content repo's `worker.ts` from its
+// own `.generated/` directory. Structural types (not the engine's `PostMeta` /
+// `PostVersionRecord` imports) so the generated files stay self-contained and
+// portable across content repos — they're checked structurally here.
+export type WorkerContent = {
+  postAuthors: Record<string, PostMeta>;
+  postVersions: Record<string, PostVersionRecord>;
+};
+
+// Add HTTP Range support to a Static Assets response.
+//
+// `env.ASSETS.fetch()` IGNORES the `Range` request header: it always returns
+// the whole file with `200 OK` and no `Accept-Ranges` (verified against a
+// live deploy). For a small JS/CSS/HTML asset that's harmless, but for the
+// narration track (a ~20 MB / 40-min MP3) it breaks seeking: the browser's
+// media element can only seek precisely into a region it can fetch by byte
+// range, so without `206`/`Content-Range` a jump to a not-yet-downloaded
+// offset lands seconds away — mid-way through a *different* narration segment
+// (and reports that wrong position back, so the on-screen clock agrees with
+// it). It "sometimes works" only because a seek inside the already-buffered
+// prefix doesn't need a range request. The dev server (createDevServer.ts)
+// already serves `206` itself; this brings prod to parity.
+//
+// We satisfy the range by buffering the (cached, fast-to-read) asset and
+// slicing it. That re-reads the whole asset per range request, which is fine
+// at audio sizes and only happens when the client actually sends `Range`;
+// non-range requests pass straight through (we only add `Accept-Ranges` so
+// the media element knows it *may* seek). Mirrors the dev server's parser.
+async function applyRangeSupport(req: Request, res: Response): Promise<Response> {
+  // Only meaningful for a successful, bodied GET. ASSETS returns 200 for hits.
+  if (res.status !== 200 || (req.method !== "GET" && req.method !== "HEAD")) {
+    return res;
+  }
+  const range = req.headers.get("Range");
+  if (!range || req.method === "HEAD") {
+    // Advertise range capability; don't buffer when there's nothing to slice.
+    const headers = new Headers(res.headers);
+    headers.set("Accept-Ranges", "bytes");
+    return new Response(res.body, {
+      status: res.status,
+      statusText: res.statusText,
+      headers,
+    });
+  }
+  const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+  if (!m) return res; // Unparseable Range → let the full 200 stand.
+
+  const buf = new Uint8Array(await res.arrayBuffer());
+  const size = buf.byteLength;
+  const headers = new Headers(res.headers);
+  headers.set("Accept-Ranges", "bytes");
+
+  let start = m[1] === "" ? NaN : Number(m[1]);
+  let end = m[2] === "" ? NaN : Number(m[2]);
+  if (Number.isNaN(start)) {
+    // suffix range `bytes=-N`: the last N bytes
+    start = Math.max(0, size - Number(m[2]));
+    end = size - 1;
+  } else if (Number.isNaN(end)) {
+    end = size - 1;
+  }
+  if (start > end || start >= size) {
+    headers.set("Content-Range", `bytes */${size}`);
+    return new Response("range not satisfiable", { status: 416, headers });
+  }
+  end = Math.min(end, size - 1);
+  headers.set("Content-Range", `bytes ${start}-${end}/${size}`);
+  headers.set("Content-Length", String(end - start + 1));
+  return new Response(buf.subarray(start, end + 1), {
+    status: 206,
+    statusText: "Partial Content",
+    headers,
+  });
+}
+
+export function createWorkerHandler(content: WorkerContent) {
+  // Built once at module load — the maps are static for the lifetime of the
+  // Worker (regenerated only when a new build is deployed).
+  const postMetaIndex = createPostMetaIndex(content.postAuthors);
+  const postVersionsIndex = createPostVersionIndex(content.postVersions);
+
+  // Match an API route and run its handler. Returns null when the request is
+  // not an API route, so the caller falls through to static assets. These are
+  // the "private" (non-asset) responses that also get CORP.
+  function handleApi(
+    req: Request,
+    env: Env,
+  ): Promise<Response> | Response | null {
+    const path = new URL(req.url).pathname;
+
+    // --- Auth routes (handlers are runtime-agnostic). ---
+    if (path === "/auth/google") return startGoogleAuth(req);
+    if (path === "/auth/google/callback") return googleCallback(req);
+    if (path === "/auth/microsoft") return startMicrosoftAuth(req);
+    if (path === "/auth/microsoft/callback") return microsoftCallback(req);
+    if (path === "/auth/me") return whoami(req);
+    if (path === "/auth/logout" && req.method === "POST") return logout(req);
+
+    // --- Comments R2 proxy. ---
+    if (path === "/comments") {
+      return handleCommentsRequest(req, {
+        store: r2Adapter(env.COMMENTS),
+        postMeta: postMetaIndex,
+        rateLimiter: env.RATE_LIMITER,
+      });
+    }
+    if (path === "/resolutions") {
+      return handleResolutionsRequest(req, {
+        store: r2Adapter(env.COMMENTS),
+        postMeta: postMetaIndex,
+        rateLimiter: env.RATE_LIMITER,
+      });
+    }
+    if (path === "/post-version") {
+      return handlePostVersionRequest(req, {
+        postVersions: postVersionsIndex,
+        postMeta: postMetaIndex,
+      });
+    }
+
+    return null;
+  }
+
+  return {
+    async fetch(
+      req: Request,
+      env: Env,
+      _ctx: ExecutionContext,
+    ): Promise<Response> {
+      const apiResponse = handleApi(req, env);
+      if (apiResponse !== null) {
+        return withSecurityHeaders(await apiResponse, { private: true });
+      }
+
+      // --- Static assets fall-through. The Workers Static Assets binding
+      //     handles caching headers and 404s for us. Still wrapped so the
+      //     article HTML carries the document CSP. ---
+      // @ts-expect-error - ASSETS.fetch takes the same Request shape but
+      //     types between the runtime Request and DOM Request don't unify.
+      const assetResponse: Response = await env.ASSETS.fetch(req);
+      return withSecurityHeaders(await applyRangeSupport(req, assetResponse));
+    },
+  };
+}

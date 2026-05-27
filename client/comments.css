@@ -268,8 +268,28 @@
 .cmt-reply-row {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
   gap: 6px;
 }
+/* Author-only thread-id tag. `margin-right:auto` pushes it to the row's
+   left edge so the action buttons stay grouped on the right. Styled as a
+   muted monospace chip, not a button, even though it's a <button> for the
+   click-to-copy affordance. */
+.cmt-thread-id {
+  margin-right: auto;
+  padding: 2px 5px;
+  border: 1px solid var(--cmt-border);
+  border-radius: 4px;
+  background: #f6f8fa;
+  color: var(--cmt-fg-muted);
+  font: 500 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  cursor: pointer;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cmt-thread-id:hover { background: #eef0f3; color: var(--cmt-fg); }
 .cmt-reply-cancel,
 .cmt-reply-resolve,
 .cmt-reply-submit {

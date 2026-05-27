@@ -1,0 +1,231 @@
+// Engine factory for the Bun dev server. The route wiring used to live inline
+// in `index.ts`; it's factored here so every content repo keeps only a thin
+// `index.ts` that statically imports its own post HTML bundles (so Bun's
+// bundler + HMR can process them) and hands them to this factory as
+// `staticRoutes`. Everything else — auth, comments, post-version, the generated
+// audio + WASM static routes, the dev-only regenerate endpoint — is wired here
+// against the resolved content/engine paths.
+//
+// Mirrors the production route table (server/createWorker.ts) so dev and prod
+// resolve the same URLs the same way.
+
+import { join, normalize } from "node:path";
+import {
+  startGoogleAuth,
+  startMicrosoftAuth,
+  googleCallback,
+  microsoftCallback,
+  whoami,
+  logout,
+} from "./auth/routes.ts";
+import { handleCommentsRequest } from "./comments/routes.ts";
+import { handleResolutionsRequest } from "./comments/resolutionsRoutes.ts";
+import { fsAdapter } from "./comments/fsAdapter.ts";
+import { loadDevPostMetaIndex } from "./postMeta.dev.ts";
+import { loadDevPostVersionIndex } from "./postVersions.dev.ts";
+import { handlePostVersionRequest } from "./postVersionsRoute.ts";
+import { handleRegenerateRequest } from "./regenerate.dev.ts";
+import { handleSoundTestList, handleSoundTestRegenerate } from "./soundTest.dev.ts";
+import { withSecurityHeaders } from "../shared/securityHeaders.ts";
+import type { BlogPaths } from "../shared/blogPaths.ts";
+// Dev-only sound-test page. A static HTML bundle imported here (not in the
+// content repo's index.ts) because it's an engine surface, not blog content;
+// importing it from createDevServer keeps it out of the prod Worker bundle
+// (worker.ts → createWorker.ts never reaches this module).
+import soundTestPage from "../client/sound-test/index.html";
+
+export type DevServerOptions = {
+  paths: BlogPaths;
+  // The content repo's statically-imported HTML bundles, keyed by URL path:
+  //   { "/": landing, "/posts/hash-functions": hashFunctions, … }
+  // Kept in the content repo's index.ts because Bun's bundler/HMR needs these
+  // imports to be static (a glob/codegen produces the import list — see
+  // generate/post-routes.ts).
+  staticRoutes: Record<string, Bun.HTMLBundle>;
+  port?: number;
+};
+
+type DevHandler = (req: Bun.BunRequest) => Response | Promise<Response>;
+
+export async function createDevServer(opts: DevServerOptions) {
+  const { paths, staticRoutes } = opts;
+
+  // Wrap a function-style route handler so its response carries the security
+  // headers (parity with the Worker). `priv` additionally sets CORP for the
+  // non-asset API responses. The HTMLBundle routes are served by Bun's bundler
+  // and can't be wrapped — see shared/securityHeaders.ts; the document CSP is
+  // verified against the Worker (`wrangler dev`), not this dev server.
+  const pub = (h: DevHandler): DevHandler => async (req) =>
+    withSecurityHeaders(await h(req));
+  const priv = (h: DevHandler): DevHandler => async (req) =>
+    withSecurityHeaders(await h(req), { private: true });
+
+  // Dev-mode CommentBlobStore: writes blobs to disk under the content repo's
+  // generated/ (already gitignored) so the same handlers exercised in prod
+  // (with R2) run unchanged here.
+  const commentsDevStore = fsAdapter(join(paths.generatedDir, ".comments-dev"));
+
+  // Per-post author index — scans the content repo's posts/*.html at startup,
+  // so a new post is picked up after a server restart (no build step required).
+  const postMetaIndex = await loadDevPostMetaIndex(paths.postsDir);
+
+  // Per-post version index — current SHA-256 of source HTML (computed fresh at
+  // dev startup so a saved edit picks up immediately) plus any history
+  // persisted to posts/versions.json by the build script.
+  const postVersionsIndex = await loadDevPostVersionIndex(
+    paths.postsDir,
+    paths.versionsJson,
+  );
+
+  // Serve files from a fixed directory — used for the generated audio +
+  // manifest, which Bun's bundler doesn't manage.
+  function serveFromDir(dir: string, urlPrefix: string) {
+    return async (req: Bun.BunRequest) => {
+      const url = new URL(req.url);
+      const sub = decodeURIComponent(url.pathname.replace(`/${urlPrefix}/`, ""));
+      const safe = normalize(sub);
+      if (safe.startsWith("..") || safe.includes("\0")) {
+        return new Response("forbidden", { status: 403 });
+      }
+      const file = Bun.file(join(dir, safe));
+      if (!(await file.exists())) return new Response("not found", { status: 404 });
+      const size = file.size;
+      // Cache policy is split by whether the filename is content-addressed.
+      //
+      // The full audio track ships as `full.<hash>.<ext>` (see generate.ts):
+      // its URL changes whenever its bytes change, so it is safe — and
+      // better — to let the browser CACHE IT IMMUTABLY rather than re-download
+      // a ~20 MB file on every reload. `no-store` (the old blanket policy here)
+      // also stops the media element from retaining the byte ranges it has
+      // fetched, so it can't reuse them across seeks. (`immutable` is honored
+      // even by a media cache that ignores plain revalidation.)
+      //
+      // Everything else here is STABLE-NAMED and must never be served stale:
+      // `manifest.json` (the player reads the current `full.<hash>` URL out of
+      // it — a stale copy would point at a swept hash and 404) and the dev
+      // comment store. `no-store` (not `no-cache`: we send no ETag/Last-Modified
+      // validator to revalidate against). Refetch cost is nil on localhost.
+      //
+      // The `Accept-Ranges`/range handling below lets the media element seek
+      // into (and start playing) large audio: without it a multi-MB track is
+      // served as one unbounded chunked stream with no length, which Chrome
+      // refuses to begin playing. NOTE: prod must implement the same `206`
+      // itself — the Workers `env.ASSETS` binding ignores `Range` and returns
+      // the whole file, which breaks seeking; see `applyRangeSupport` in
+      // createWorker.ts. Small files happened to work anyway because the
+      // browser buffers them whole.
+      const isContentHashed = /(^|\/)full\.[0-9a-f]{16}\.[a-z0-9]+$/i.test(safe);
+      const baseHeaders: Record<string, string> = {
+        "Cache-Control": isContentHashed
+          ? "public, max-age=31536000, immutable"
+          : "no-store",
+        "Accept-Ranges": "bytes",
+      };
+      const range = req.headers.get("range");
+      const m = range && /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+      if (m && size > 0) {
+        let start = m[1] === "" ? NaN : Number(m[1]);
+        let end = m[2] === "" ? NaN : Number(m[2]);
+        if (Number.isNaN(start)) {
+          // suffix range `bytes=-N`: the last N bytes
+          start = Math.max(0, size - Number(m[2]));
+          end = size - 1;
+        } else if (Number.isNaN(end)) {
+          end = size - 1;
+        }
+        if (start > end || start >= size) {
+          return new Response("range not satisfiable", {
+            status: 416,
+            headers: { ...baseHeaders, "Content-Range": `bytes */${size}` },
+          });
+        }
+        end = Math.min(end, size - 1);
+        return new Response(file.slice(start, end + 1), {
+          status: 206,
+          headers: {
+            ...baseHeaders,
+            "Content-Range": `bytes ${start}-${end}/${size}`,
+            "Content-Length": String(end - start + 1),
+          },
+        });
+      }
+      return new Response(file, {
+        headers: { ...baseHeaders, "Content-Length": String(size) },
+      });
+    };
+  }
+
+  const apiRoutes: Record<string, DevHandler | { POST: DevHandler }> = {
+    "/generated/*": pub(serveFromDir(paths.generatedDir, "generated")),
+    "/assets/automerge.wasm": pub(async () =>
+      new Response(Bun.file(paths.automergeWasm), {
+        headers: {
+          "Content-Type": "application/wasm",
+          "Cache-Control": "public, max-age=2592000, immutable",
+        },
+      })),
+    "/auth/google": priv(startGoogleAuth),
+    "/auth/google/callback": priv(googleCallback),
+    "/auth/microsoft": priv(startMicrosoftAuth),
+    "/auth/microsoft/callback": priv(microsoftCallback),
+    "/auth/me": priv(whoami),
+    "/auth/logout": { POST: priv(logout) },
+    "/comments": priv((req) =>
+      handleCommentsRequest(req, {
+        store: commentsDevStore,
+        postMeta: postMetaIndex,
+        rateLimiter: null,
+      })),
+    "/resolutions": priv((req) =>
+      handleResolutionsRequest(req, {
+        store: commentsDevStore,
+        postMeta: postMetaIndex,
+        rateLimiter: null,
+      })),
+    "/post-version": priv((req) =>
+      handlePostVersionRequest(req, {
+        postVersions: postVersionsIndex,
+        postMeta: postMetaIndex,
+      })),
+    // Dev-only, author-only: re-roll one segment's audio by shelling out to the
+    // offline generate pipeline. Absent from the Worker (the prod edge server
+    // stays dumb and never runs the build).
+    "/dev/regenerate": priv((req) =>
+      handleRegenerateRequest(req, {
+        contentRoot: paths.contentRoot,
+        engineRoot: paths.engineRoot,
+        postMeta: postMetaIndex,
+      })),
+    // Dev-only sound-test endpoints: list the common-terms.pls lexemes and
+    // re-roll their production-voice audio. Like /dev/regenerate, these shell
+    // out to the offline MOSS pipeline and are absent from the Worker.
+    "/dev/sound-test/list": priv((req) =>
+      handleSoundTestList(req, {
+        contentRoot: paths.contentRoot,
+        engineRoot: paths.engineRoot,
+      })),
+    "/dev/sound-test/regenerate": priv((req) =>
+      handleSoundTestRegenerate(req, {
+        contentRoot: paths.contentRoot,
+        engineRoot: paths.engineRoot,
+      })),
+  };
+
+  // The sound-test page itself is an HTMLBundle (Bun bundles its TS/CSS), served
+  // only by the dev server. Kept separate from the function `apiRoutes` map
+  // because its value is a bundle, not a handler.
+  const pageRoutes: Record<string, Bun.HTMLBundle> = {
+    "/dev/sound-test": soundTestPage,
+  };
+
+  return {
+    port: opts.port ?? Number(process.env.PORT ?? 3000),
+    // Static post/landing bundles + the dev-only page bundle first, then the
+    // function API routes.
+    routes: { ...staticRoutes, ...pageRoutes, ...apiRoutes },
+    development: { hmr: true, console: true },
+    fetch() {
+      return new Response("not found", { status: 404 });
+    },
+  };
+}

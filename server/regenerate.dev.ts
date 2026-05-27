@@ -24,7 +24,12 @@ import { isPostAuthor, type PostMetaIndex } from "./postMeta.ts";
 import { join } from "node:path";
 
 export type RegenerateDeps = {
-  projectRoot: string;
+  // Where the posts + generated/ live (the content repo). The post file and
+  // the spawned process's cwd resolve against this; generate.ts derives its
+  // output root from the post path, so writes land under contentRoot/generated.
+  contentRoot: string;
+  // Where the engine's generate.ts lives (this repo / node_modules/presidocs).
+  engineRoot: string;
   postMeta: PostMetaIndex;
 };
 
@@ -96,7 +101,7 @@ export async function handleRegenerateRequest(
   if (!ID_RE.test(slug)) {
     return new Response("post must be /posts/<slug>", { status: 400 });
   }
-  const postFile = join(deps.projectRoot, "posts", `${slug}.html`);
+  const postFile = join(deps.contentRoot, "posts", `${slug}.html`);
   if (!(await Bun.file(postFile).exists())) {
     return new Response("post not found", { status: 404 });
   }
@@ -114,12 +119,12 @@ export async function handleRegenerateRequest(
   const proc = Bun.spawn({
     cmd: [
       "bun",
-      join(deps.projectRoot, "generate", "generate.ts"),
+      join(deps.engineRoot, "generate", "generate.ts"),
       postFile,
       `--tts=${tts}`,
       `--force-mark=${mark}`,
     ],
-    cwd: deps.projectRoot,
+    cwd: deps.contentRoot,
     env: process.env,
     stdout: "pipe",
     stderr: "pipe",

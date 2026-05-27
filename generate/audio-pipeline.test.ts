@@ -14,6 +14,7 @@ import {
   createMp3AudioPipeline,
   durationViaFfmpeg,
   leadingSilenceMs,
+  leadingSilenceTrimMs,
   pcmDurationMs,
   trailingArtifactTrimMs,
   trimLeadingMs,
@@ -83,6 +84,27 @@ test("leadingSilenceMs ignores silence that doesn't start at t≈0", async () =>
   const gap = await buildSilence(asMs(300), fmt);
   const combined = concatWavs([sound, gap, sound], fmt);
   expect(await leadingSilenceMs(combined)).toBe(asMs(0));
+});
+
+test("leadingSilenceTrimMs keeps a short lead untrimmed (guard protects soft onsets)", async () => {
+  const silence = await buildSilence(asMs(300), fmt);
+  const sound = await makeSineWav(asMs(500));
+  const combined = concatWavs([silence, sound], fmt);
+  // The default 1s guard is far longer than the 300ms lead, so nothing is
+  // trimmed — this is what stops a quiet word-initial fricative (mis-detected
+  // as silence) from being clipped.
+  expect(await leadingSilenceTrimMs(combined)).toBe(asMs(0));
+});
+
+test("leadingSilenceTrimMs trims only the excess beyond the guard", async () => {
+  const silence = await buildSilence(asMs(300), fmt);
+  const sound = await makeSineWav(asMs(500));
+  const combined = concatWavs([silence, sound], fmt);
+  // With a small 100ms guard, a ~300ms lead trims ~200ms, leaving ~100ms of
+  // silence before the detected onset.
+  const trim = await leadingSilenceTrimMs(combined, asMs(100));
+  expect(trim).toBeGreaterThan(150);
+  expect(trim).toBeLessThan(250);
 });
 
 test("trimLeadingMs(buf, 0) is the identity (same reference)", async () => {

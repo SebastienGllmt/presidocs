@@ -41,6 +41,10 @@ export interface AudioPipeline {
   // Detect leading silence and return its length in ms. Returns 0 if no
   // significant silence at the start of the buffer.
   leadingSilenceMs(buf: Uint8Array): Promise<Milliseconds>;
+  // How much leading silence is SAFE to trim, leaving a guard before the
+  // detected speech onset (see leadingSilenceTrimMs). This — not the raw
+  // leadingSilenceMs — is what callers feed to `trim`.
+  leadingSilenceTrimMs(buf: Uint8Array, guardMs?: Milliseconds): Promise<Milliseconds>;
   // Drop the given duration of leading audio and return the result.
   trim(buf: Uint8Array, ms: Milliseconds): Promise<Uint8Array>;
   // Final-mile encode for delivery (e.g. WAV → MP3). A future lossless-
@@ -228,6 +232,29 @@ export async function leadingSilenceMs(buf: Uint8Array): Promise<Milliseconds> {
   return asMs(Math.max(0, Math.round(parseFloat(endMatch[1]!) * 1000)));
 }
 
+// How much leading silence to actually trim, given a GUARD that we never trim
+// into. `leadingSilenceMs` finds where `silencedetect` thinks speech begins —
+// but it's an amplitude detector, so a quiet word-initial fricative (the "s" of
+// "Swap", the "sh" of "shah") reads as silence and the detected onset lands at
+// the louder vowel that follows. Trimming exactly to that onset clips the
+// fricative. So instead of trimming up to the onset, we trim up to `guardMs`
+// BEFORE it — keeping a cushion of (real silence + the soft onset) intact — and
+// trim nothing at all when the onset is already within `guardMs` of t=0.
+//
+// The cost is up to `guardMs` of retained leading silence; we accept that
+// because a brief lead-in is harmless next to swallowing the first phoneme. The
+// guard only needs to exceed the longest plausible soft onset (a long fricative
+// is ~250ms), so the 1s default is deliberately generous — tune it down if a
+// leading beat on chapter seeks becomes noticeable.
+export const LEADING_TRIM_GUARD_MS = asMs(1000);
+export async function leadingSilenceTrimMs(
+  buf: Uint8Array,
+  guardMs: Milliseconds = LEADING_TRIM_GUARD_MS,
+): Promise<Milliseconds> {
+  const lead = await leadingSilenceMs(buf);
+  return asMs(Math.max(0, lead - guardMs));
+}
+
 // Drop leading audio via ffmpeg `-ss` with stream copy. We round-trip
 // through temp files (rather than piping) because the wav muxer cannot fix
 // up RIFF / data chunk sizes on a non-seekable pipe, and `concatWavs` reads
@@ -403,6 +430,7 @@ export function createMp3AudioPipeline(
     duration: durationViaFfmpeg,
     concat: (bufs) => concatWavs(bufs, format),
     leadingSilenceMs,
+    leadingSilenceTrimMs,
     trim: trimLeadingMs,
     encode: (buf) => wavToMp3(buf, format, mp3Bitrate),
   };

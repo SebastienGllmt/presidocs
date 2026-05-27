@@ -6,7 +6,8 @@
 //
 // Usage: bun authoring/listUnresolved.ts <slug>
 
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { loadUnresolvedThreads } from "./loadUnresolvedThreads.ts";
 import {
   contextOf,
@@ -15,7 +16,7 @@ import {
   textTargetParts,
 } from "../client/commentsStore.ts";
 
-const PROJECT_ROOT = resolve(import.meta.dir, "..");
+const paths = resolveBlogPaths();
 
 async function main() {
   const slug = process.argv[2];
@@ -25,7 +26,7 @@ async function main() {
   }
   const result = await loadUnresolvedThreads({
     postPath: `/posts/${slug}`,
-    commentsDir: join(PROJECT_ROOT, "generated", ".comments-dev"),
+    commentsDir: join(paths.generatedDir, ".comments-dev"),
   });
   console.log(
     `${result.totalCount} total / ${result.resolvedCount} resolved / ${result.unresolved.length} unresolved\n`,

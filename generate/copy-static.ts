@@ -20,10 +20,12 @@
 // strip). Idempotent; safe to re-run.
 
 import { cp, mkdir, readdir, stat } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { join, relative } from "node:path";
+import { resolveBlogPaths } from "../shared/blogPaths.ts";
 
-const ROOT = resolve(import.meta.dir, "..");
-const DIST = join(ROOT, "dist");
+const paths = resolveBlogPaths();
+const ROOT = paths.contentRoot;
+const DIST = paths.distDir;
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -75,10 +77,9 @@ async function copyGeneratedArtifacts(): Promise<number> {
 }
 
 async function copyAutomergeWasm(): Promise<boolean> {
-  const src = join(
-    ROOT,
-    "node_modules/@automerge/automerge/dist/automerge.wasm",
-  );
+  // Engine-owned vendored asset — resolves into the engine's node_modules even
+  // when the build runs from an external content repo.
+  const src = paths.automergeWasm;
   const dst = join(DIST, "assets", "automerge.wasm");
   if (!(await exists(src))) {
     console.warn(`  ${relative(ROOT, src)} not found — skipping WASM copy`);

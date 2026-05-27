@@ -1,18 +1,10 @@
 {
   "name": "presidocs",
-  "module": "index.ts",
   "type": "module",
   "private": true,
+  "//": "This is the reusable blog ENGINE, consumed by content repos via a `file:` dependency (see methodology.md → Repository layout, and templates/content-repo/ for the starter). It is not a deployable blog itself; the dev/build/deploy/generate scripts live in each content repo's package.json.",
   "scripts": {
-    "dev": "bun --hot index.ts",
-    "start": "bun index.ts",
-    "generate": "bun generate/generate.ts",
-    "generate:prod": "bun generate/generate.ts --tts=moss",
-    "clean": "bun generate/clean.ts",
-    "resolve-threads": "bun authoring/resolveThreads.ts",
-    "export-annotations": "bun authoring/exportAnnotations.ts",
-    "build": "bun generate/post-meta.ts && bun generate/post-versions.ts && bun build ./index.html ./posts/*.html --outdir ./dist --target browser && bun generate/copy-static.ts && bun generate/strip-served-html.ts",
-    "deploy": "bun run build && wrangler deploy"
+    "test": "bun test"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260511.1",

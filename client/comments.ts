@@ -1302,6 +1302,33 @@ class CommentSystem {
     const row = document.createElement("div");
     row.className = "cmt-reply-row";
 
+    // Author-only: surface the thread id so the author can correlate this
+    // card with the `id=<threadId>` lines /process-comments prints (and the
+    // ids `resolve-threads` accepts). Readers never see it; drafts have no
+    // exported id yet so we skip them. CSS pins it to the row's left edge
+    // (margin-right:auto), so it reads as "to the left of Hide". Click copies.
+    if (!isDraft && this.isAuthorMode()) {
+      const id = document.createElement("button");
+      id.type = "button";
+      id.className = "cmt-thread-id";
+      id.textContent = thread.id;
+      id.title = "Thread ID (click to copy) — matches the id= lines in /process-comments";
+      id.addEventListener("click", (e) => {
+        e.stopPropagation();
+        void navigator.clipboard
+          ?.writeText(thread.id)
+          .then(() => {
+            const prev = id.textContent;
+            id.textContent = "copied";
+            window.setTimeout(() => {
+              id.textContent = prev;
+            }, 1000);
+          })
+          .catch(() => {});
+      });
+      row.appendChild(id);
+    }
+
     // Drafts can't be recovered (no anchor highlight to click), so Cancel
     // discards. Non-stale saved threads keep their highlight, so Cancel
     // just hides the card. STALE saved threads have no recovery

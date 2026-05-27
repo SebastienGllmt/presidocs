@@ -14,12 +14,14 @@
 // count anyway.
 
 import { readdir, readFile, writeFile } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { join, relative } from "node:path";
 import { stripServedHtml } from "../shared/stripServedHtml.ts";
 import { injectCloudflareAnalytics } from "../shared/injectAnalytics.ts";
+import { resolveBlogPaths } from "../shared/blogPaths.ts";
 
-const ROOT = resolve(import.meta.dir, "..");
-const DIST = join(ROOT, "dist");
+const paths = resolveBlogPaths();
+const ROOT = paths.contentRoot;
+const DIST = paths.distDir;
 
 async function walkHtml(dir: string): Promise<string[]> {
   const out: string[] = [];

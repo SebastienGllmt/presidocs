@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="author-email" content="sebastiengllmt@gmail.com" />
+<title>Hello, world</title>
+<!-- Engine-owned assets, referenced through the `engine` symlink so Bun's
+     bundler resolves + bundles them into same-origin ('self') assets. -->
+<link rel="stylesheet" href="../engine/client/base.css" />
+<link rel="stylesheet" href="../engine/client/narrator.css" />
+<link rel="stylesheet" href="../engine/client/comments.css" />
+<!-- This blog's own figure (content, not engine). -->
+<link rel="stylesheet" href="../figures/heartbeat.css" />
+<script type="module" src="../engine/client/narrator.ts"></script>
+<script type="module" src="../engine/client/comments.ts"></script>
+<script type="module" src="../figures/heartbeat.ts"></script>
+
+<script type="text/narration" data-chapter-id="intro" data-chapter-title="Welcome">
+  <mark name="title"/>
+  Hi, and welcome to the first post on this blog.
+  <mark name="lede"/>
+  This page is running on a shared engine — the same one that powers the
+  presidocs blog — but all of its content lives in a completely separate
+  repository.
+</script>
+
+<script type="text/narration" data-chapter-id="how" data-chapter-title="How it fits together">
+  <mark name="how-heading"/>
+  So how does that work?
+  <mark name="how-body"/>
+  The engine is a file dependency. The player you're listening to, the
+  commenting system, and the build pipeline all come from it. This repo only
+  holds posts, figures, and a little configuration.
+  <mark name="figure"/>
+  Watch the dot to the side — it's a figure defined right here in this repo,
+  pulsing in time with the narration to prove that custom, content-owned
+  animations work across the engine boundary.
+  <mark name="closing"/>
+  That's the whole idea: write content here, let the engine do the rest.
+  Thanks for listening!
+</script>
+</head>
+<body>
+  <article data-narration-src="/generated/hello/manifest.json"
+           data-narration-title="Hello, world"
+           data-narration-artist="personal-blog">
+    <h1 id="title">Hello, world</h1>
+    <p id="lede">
+      This page runs on a shared blog engine, but its content lives in its own
+      repository — separate from the engine and from every other blog built on
+      it.
+    </p>
+
+    <h2 id="how-heading">How it fits together</h2>
+    <p id="how-body">
+      The engine is pulled in as a <code>file:</code> dependency. The narration
+      player, the comment system, and the build pipeline all come from it; this
+      repository contributes only posts, figures, and a small amount of
+      configuration.
+    </p>
+
+    <figure id="figure">
+      <!-- Static fallback (no-JS / initial frame). The module below
+           progressively enhances this into a GSAP animation. -->
+      <svg class="heartbeat-static" viewBox="0 0 120 120" width="120" height="120"
+           role="img" aria-label="A pulsing dot">
+        <circle cx="60" cy="60" r="24" />
+      </svg>
+      <figcaption>A content-owned figure, synced to the narration.</figcaption>
+    </figure>
+
+    <p id="closing">
+      Write content here; let the engine do the rest.
+    </p>
+  </article>
+</body>
+</html>

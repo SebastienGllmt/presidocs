@@ -118,7 +118,7 @@ class Narrator {
       // Shikwasa defaults to "auto" and flips to light on light-mode OSes.
       theme: "dark",
       themeColor: "#58a6ff",
-      speedOptions: [0.75, 1, 1.25, 1.5, 1.75, 2],
+      speedOptions: [1, 1.25, 1.5, 1.75, 2, 3],
       preload: "auto",
       audio: {
         title: this.title,

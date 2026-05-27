@@ -24,14 +24,15 @@
 //                  `https://…/posts/<slug>` for a portable absolute export.
 //   --out <file>   write to a file instead of stdout.
 
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import {
   loadUnresolvedThreads,
   type UnresolvedThread,
 } from "./loadUnresolvedThreads.ts";
 import { snapshotToAnnotationCollection } from "../shared/annotationExport.ts";
 
-const PROJECT_ROOT = resolve(import.meta.dir, "..");
+const paths = resolveBlogPaths();
 
 type CliArgs = {
   slug: string;
@@ -85,7 +86,7 @@ async function main() {
 
   const result = await loadUnresolvedThreads({
     postPath,
-    commentsDir: join(PROJECT_ROOT, "generated", ".comments-dev"),
+    commentsDir: join(paths.generatedDir, ".comments-dev"),
   });
 
   const entries: UnresolvedThread[] = args.all ? result.all : result.unresolved;

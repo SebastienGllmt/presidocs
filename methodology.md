@@ -11,6 +11,7 @@ To ensure ease of AI authoring, each post is a self-contained HTML file that con
 The spoken track is deliberately **not** a read-aloud of the article - it's a parallel narrative that can paraphrase, reorder, skip over, or revisit visual elements the way a presenter does.
 
 Key design decisions that shape the architecture:
+- **The engine is a separate git repo from the content it renders.** This repo (`presidocs`) is the reusable *engine* — player, comments, build/TTS pipeline, server, authoring tools — and holds **no posts of its own**. Each actual blog is its own git repo containing only content (posts, figures, landing, per-blog config) and depends on the engine through a `file:` dependency; its `index.ts`/`worker.ts` are thin wrappers that call engine factories. One fast-moving engine is shared across blogs without copy-paste drift, while each blog's content and deploy config stay independently versioned. The hard rule that falls out of this: **engine code never names a specific post** — it discovers content by convention from a *content root*. See [Repository layout](#repository-layout) for the two folder structures and the wiring between them.
 - **One file per post.** Article + spoken script live in the same HTML
   so authoring tools (humans or LLMs) edit one document, not a
   bundle. No other content input is allowed (note: multiple files are allowed to be served, but they have to be generated from the single input)
@@ -27,15 +28,36 @@ Key design decisions that shape the architecture:
 
 ## Repository layout
 
+Because the engine and the content live in **separate repos** (see the design decision above), there are two distinct layouts. The split rule is simple: a folder lives in the engine if it's reusable code that never names a post; it lives in the content repo if it's this-blog-specific input or config.
+
+### Engine repo (`presidocs`)
+
 Each top-level folder is one concern, so finding code is "pick the folder that matches what you want to change":
 
-- `generate/` — offline pipeline that turns a post into audio + manifest (`bun run generate`)
-- `client/` — client-run JS code (ex: audio player)
-- `server/` — server-side helpers used by `index.ts` (currently: `server/auth/` for OAuth + sessions)
-- `shared/` — types/helpers used by both sides (e.g. common types / structures)
-- `posts/` — authored inputs (one HTML file per post + the shared PLS lexicon)
-- `generated/` — pipeline output (gitignored)
+- `generate/` — offline pipeline that turns a post into audio + manifest, plus the build-time codegens (`post-meta`, `post-versions`, `post-routes`) and the `copy-static`/`strip-served-html` build steps
+- `client/` — client-run JS/CSS (audio player, comments, the page-global `base.css`). **No `figures/` here** — figures are per-post content and live in the content repo (see [Animated figures](#animated-figures))
+- `server/` — server-side helpers and the two entry-point factories `createDevServer.ts` (Bun dev) and `createWorker.ts` (Cloudflare prod) that a content repo's thin `index.ts`/`worker.ts` call; plus `server/auth/` (OAuth + sessions), comments, post-meta/version
+- `shared/` — types/helpers used by both sides, including **`blogPaths.ts`**, which resolves `engineRoot` (this repo, from the module's own location) vs `contentRoot` (`$BLOG_CONTENT_DIR ?? cwd`) and every content-relative path. This is how engine code stays content-agnostic while operating on whichever blog invoked it
+- `authoring/` — offline authoring tools (comment export, resolution write-back) run from a content repo's cwd; they resolve content paths via `blogPaths.ts`
 - `specs/` — local copies of the W3C specs referenced above
+- `templates/content-repo/` — the canonical starter a new blog copies: thin `index.ts`/`worker.ts`/`wrangler.toml`, `package.json` (with the `file:` dep + per-blog scripts), a sample post + figure, and the `process-comments` skill. `personal-blog` is a real instance of this template
+
+The engine has **no `posts/`, `index.html`, `generated/`, or `client/figures/`** — those are content. It is not a deployable blog by itself; the `dev`/`build`/`deploy`/`generate` scripts live in each *content* repo's `package.json`, not here (here we keep only `test`).
+
+### Content repo (e.g. `personal-blog`)
+
+One git repo per blog, depending on the engine via `"presidocs": "file:../presidocs"`:
+
+- `index.ts` / `worker.ts` — thin wrappers: import the engine factory + this blog's static post bundles (`.generated/postRoutes.ts`) / build-time maps (`.generated/`), and call it
+- `wrangler.toml` / `.env` — per-blog deploy config (worker name, R2 bucket) and secrets
+- `engine` — a symlink to `node_modules/presidocs`, so a post can reference engine assets as `../engine/client/narrator.ts` and Bun's bundler resolves + bundles them into same-origin (`'self'`) assets. The engine's own deps (shikwasa, Automerge, …) resolve from the engine's `node_modules` via the symlink; the content repo only declares deps its *own* authored code uses (e.g. `gsap` for figures)
+- `posts/` — authored inputs (one HTML file per post + the shared `common-terms.pls` lexicon + the generator-managed `versions.json`)
+- `figures/` — this blog's animated figures (`<name>.{ts,css}`). Content, not engine: each post references them relatively and Bun bundles them transitively, so the engine never enumerates them
+- `index.html` — the landing page
+- `voices/` — the author's voice-clone reference clip(s) for production TTS (`.env`'s `MOSS_TTS_VOICE` points here)
+- `generated/` — pipeline output: audio, manifests, the dev comment store (gitignored)
+- `.generated/` — per-build maps + dev route table the engine codegens emit (gitignored; regenerated by `dev`/`build`)
+- `.claude/skills/process-comments/` — the in-session comment-applying workflow (a content-repo concern; it edits `posts/<slug>.html`)
 - `research/` — **authoring inputs that are never published**: the context that helps generate a post — committed so it lives in git history (unlike `generated/`), but kept out of `posts/` because `posts/` is the *published* surface. **One self-contained folder per investigation** (e.g. `research/dexie-offers/`), so a reader can follow the whole thing — code, prose, and committed data — in one place rather than chasing it across the tree. The internal layout for a code-heavy investigation:
   - `README.md` — the entrypoint: dataset provenance, how to reproduce, open threads
   - `pipeline/` — data acquisition + substrate build (crawlers, `build-*.sql`)
@@ -44,7 +66,7 @@ Each top-level folder is one concern, so finding code is "pick the folder that m
   - `findings/` — prose, one `NN-*.md` per thesis, with committed chart inputs under `findings/data/`
   - `sources/` — downloaded external docs we want offline (verbatim or clearly-labelled summaries)
 
-  Heavy/regenerable artifacts (multi-GB dumps, DuckDB, parquet) stay in the gitignored `generated/` at repo root; the README documents the path mapping. Scripts are run from the repo root, so their cwd-relative `generated/…` paths resolve regardless of where the script file lives. Keep each investigation scoped to its own topic so it doesn't pollute an unrelated one (e.g. the dexie dataset stays about dexie/Chia, not the post's broader subject).
+  Heavy/regenerable artifacts (multi-GB dumps, DuckDB, parquet) stay in the gitignored `generated/` at repo root; the README documents the path mapping. Scripts are run from the content-repo root, so their cwd-relative `generated/…` paths resolve regardless of where the script file lives. Keep each investigation scoped to its own topic so it doesn't pollute an unrelated one (e.g. the dexie dataset stays about dexie/Chia, not the post's broader subject).
 
 Folder boundaries follow runtime/process boundaries (offline build vs. browser runtime vs. authored input vs. derived output), not file kind — co-locate types and tests with the code that owns them rather than splitting them into `types/` or `tests/`.
 
@@ -119,6 +141,20 @@ None of our engines have a native PLS API: `say` ignores PLS outright, and MOSS 
 
 **Cache interaction.** The merged local lexicon XML is in the [TTS cache key](#audio-caching), so a substituted segment is correctly re-synthesized when the post's inline lexicon changes, but `common-terms.pls` is *excluded* from the key
 
+#### Sound test (dev-only pronunciation audition)
+
+Tuning a respelling is a *listening* loop — the bar is "one obvious reading," and the only way to know you've cleared it is to hear MOSS read the term. Doing that inside a post is awkward: the term is buried in a paragraph, and `common-terms.pls` is [excluded from the TTS cache key](#audio-caching), so editing a shared alias doesn't even re-synthesize the segments that use it. The **sound test** is the dedicated surface for this: a dev-only page at **`/dev/sound-test`** that lists every lexeme in `common-terms.pls`, plays the production-voice (MOSS) audio for each, and lets the author re-roll any that come out wrong — the audition counterpart to [per-segment regeneration](#per-segment-regeneration-dev-author-only), but for the cross-post lexicon rather than a post's segments.
+
+Mechanically it mirrors the per-segment re-roll, with one deliberate inversion of the cache rule:
+- **It synthesizes the already-substituted pronunciation text directly** (the `<alias>`, or `<phoneme>` wrapped in `/.../` on an IPA engine), not the grapheme + a lexicon. For a standalone term that's byte-identical to what `applyLexicon` would hand the engine, and it makes the audio's *identity* the respelling itself.
+- **So its store keys on that text — the opposite of the post cache, on purpose.** The post pipeline excludes `common-terms.pls` from its key (so one shared edit doesn't invalidate every post). That's exactly wrong for an audition tool: editing a respelling *should* change its audio. So the sound test uses a **separate** store, `generated/.sound-test/<hash>.wav`, where the hash includes the voice identity *and* the synth text. Edit an alias → new hash → no file → the page shows it as "not generated" and offers a button; the stale file is swept on the next full run. (The `.`-prefix keeps it clear of `clean.ts`, which skips hidden dirs, and of `copy-static`'s prod glob.)
+- **Heavy work stays offline, exactly like regenerate.** The page's buttons hit dev-only endpoints (`server/soundTest.dev.ts`) that shell out to the offline `generate/sound-test.ts` (loads the multi-GB MOSS model, writes the WAVs) and report progress via the same async start-then-poll job pattern as `/dev/regenerate`. `--all` loads the model once and renders every missing/stale lexeme in one pass; a per-row click re-rolls one. The endpoints are imported only by `createDevServer.ts` (never the Worker), and POST is gated behind a logged-in session.
+- **Audio is cache-busted by file mtime.** A re-roll produces new bytes under the *same* content-hash filename (same synth text), so the page appends `?v=<mtime>` when loading a clip — sidestepping Chrome's sticky `<audio>` media cache, the same hazard the post track solves by [hashing the filename](#serving-generated-audio-content-hashed-filenames--dev-range-support).
+
+Auditioning *every* word at once is also what surfaced the [leading-silence guard](#generation-pipeline): the page made it obvious that every term starting with "S" lost its onset, because the per-word trim ran the soft fricative straight into `silencedetect`'s amplitude threshold. The fix lives in the shared `leadingSilenceTrimMs`, not here — the sound test trims through the same guarded path the post pipeline does (for a one-word clip the lead is almost always within the guard, so nothing is trimmed).
+
+The page is an engine surface (it discovers the lexicon by convention at `posts/common-terms.pls`, never naming a post), so every blog built on the engine gets it for free; `bun run sound-test` renders the whole lexicon from the CLI for the same result without the page.
+
 ### Connecting spoken text to blog content
 
 We want our spoken text to be able to highlight different parts of the HTML document that it is referring to. Essentially, listening to the audio should eventually take you down the entire blog (auto-scroll)
@@ -160,13 +196,14 @@ Therefore, we split these concerns into two steps:
 - `silence`: insert silence as needed. A short `--segment-gap` (default 200ms) of silence is spliced between adjacent segments and between chapters at concat time, since TTS engines leave little/no pause of their own (especially under continuation prompting) and back-to-back sentences feel rushed. Mark/chapter times are computed against this gapped layout so highlighting stays in sync; `--segment-gap=0` disables it.
 - `duration`: gets the duration of the audio file
 - `concat`: combine audio buffers (note: ideally lossless to avoid re-encoding causing audio loss and no disk round-trip, but this is format-specific)
-- `leadingSilenceMs`: how long the leading silence is in the audio (some audio-generating tools start with a lot of leading silence, making concatenation sound awkward)
-- `trim`: trim the start of an audio file (usually used to remove leading silence)
+- `leadingSilenceMs`: how long the leading silence is in the audio (some audio-generating tools start with a lot of leading silence, making concatenation sound awkward). This is the raw `silencedetect` measurement — *where the engine thinks speech begins*.
+- `leadingSilenceTrimMs`: how much leading silence it's actually *safe* to trim — and the value callers feed to `trim`, **not** the raw `leadingSilenceMs`. It's `max(0, leadingSilenceMs − guard)` for a guard (1s today, `LEADING_TRIM_GUARD_MS`). The guard exists because `silencedetect` is an *amplitude* detector: a quiet word-initial fricative (the "s" of "Swap", the "sh" of "shah") sits below the threshold, so the detected onset lands at the louder vowel *after* it. Trimming exactly to that onset clips the fricative — the bug that made every term starting with "S" lose its start. So we trim to a cushion *before* the onset instead, and trim nothing when the onset is already within the guard. The cost is up to `guard` ms of retained leading silence, accepted because a brief lead-in is harmless next to swallowing the first phoneme; the guard only needs to exceed the longest plausible soft onset (~250ms), so 1s is deliberately generous (tune it down if a leading beat on chapter seeks becomes noticeable). Both `generate.ts` (per chapter) and the [sound test](#sound-test-dev-only-pronunciation-audition) (per word) trim through this one guarded path, so neither special-cases the fix.
+- `trim`: trim the start of an audio file (the duration comes from `leadingSilenceTrimMs`).
 - `encode`: encode to the final audio format served to the user
 
 Every operation except `concat` is implemented as a shell-out to `ffmpeg` / `ffprobe`. `concat` stays as an in-memory byte-splice because ffmpeg's concat demuxer can't take multiple stdin pipes
 
-The final audio format we serve to users is `mp3` (64 kbps mono, benefiting from its small size, and the fact that audio quality loss is not meaningful on spoken audio).  We try to avoid re-encoding many times to avoid accumulated quality loss — concat operates on the working PCM and the final mp3 encode happens once at the end.
+The final audio format we serve to users is `mp3` (64 kbps mono, benefiting from its small size, and the fact that audio quality loss is not meaningful on spoken audio).  We try to avoid re-encoding many times to avoid accumulated quality loss — concat operates on the working PCM and the final mp3 encode happens once at the end. The encoded track is written under a **content-hashed filename** (`full.<hash>.mp3`) so its URL changes whenever the bytes change; see [Serving generated audio](#serving-generated-audio-content-hashed-filenames--dev-range-support).
 
 **The mp3 encode writes its output to a seekable temp file, not `pipe:1`** — the one ffmpeg op besides the WAV ops above that *must* round-trip through disk, for the same non-seekable-pipe reason. libmp3lame reserves a **Xing/Info** header in the first frame (it carries the total frame count, i.e. the exact duration) and backfills it once encoding finishes, which needs a seek back to the start of the output. On a pipe ffmpeg silently drops it, producing an mp3 with no duration tag — the browser then can't know the length until the whole file buffers, so `HTMLMediaElement.duration` is `Infinity`, and Shikwasa reads that as an unbounded stream and shows **"LIVE"** instead of the time remaining (its own getter prefers the live `<audio>` element's duration over the value we pass it, so handing Shikwasa the manifest duration isn't enough — the file itself has to carry the header). Writing to a real file lets the header land. A unit test asserts the header's presence so this can't silently regress.
 
@@ -244,9 +281,9 @@ To force re-synthesis without losing post artifacts, wipe `generated/.tts-cache/
 
 MOSS is probabilistic (high `audio_temperature`), so a term can synthesize correctly nine times and mangle the tenth — a clean take never proves the next one is safe. The author therefore needs to **re-roll a single segment until it sounds right**, without re-rendering the post. That's a button on each segment in the [spoken-script drawer](#player--sync-clientnarratorts).
 
-The mechanism reuses the cache rather than inventing an isolated render path — because there *can't* cleanly be one: segment durations cascade (change one segment's length and every later mark time in its chapter, and every later chapter's start, shift, and `full.mp3` must be re-concatenated). So "regenerate this segment" is really *"force-resynthesize one segment, then rebuild the whole post"* — which is cheap, because every *other* segment is an instant cache hit and only the chosen one calls MOSS:
+The mechanism reuses the cache rather than inventing an isolated render path — because there *can't* cleanly be one: segment durations cascade (change one segment's length and every later mark time in its chapter, and every later chapter's start, shift, and the `full.<hash>.mp3` track must be re-concatenated — and its hash, hence its URL, changes). So "regenerate this segment" is really *"force-resynthesize one segment, then rebuild the whole post"* — which is cheap, because every *other* segment is an instant cache hit and only the chosen one calls MOSS:
 
-- **`generate --force-mark=<name>`** maps the mark to its segment text and passes a `forceResynthesize` predicate to the cache wrapper (`tts-cache.ts`). A matching segment bypasses the cache *hit*, re-synthesizes a fresh take, and **overwrites** the stored bytes — so the accepted re-roll becomes the cached one. Everything else hits. The manifest + `full.mp3` are rebuilt normally.
+- **`generate --force-mark=<name>`** maps the mark to its segment text and passes a `forceResynthesize` predicate to the cache wrapper (`tts-cache.ts`). A matching segment bypasses the cache *hit*, re-synthesizes a fresh take, and **overwrites** the stored bytes — so the accepted re-roll becomes the cached one. Everything else hits. The manifest + `full.<hash>.mp3` are rebuilt normally (the new track gets a new hash; the prior one is swept).
 - **`POST /dev/regenerate?post=<path>&mark=<name>`** (`server/regenerate.dev.ts`) shells out to that command with `--tts=moss`. It's **dev-only** (imported only by `index.ts`, absent from `worker.ts`) because it runs the build pipeline and loads the multi-GB model — a trusted-localhost operation, exactly what the [dumb-edge-server rule](#repository-layout) exempts — and **author-only** (the same server-authoritative `isPostAuthor` check the [version endpoint](#document-version-clientpostversionts-serverpostversionsroutets) uses). There's no per-click `--voice`, so it relies on **`MOSS_TTS_VOICE`** in `.env` for the clone reference (same as `generate:prod`); without it the spawn errors out at the provider's reference-clip check. It's **async by design**: a full render is minutes — longer than `Bun.serve`'s idle timeout, and even a one-segment re-roll exceeds it because the MOSS model load alone does — so awaiting the subprocess inside the request would get the connection killed mid-run while the child kept going. Instead POST *starts* the job and returns `202`; **`GET /dev/regenerate`** reports `{ running, ok?, error? }`, and the client polls it. Single-flight (one model load at a time; concurrent POST → 409).
 - **Cold-cache caveat.** The button is "one segment fast" only when the rest of the post is already cached for the *current* voice + lexicon. Because the voice is part of the [cache key](#audio-caching), clicking it after a voice change (or before any full render with this voice) silently becomes a *full* re-synthesis of every segment. So the intended workflow is: one `generate:prod` to settle the post at its final voice, *then* per-segment re-rolls.
 - **The client button** (`client/narrator.ts`) is injected per segment only when `location.hostname` is localhost *and* `/post-version` reports `isAuthor` — ordinary readers short-circuit before any fetch and never see it. It POSTs to start, then **polls** until the job finishes, so the spinner tracks the actual render rather than a connection that times out (the earlier bug: the spinner cleared at the idle timeout while generation silently continued, so stopping the dev server then killed the run mid-write). On success it sets the URL hash to the segment and hard-reloads: the rebuilt manifest + audio (served `no-cache` in dev) are picked up cleanly, the drawer reopens on that segment, and the author presses play to judge the new take. A full reload (rather than surgically swapping Shikwasa's source) is deliberate — it's bulletproof, and the per-click model-load latency already dwarfs it.
@@ -298,8 +335,18 @@ Key architectural things to make this work properly:
 ## Manifest format (`generated/<slug>/manifest.json`)
 
 - Times are **absolute milliseconds** in the master track (the player never needs to know that the audio was assembled from per-chapter files)
-- `audio` is a path under `/generated/<slug>/`; Content-Type is inferred
+- `audio` is a path under `/generated/<slug>/`, pointing at the **content-hashed** final track (`full.<hash>.mp3`, see [Serving generated audio](#serving-generated-audio-content-hashed-filenames--dev-range-support)); Content-Type is inferred
 - The time of different marks is calculated taking into account trimming out silent audio (to avoid slowly going out of sync)
+
+## Serving generated audio (content-hashed filenames + dev range support)
+
+The final per-post track is written as **`full.<hash>.mp3`** — a 16-hex-char content hash of the encoded bytes is baked into the filename, and the manifest's `audio` URL points at that hashed name. This is the **cache-busting contract for both dev and prod**: the URL changes whenever the audio changes, so a regenerated track is *always* fetched fresh, while an unchanged track can be cached indefinitely. The client is unaffected — it only ever reads `manifest.audio`, so the scheme is invisible to the player; `copy-static` ships the hashed file through its existing `*.mp3` glob, and `clean` removes it with the whole `generated/<slug>/` dir.
+
+**Why hash the filename rather than tune cache headers.** The motivating bug: a regenerated `full.mp3` (stable name) wouldn't play even after a hard-refresh. Chrome keeps a **dedicated media cache** for `<audio>` that `Cmd+Shift+R` does *not* evict, and `Cache-Control: no-cache` *without* a validator (ETag/Last-Modified) doesn't reliably dislodge it either — so the browser kept replaying the stale bytes. A small track (a short post) happened to play from cache regardless, masking it; a 19 MB / 40-min track did not, which is why the bug looked post-specific. Content-hashing sidesteps the whole class: a fresh URL is in *no* cache (browser, media, or CDN), so correctness no longer depends on revalidation headers anyone can misconfigure. Each generate run also **sweeps** the superseded `full.*.mp3` (and any legacy unhashed `full.mp3`) so stale tracks don't pile up across dev iterations or get shipped to prod by `copy-static`'s glob.
+
+**The manifest stays stable-named** (`manifest.json`) — it's the indirection that carries the current hash. It's fetched via `fetch()`, not a media element, so it isn't subject to the sticky media cache; the dev server serves it (and everything under `/generated/`) with **`Cache-Control: no-store`** so the player always sees the latest hash, and prod's CF Static Assets binding revalidates it by ETag. So `no-store` in dev now protects the *manifest*, not the audio — the audio's freshness comes from its hashed name.
+
+**Dev server HTTP range support.** A browser media element won't *begin* playing a large audio resource it can't seek into — it needs `206 Partial Content` with `Accept-Ranges`. The dev file server (`serveFromDir` in `createDevServer.ts`) therefore honors `Range` requests (suffix `bytes=-N` and open-ended `bytes=N-` included), returning `206` with `Content-Range`/`Content-Length`, else a full `200` carrying `Content-Length` + `Accept-Ranges`. Without it a multi-MB track is served as one unbounded chunked stream with no length, which Chrome refuses to start (small files worked anyway because the browser buffers them whole). Prod (CF Static Assets) already supports ranges, so this keeps dev aligned with prod — the same reason a `--mock`/`say` draft and a MOSS render must both behave the same under the player.
 
 ## Comments (`client/comments.ts`)
 
@@ -546,7 +593,7 @@ Each post has a content hash — SHA-256 of the source HTML bytes — that the b
 - Source: `posts/<slug>.html` raw bytes.
 - Hash: `SHA-256` (browser-native; same `crypto.subtle.digest` available in Workers and Node, identical bytes).
 - History: `posts/versions.json` (committed to git). The build script `generate/post-versions.ts` reads each post, computes its current hash, and *prepends* a new entry to `versions.json` for any post whose hash differs from its most-recent recorded one. Idempotent — running `bun run build` twice without editing a post is a no-op.
-- Same script also writes `server/postVersions.generated.ts` (an importable static map) for the Worker bundle.
+- Same script also writes the content repo's `.generated/postVersions.ts` (an importable static map) for the Worker bundle.
 
 **Dev parity:** `server/postVersions.dev.ts` recomputes the current hash from the source files at startup (so a fresh edit shows up without rerunning `bun run build`), and reads history from `posts/versions.json`. If the dev-computed current hash doesn't match the most-recent entry in `versions.json` (the author edited but hasn't built), we synthesize an in-memory "now" entry at the head of the history so the panel reflects the actual on-disk state. Not persisted — the build script remains the only writer.
 
@@ -561,6 +608,7 @@ Each post has a content hash — SHA-256 of the source HTML bytes — that the b
 - **Cross-linking** between card and anchor: clicking a highlight scrolls its card into view and pulses it; clicking a card (anywhere outside its buttons / textarea) scrolls the article to the anchor and pulses the highlight.
 - **Highlight color** is soft blue (`rgba(88, 166, 255, 0.22)`), deliberately not yellow — narration already paints the active sentence yellow/orange, and a sentence that's both being read and commented needs to be visually unambiguous. Nested highlight spans (overlapping threads) naturally compose to a darker blue, which reads as "denser commentary here."
 - **Layout reservation.** When the column is visible (≥1100px viewport) `body { padding-right: 360px }` shifts the centered article left so the column has a clean gutter to live in. The narration dock stays viewport-centered and so no longer sits dead-center under the article when the column is showing; that visual mismatch is mild enough to ignore for v1.
+- **Author-only thread-id tag.** Each saved card shows its `threadId` as a small monospace chip pinned to the left of the action row (`margin-right: auto`, so the Hide / Resolve / Reply buttons stay grouped on the right) — but only for the post author, gated on the same server-authoritative `isAuthor` flag the [version endpoint](#document-version-clientpostversionts-serverpostversionsroutets) reports; readers never render it, and drafts skip it since they aren't exported yet. It exists to close the loop with [`process-comments`](#ai-assisted-authoring-authoring): the skill reports verdicts keyed by that id (`Thread #N (id=<threadId>)` — the same id baked into the `urn:blog:<slug>:thread:<id>` IRI and accepted by `resolve-threads`), but the id appeared nowhere on the page, so the author couldn't match a printed id back to the visual card it belongs to. Clicking the chip copies the id to the clipboard.
 
 ### Lifecycle: Hide vs Resolve
 
@@ -725,7 +773,7 @@ The Cloudflare-canonical move would be to store the author's stable `<provider>:
 We picked email anyway, because:
 - **The author already knows their email.** Looking up your `sub` requires signing in once and reading `/auth/me`; pasting your email in a meta tag doesn't.
 
-The spam concern is mitigated by the build pipeline: the meta tag exists in **source** HTML (the author edits it there; the generator reads it there) but is **stripped from the served HTML** during the build process (crawlers hitting prod see no `author-email` tag). The server-side author lookup doesn't depend on the tag being in the served response — it reads the source HTML at build time (via `server/postMeta.generated.ts`) or dev startup (via `server/postMeta.dev.ts`), so dropping it from the response is purely cosmetic.
+The spam concern is mitigated by the build pipeline: the meta tag exists in **source** HTML (the author edits it there; the generator reads it there) but is **stripped from the served HTML** during the build process (crawlers hitting prod see no `author-email` tag). The server-side author lookup doesn't depend on the tag being in the served response — it reads the source HTML at build time (via the content repo's `.generated/postMeta.ts`) or dev startup (via `server/postMeta.dev.ts`), so dropping it from the response is purely cosmetic.
 
 **Client-side author detection** can't read the stripped tag in prod, so it instead reads the server-computed `isAuthor` boolean returned by `GET /post-version?post=X`. Every author-only client surface (the aggregator, the resolve-foreign-thread button, the version history panel) gates on this single signal. The post-version endpoint is fetched once at boot before any author-only decisions are made; failure to fetch defaults to non-author, matching the safe-degrade behavior elsewhere.
 
@@ -757,10 +805,11 @@ The comment system isn't just a feedback channel — it's the authoring interfac
 
 The skill (`.claude/skills/process-comments/SKILL.md`) runs inside an ordinary interactive Claude Code session and drives:
 
-1. **Fetch** the open comments — `bun authoring/exportAnnotations.ts <slug>` — as a Web Annotation `AnnotationCollection` (see [Inputs the skill sees](#inputs-the-skill-sees)).
-2. **Read the editing rules** (`authoring/authoringRules.md`) and the post, then **edit `posts/<slug>.html` in place**.
-3. **Report a verdict per thread** (`APPLIED | PARTIAL | NOTE-ONLY`) and **pause for the author** to review (`git diff`), request changes, or ask for another pass.
-4. On the author's sign-off, **resolve the `APPLIED` threads** — `bun authoring/resolveThreads.ts <slug> <id…>` (see [Resolution write-back](#resolution-write-back-resolve-iff-shipped)).
+1. **Sync down** the production comments — `bun run pull-comments <slug>` — so the local store mirrors what readers actually left (see [Syncing production comments](#syncing-production-comments-authoringr2syncts)). On a not-yet-published / localhost-only post there's nothing in R2 and this is a harmless no-op.
+2. **Fetch** the open comments — `bun authoring/exportAnnotations.ts <slug>` — as a Web Annotation `AnnotationCollection` (see [Inputs the skill sees](#inputs-the-skill-sees)).
+3. **Read the editing rules** (`authoring/authoringRules.md`) and the post, then **edit `posts/<slug>.html` in place**.
+4. **Report a verdict per thread** (`APPLIED | PARTIAL | NOTE-ONLY`) and **pause for the author** to review (`git diff`), request changes, or ask for another pass.
+5. On the author's sign-off, **resolve the `APPLIED` threads** — `bun authoring/resolveThreads.ts <slug> <id…>` — and **push the resolutions back** — `bun run push-resolutions <slug>` — so production hides them for the original commenters (see [Resolution write-back](#resolution-write-back-resolve-iff-shipped)).
 
 ### Why local tooling, not in-Worker or the browser
 
@@ -797,13 +846,24 @@ A dry-run diagnostic, `bun authoring/listUnresolved.ts <slug>`, prints the same 
 
 ### What gets filtered out
 
-The loader walks the same store the in-browser author aggregator does (`generated/.comments-dev/` in dev; R2 in prod, currently fetched via `wrangler r2 object sync` before running). For each user it replays every `.bin` change-object against the shared seed (see [Storage layer](#storage-layer-clientcommentsstorets)), then drops:
+The loader walks the local dev store (`generated/.comments-dev/`) directly — it never talks to R2. For a published post, `bun run pull-comments <slug>` mirrors the live comments into that store first (see [Syncing production comments](#syncing-production-comments-authoringr2syncts)). For each user it replays every `.bin` change-object against the shared seed (see [Storage layer](#storage-layer-clientcommentsstorets)). It then **cross-merges replies across every reader's blob**: a thread object lives only in its *creator's* blob, but replies to it can live in any blob — most importantly the author's own replies left on a *reader's* thread — so replies are bucketed by thread id globally before assembly, mirroring the browser aggregator's `merge(doc, …others)` read ([Sync](#sync-clientcommentssyncts-clientcommentsaggregatorts)). (Per-*blob* bucketing instead would silently drop every author-on-reader reply — exactly the divergence this guards against; the loader's job is to mirror the aggregator, not re-derive a narrower view.) From that merged set it drops:
 
 - Threads with `resolvedAt !== undefined` (self-resolve).
 - Threads whose id appears in the per-post resolutions namespace (author-resolve — see [Author-resolution](#author-resolution-clientresolutionsstorets-servercommentsresolutionsroutests)).
 - Threads with zero live (non-tombstoned) replies — defensive against malformed blobs; the auto-resolve in `deleteReply` should already cover this.
 
 What's left is what Claude sees — never a thread already addressed.
+
+### Syncing production comments (`authoring/r2Sync.ts`)
+
+The loader and the resolution write-back both speak only to the local `.comments-dev/` store — by design ([Why local tooling](#why-local-tooling-not-in-worker-or-the-browser)). For a published post, two thin sync steps bridge that store to the production R2 bucket:
+
+- `bun run pull-comments <slug>` — mirror the live comment change-objects (and any existing resolutions) **down** into `.comments-dev/`, run before exporting.
+- `bun run push-resolutions <slug>` — mirror this post's resolution envelopes **up** to R2, run after the author signs off.
+
+**Why it isn't `wrangler r2 object sync`.** There is no such command — `wrangler r2 object` only does single-key `get`/`put`/`delete`, and the v4 REST API can't list a bucket's objects. The only way to reach R2 with the author's *existing* `wrangler deploy` OAuth login — no separate S3 credential to mint and store — is a Worker bound to the bucket. So `r2Sync.ts` writes a throwaway wrangler config that points a `COMMENTS` binding at the bucket named in the content repo's own `wrangler.toml`, runs the tiny `authoring/r2SyncWorker.ts` under `wrangler dev --remote` (which binds to the *production* bucket), talks to it over `127.0.0.1` for a few seconds — `LIST` + `GET` to pull, `PUT` to push — then kills it. The worker is never deployed.
+
+This is exactly the localhost-exempt "smart" tool the dumb-edge-server rule allows ([Why local tooling](#why-local-tooling-not-in-worker-or-the-browser)): it merges nothing, it just shuttles opaque content-addressed bytes. Two safety properties fall out of the data model: **pull is additive and never deletes** (comment change-objects are immutable and resolutions only grow) and is scoped to the one slug, so other posts' local data is untouched; **push is fenced to `resolutions/` keys**, so the only thing ever written back is the author's own resolution envelopes — reader-owned comment blobs can't be overwritten.
 
 ### The editing rules (`authoring/authoringRules.md`)
 
@@ -826,7 +886,7 @@ Two rules keep it honest:
 - **Only `APPLIED` resolves.** `PARTIAL` (addressed *some* of the thread) and `NOTE-ONLY` (flagged for the author rather than edited) stay open — the verdict is the skill's own self-assessment, not ground truth, so the author resolves those manually after follow-up.
 - **Resolve only after the edit shipped.** Resolution means "this feedback landed in `posts/<slug>.html`." Because the skill edits in place and resolves only on the author's sign-off, a thread is resolved *if and only if* the edit it triggered is actually in the file — there's no draft-rejected window where a thread could look closed without its content shipping.
 
-Resolutions land in the local dev store (`generated/.comments-dev/resolutions/`); the author pushes them to R2 alongside the next deploy (`wrangler r2 object put …`, symmetric with the `wrangler r2 object sync` used to fetch comments). A first-class R2 push step is a follow-up. Resolving is *not* bundled with a version bump — the post content-hash is recorded by `generate/post-versions.ts` on the next `bun run build`, which also arms readers' "doc changed" banner ([Document version](#document-version-clientpostversionts-serverpostversionsroutets)).
+Resolutions land in the local dev store (`generated/.comments-dev/resolutions/`); `bun run push-resolutions <slug>` mirrors them up to R2 (see [Syncing production comments](#syncing-production-comments-authoringr2syncts)), symmetric with the pull that fetched the comments. Resolving is *not* bundled with a version bump — the post content-hash is recorded by `generate/post-versions.ts` on the next `bun run build`, which also arms readers' "doc changed" banner ([Document version](#document-version-clientpostversionts-serverpostversionsroutets)).
 
 ### Decided against — surfacing per-iteration AI history in the browser
 
@@ -834,8 +894,6 @@ We considered capturing each intermediate AI pass as a browsable version (a "sho
 
 ### Excluded from v1
 
-- **R2 fetch from the loader.** Currently reads only the local dev store. Pulling prod comments is one `wrangler r2 object sync` away today; an R2 adapter shaped like `server/comments/r2Adapter.ts` is a follow-up.
-- **R2 push for resolutions.** Symmetric to the read side; `resolveThreads.ts` writes into `generated/.comments-dev/resolutions/`, and the author pushes them with `wrangler r2 object put` until the sync step is automated.
 - **Chained audio regeneration.** `bun run generate` does this already; folding it into the comment-processing loop would be a convenience but has its own (multi-minute) latency story, and the author often wants to verify the prose before paying that cost.
 - **Reply-back to commenters.** A future flow could have the skill propose responses for the author to send via email; deferred until outbound email is wired up (see [Future direction: Web Push notifications](#future-direction-web-push-notifications)).
 - **Multi-post sessions.** One post per skill invocation. Cross-post consistency (e.g. updating a shared intro across a series) is a manual loop today.
@@ -924,6 +982,23 @@ To know which posts are getting traffic, the build step also injects Cloudflare'
 
 All OAuth client secrets and `SESSION_SECRET` (or `SESSION_SECRETS=v1:…,v2:…` for [key rotation](#sessions-jwt-cookie-hs256-jose)) live in Cloudflare's encrypted secret store (`wrangler secret put ...`), *not* in `wrangler.toml`. Names line up with the dev `.env`, so the route handlers read the same `process.env.*` / `env.*` regardless of runtime.
 
+**`.env` is dev-only and is never uploaded to Cloudflare — this is the easy-to-miss step when standing up a new blog.** Bun auto-loads `.env` on localhost, so dev "just works" and gives the false impression the credentials are configured everywhere. In production `process.env` is populated *only* from `[vars]` in `wrangler.toml` plus whatever has been pushed with `wrangler secret put` — the file on disk is invisible to the Worker. Because the OAuth providers are constructed lazily ([`server/auth/providers.ts`](#commenting-as-a-core-feature) — `required()` throws on first use, not at boot), a blog with no secrets set deploys cleanly and serves fine until the *first login attempt*, which fails with `auth misconfigured: GOOGLE_OAUTH_CLIENT_ID env var is required for OAuth`. That deferred failure is the symptom of a fresh deploy that copied the dev `.env` but never ran `secret put`.
+
+So **a new blog's deploy checklist is two commands plus pushing every secret once**:
+```sh
+bun run build && wrangler deploy                  # the two-command deploy (see Deploy unit)
+for k in SESSION_SECRET \
+         GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET \
+         MICROSOFT_OAUTH_CLIENT_ID MICROSOFT_OAUTH_CLIENT_SECRET \
+         OAUTH_REDIRECT_BASE; do
+  printf %s "$(grep -m1 "^$k=" .env | cut -d= -f2-)" | wrangler secret put "$k"
+done
+wrangler secret list                              # verify all are present
+```
+(`printf %s` avoids baking a trailing newline into the secret value.) `OAUTH_REDIRECT_BASE` must be the public origin, e.g. `https://blog.example.com`, since the provider redirect URIs are derived from it ([`redirectUri()`](#commenting-as-a-core-feature)); `BLOCKED_USERS` and `VAPID_PRIVATE_KEY` are set the same way if/when those features are used. `CF_ANALYTICS_TOKEN` is the deliberate exception — it's public config, not a secret, and stays in `.env` ([Analytics](#analytics-cloudflare-web-analytics)). **Setting a secret redeploys the running Worker immediately**, so no separate `wrangler deploy` is needed after a `secret put`.
+
+The matching **provider-side** step is registering each redirect URI (`<OAUTH_REDIRECT_BASE>/auth/<provider>/callback`) in the Google Cloud OAuth console and the Microsoft Entra app registration — a `redirect_uri_mismatch` at login means that registration is missing, distinct from the missing-secret error above (both the localhost and prod URIs must be registered; see the [runtime-split table](#runtime-split)).
+
 ### Why not KV
 
 Cloudflare's **Workers Rate Limiting API** does the same job with substantially less code we have to own:
@@ -972,7 +1047,9 @@ Stacked together: a max-rate attacker on a fresh account can write at most 10 ch
 
 The request-auth + validation layer above is about *who can write what*. The response-header layer is the orthogonal floor for an OAuth-gated UGC system that renders reader comments into the article page: the threats it addresses are **XSS via comment content** (every interpolation point uses `textContent` today, but a CSP is the defense-in-depth against a future regression) and **clickjacking of the OAuth flow**. The session cookie flags are already correct (`HttpOnly; Secure` (prod); `SameSite=Lax` — see [Sessions](#sessions-jwt-cookie-hs256-jose)); this is purely additive at the response layer.
 
-**One shared module, two runtimes.** `shared/securityHeaders.ts` exports `withSecurityHeaders(res, { private })`, imported by both `worker.ts` and `index.ts` — the same dev/prod-parity pattern the handlers use. In the **Worker** it wraps *every* response: API routes are wrapped `{ private: true }`, and the `ASSETS.fetch` fall-through (which serves the **article HTML** — see [Static vs dynamic content](#static-vs-dynamic-content)) is wrapped public, so the document CSP genuinely takes effect in prod.
+**One shared module, two runtimes.** `shared/securityHeaders.ts` exports `withSecurityHeaders(res, { private })`, imported by both the content repo's `worker.ts` (via `createWorker.ts`) and dev server (via `createDevServer.ts`) — the same dev/prod-parity pattern the handlers use. In the **Worker** it wraps *every* response: API routes are wrapped `{ private: true }`, and the `ASSETS.fetch` fall-through (which serves the **article HTML** — see [Static vs dynamic content](#static-vs-dynamic-content)) is wrapped public, so the document CSP genuinely takes effect in prod.
+
+> **`run_worker_first = true` is mandatory for the above to hold (`wrangler.toml` → `[assets]`).** This bit us on the first real deploy. With the modern Workers Static Assets binding, the **default is that Cloudflare serves a matching static asset directly and never invokes the Worker** — so the article HTML/JS/CSS would go out with *no* security headers (the API routes, which always run the Worker, would carry the CSP; the documents would not — a silent, easy-to-miss split). Setting `run_worker_first = true` makes the Worker run on every request; it then fetches the asset via `env.ASSETS.fetch` and wraps it, which is the only way the `ASSETS.fetch` fall-through above is actually reached. Verify after any deploy with `curl -sD- -o/dev/null <url>/posts/<slug> | grep -i content-security-policy` — an empty result means the Worker is being bypassed. This lives in each *content* repo's `wrangler.toml` (and the `templates/content-repo/` starter), since that's where the deploy config lives.
 
 **The dev asymmetry worth knowing.** `Bun.serve`'s `routes` serves the two HTML pages (`/` and the post) as `HTMLBundle` values, not functions, and there's no response-header hook for them — so they **cannot be wrapped**. The Bun dev server therefore applies headers only to the *function*-style routes (auth, comments, `/post-version`, the generated-asset + WASM routes); the two HTML routes go out bare. Consequence: **the document CSP is verified against `wrangler dev` / a deploy, not the Bun dev server.** This is convenient, not just tolerable — it also means Bun's HMR injecting its own inline `<style>`/`<script>` into those HTML routes never trips the policy, so `style-src`/`script-src` stay tight (`'self'`) in both runtimes with no dev-only carve-out.
 
