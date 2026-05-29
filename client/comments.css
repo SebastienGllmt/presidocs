@@ -501,6 +501,38 @@ body.cmt-identity-dismissed .cmt-identity { display: none; }
   text-transform: uppercase;
 }
 
+/* Author-only "N unresolved comments" badge. Sits below the version
+   history. Clicking cycles through unresolved threads in document
+   order; the disabled "All comments resolved" variant looks the same
+   minus the affordance. */
+.cmt-unresolved-count {
+  pointer-events: auto;
+  display: block;
+  width: 100%;
+  background: var(--cmt-bg);
+  border: 1px solid var(--cmt-border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  font: 600 12px/1.4 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  color: var(--cmt-fg);
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.cmt-unresolved-count[data-state="pending"] {
+  background: #fef3c7;
+  border-color: #fcd34d;
+  color: #78350f;
+}
+.cmt-unresolved-count[data-state="pending"]:hover {
+  background: #fde68a;
+}
+.cmt-unresolved-count[data-state="clear"] {
+  color: var(--cmt-fg-muted);
+  cursor: default;
+}
+
 /* Round avatar. The image (when present) fills the circle; the
    data-initial fallback is rendered via ::before so it shows through if
    the <img> is missing or errors out and is removed by the JS handler. */
@@ -678,7 +710,8 @@ body.cmt-highlights-hidden .cmt-action-bar { display: none; }
        these is a follow-up). */
   }
   .cmt-version-banner,
-  .cmt-version-history { display: none; }
+  .cmt-version-history,
+  .cmt-unresolved-count { display: none; }
 
   /* Surface the identity header at the top of the viewport so a mobile
      reader can sign in (or out) without needing the column. The column

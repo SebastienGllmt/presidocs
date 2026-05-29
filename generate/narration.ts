@@ -37,6 +37,58 @@ function blankLineBeforeMark(before: string): boolean {
   return /\n[^\S\n]*\n/.test(trailing);
 }
 
+// Pull every `<script type="text/narration">` block out of a post's HTML,
+// preserving its in-chapter content byte-for-byte (RAWTEXT, so entities aren't
+// decoded — same contract as generate.ts's extractor). Also reports whether the
+// post opts out of narration (`<article data-narration="none">`), which the
+// caller treats as "no segments here, skip the post."
+//
+// Factored out of generate.ts so callers that need to LOCATE segments in a post
+// — most notably the sound-test page, which finds segments containing a given
+// lexeme — can do so without re-implementing the parse. Uses HTMLRewriter (Bun
+// built-in) for the same reason generate.ts does: regex on HTML is unsound, and
+// `<script>` content is RAWTEXT so its inner `<` doesn't confuse the walker.
+export type NarrationChapter = { id: string; title: string; content: string };
+export type NarrationExtract = { disabled: boolean; chapters: NarrationChapter[] };
+
+export function extractNarration(html: string): NarrationExtract {
+  let disabled = false;
+  let anonCount = 0;
+  const chapters: NarrationChapter[] = [];
+  let pending: { id: string; title: string; buf: string[] } | null = null;
+
+  new HTMLRewriter()
+    .on('script[type="text/narration"]', {
+      element(el) {
+        const id =
+          el.getAttribute("data-chapter-id") ??
+          el.getAttribute("id") ??
+          `chapter-${anonCount++}`;
+        const title = el.getAttribute("data-chapter-title") ?? id;
+        pending = { id, title, buf: [] };
+        el.onEndTag(() => {
+          if (pending) {
+            chapters.push({ id: pending.id, title: pending.title, content: pending.buf.join("") });
+            pending = null;
+          }
+        });
+      },
+      text(t) {
+        pending?.buf.push(t.text);
+      },
+    })
+    .on("article[data-narration]", {
+      element(el) {
+        if ((el.getAttribute("data-narration") ?? "").toLowerCase() === "none") {
+          disabled = true;
+        }
+      },
+    })
+    .transform(html);
+
+  return { disabled, chapters };
+}
+
 export function splitChapter(content: string): Segment[] {
   const out: Segment[] = [];
   let currentMark: string | null = null;

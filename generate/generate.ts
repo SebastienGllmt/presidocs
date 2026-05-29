@@ -18,10 +18,11 @@
 // TTS provider is selected by `--tts=NAME` (default: `say`, macOS-only,
 // fast/cheap for iteration). `--tts=moss` is the production voice — a local
 // MOSS-TTS voice clone. The `generate:prod` npm script is `--tts=moss`; with
-// `MOSS_TTS_DIR` (your checkout) and `MOSS_TTS_VOICE` (your clone reference
-// .wav) set in `.env` — both Bun-autoloaded — production is just
-// `bun run generate:prod <post.html>`. Without the env defaults, pass
-// `--tts=moss --voice=<reference.wav>` explicitly. Optional MOSS env overrides:
+// `MOSS_TTS_DIR` (your checkout) set in `.env`, production is just
+// `bun run generate:prod <post.html>`. The voice clip is resolved per-post
+// from `<meta name="author-email">` via `voices/<email>.wav` (see
+// methodology.md "Per-author voice resolution"); pass `--voice=<reference.wav>`
+// to override. Optional MOSS env overrides:
 // `MOSS_TTS_PYTHON` (interpreter), `MOSS_TTS_DEVICE` (torch device),
 // `MOSS_TTS_FFMPEG_LIB` (FFmpeg lib dir for torchcodec; auto-derived from the
 // `ffmpeg` on PATH otherwise), `MOSS_TTS_CONTINUATION` (continuity strategy).
@@ -49,6 +50,8 @@ import { ttsProviders, type PlsLexicon, type SegmentContext } from "./tts-provid
 import { splitChapter } from "./narration.ts";
 import { wrapWithCache, type CachedTtsProvider } from "./tts-cache.ts";
 import { asMs, msToSeconds, type Milliseconds } from "../shared/time.ts";
+import { resolveAuthorVoice } from "../shared/voiceResolution.ts";
+import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 
 const argv = Bun.argv.slice(2);
 const flags = new Map<string, string>();
@@ -74,12 +77,11 @@ const mock = flags.has("mock");
 // the `voice` default below can be provider-aware.
 const ttsName = flags.get("tts") ?? "say";
 // `--voice` is the `say` voice name OR, for `moss`, the path to the clone
-// reference clip. For `moss`, fall back to MOSS_TTS_VOICE so the per-machine
-// clip path can live in `.env` and the production command stays a one-liner.
-const voice =
-  flags.get("voice") ??
-  (ttsName === "moss" ? process.env.MOSS_TTS_VOICE : undefined) ??
-  "Samantha";
+// reference clip. When --voice isn't passed and tts=moss, we auto-resolve from
+// the post's `<meta name="author-email">` via `voices/<email>.wav` — see the
+// per-author voice resolution in methodology.md. That happens after the HTML
+// is loaded; this `voice` is initialized lazily below.
+let voice = flags.get("voice") ?? (ttsName === "say" ? "Samantha" : "");
 const rate = Number(flags.get("rate") ?? "180"); // words/min for `say`
 const sampleRate = 22050;
 const channels = 1;
@@ -111,6 +113,24 @@ const slug = basename(htmlPath).replace(/\.html?$/i, "");
 const projectRoot = resolve(dirname(htmlPath), "..");
 const outDir = join(projectRoot, "generated", slug);
 await mkdir(outDir, { recursive: true });
+
+// MOSS voice: when --voice isn't passed, look up `voices/<author-email>.wav`
+// for THIS post's author (parsed from the post HTML). No env-var fallback —
+// the per-author convention is the only source so a multi-author blog can't
+// silently render the wrong voice (see methodology.md "Per-author voice
+// resolution"). For `say` we leave the default voice name in place.
+if (ttsName === "moss" && !voice) {
+  const authorEmail = parseAuthorEmailFromHtml(html);
+  const r = resolveAuthorVoice(projectRoot, authorEmail);
+  if (!r.ok) {
+    console.error(
+      `Cannot resolve MOSS voice clip for ${htmlPath}: ${r.reason}.\n` +
+        `  Add the clip at voices/<author-email>.wav, or pass --voice=<path>.`,
+    );
+    process.exit(1);
+  }
+  voice = r.clipPath;
+}
 
 // --- 1. Extract inline blocks (narration + PLS) ------------------------------
 //

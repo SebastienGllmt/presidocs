@@ -5,7 +5,7 @@
 // for readability.
 
 import { test, expect } from "bun:test";
-import { splitChapter, type Segment } from "./narration.ts";
+import { extractNarration, splitChapter, type Segment } from "./narration.ts";
 
 const flags = (segs: Segment[]) => segs.map((s) => s.continuesPrevious);
 const names = (segs: Segment[]) => segs.map((s) => s.markName);
@@ -75,4 +75,48 @@ test("each chapter is split independently (caller loops chapters)", () => {
   const c2 = splitChapter(`<mark name="c"/> C.`);
   expect(c1[0]!.continuesPrevious).toBe(false);
   expect(c2[0]!.continuesPrevious).toBe(false);
+});
+
+// --- extractNarration -------------------------------------------------------
+// The post-scanner used by the sound-test page relies on this to enumerate
+// narration chapters without re-implementing the HTML parse.
+
+test("extractNarration pulls chapters in document order with their ids/titles", () => {
+  const html = `
+    <html><body><article>
+      <script type="text/narration" data-chapter-id="intro" data-chapter-title="Intro">
+        Hello <mark name="m1"/> world.
+      </script>
+      <p>visible prose</p>
+      <script type="text/narration" data-chapter-id="body" data-chapter-title="Body">
+        Then <mark name="m2"/> more.
+      </script>
+    </article></body></html>`;
+  const { disabled, chapters } = extractNarration(html);
+  expect(disabled).toBe(false);
+  expect(chapters.map((c) => c.id)).toEqual(["intro", "body"]);
+  expect(chapters[0]!.title).toBe("Intro");
+  expect(chapters[0]!.content).toContain('<mark name="m1"/>');
+  expect(chapters[1]!.content).toContain('<mark name="m2"/>');
+});
+
+test("extractNarration reports data-narration='none' as disabled", () => {
+  const html = `
+    <article data-narration="none">
+      <script type="text/narration" data-chapter-id="x" data-chapter-title="X">
+        ignored <mark name="m"/>
+      </script>
+    </article>`;
+  const { disabled, chapters } = extractNarration(html);
+  expect(disabled).toBe(true);
+  // The chapters are still collected (HTMLRewriter walks them), but the caller
+  // treats `disabled` as "skip this post entirely."
+  expect(chapters.length).toBe(1);
+});
+
+test("extractNarration returns no chapters when none are present", () => {
+  const html = `<article><p>no narration here</p></article>`;
+  const { disabled, chapters } = extractNarration(html);
+  expect(disabled).toBe(false);
+  expect(chapters).toEqual([]);
 });

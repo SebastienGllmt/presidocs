@@ -8,6 +8,14 @@
 
 import "./soundTest.css";
 
+type InPost = {
+  slug: string;
+  marks: string[];
+  manifestMtime: number; // 0 if never generated
+  authorEmail: string | null;
+  voiceError: string | null; // non-null if no voices/<author-email>.wav for this post
+};
+
 type Lexeme = {
   index: number;
   graphemes: string[];
@@ -17,6 +25,7 @@ type Lexeme = {
   available: boolean;
   audioUrl: string | null;
   version: number; // file mtime; cache-buster for the sticky <audio> media cache
+  inPosts: InPost[]; // posts whose narration contains this lexeme
 };
 
 type ListResponse = {
@@ -27,11 +36,22 @@ type ListResponse = {
   job?: JobStatus;
 };
 
+type PostProgress = {
+  slug: string;
+  marks: string[];
+  // The voice clip the sweep is using for this post (resolved from
+  // voices/<author-email>.wav).
+  voiceClipPath: string;
+  status: "pending" | "running" | "ok" | "error";
+  error?: string;
+};
+
 type JobStatus = {
   running: boolean;
   target?: string;
   ok?: boolean;
   error?: string;
+  posts?: PostProgress[]; // present only for an in-posts sweep
 };
 
 const listEl = document.getElementById("st-list") as HTMLDivElement;
@@ -80,8 +100,8 @@ function render(data: ListResponse) {
   }
   if (!data.voiceConfigured) {
     showBanner(
-      "MOSS_TTS_VOICE is not set (or its clip is missing), so audio can't be generated. " +
-        "Terms are listed below for reference.",
+      "No voice clip for your account (voices/<your-email>.wav). " +
+        "Add it to generate and audition audio; terms are listed below for reference.",
     );
   } else {
     showBanner(null);
@@ -99,6 +119,10 @@ function render(data: ListResponse) {
 function renderRow(lex: Lexeme, voiceConfigured: boolean): HTMLElement {
   const row = document.createElement("div");
   row.className = "st-row";
+
+  // Top bar: graphemes/alias on the left, audition controls on the right.
+  const top = document.createElement("div");
+  top.className = "st-row-top";
 
   const left = document.createElement("div");
   left.className = "st-row-main";
@@ -122,7 +146,7 @@ function renderRow(lex: Lexeme, voiceConfigured: boolean): HTMLElement {
   }
   left.appendChild(says);
 
-  row.appendChild(left);
+  top.appendChild(left);
 
   const actions = document.createElement("div");
   actions.className = "st-actions";
@@ -151,8 +175,67 @@ function renderRow(lex: Lexeme, voiceConfigured: boolean): HTMLElement {
     actions.appendChild(btn);
   }
 
-  row.appendChild(actions);
+  top.appendChild(actions);
+  row.appendChild(top);
+
+  // In-posts panel — which posts contain this lexeme, and a single button that
+  // force-rolls the matching segments across all of them via generate.ts's
+  // `--force-mark`. Hidden when the term appears in no post's narration.
+  if (lex.inPosts.length > 0) {
+    row.appendChild(renderInPosts(lex, voiceConfigured));
+  }
+
   return row;
+}
+
+function renderInPosts(lex: Lexeme, voiceConfigured: boolean): HTMLElement {
+  const panel = document.createElement("div");
+  panel.className = "st-inposts";
+
+  const total = lex.inPosts.reduce((n, p) => n + p.marks.length, 0);
+
+  const label = document.createElement("div");
+  label.className = "st-inposts-label";
+  label.textContent = `In ${lex.inPosts.length} post${lex.inPosts.length === 1 ? "" : "s"} (${total} segment${total === 1 ? "" : "s"}):`;
+  panel.appendChild(label);
+
+  const list = document.createElement("ul");
+  list.className = "st-inposts-list";
+  for (const p of lex.inPosts) {
+    const li = document.createElement("li");
+    const when =
+      p.manifestMtime > 0
+        ? `last built ${new Date(p.manifestMtime).toLocaleString()}`
+        : "never built";
+    // Show whose voice will be used so a multi-author blog can verify per row
+    // BEFORE clicking. A voiceError means the sweep would refuse this post.
+    let voiceTag = "";
+    if (p.voiceError) {
+      voiceTag = `<span class="st-warn"> · no voice resolved: ${escapeHtml(p.voiceError)}</span>`;
+    } else if (p.authorEmail) {
+      voiceTag = `<span class="st-inposts-voice"> · ${escapeHtml(p.authorEmail)}'s voice</span>`;
+    }
+    li.innerHTML =
+      `<code class="st-chip">${escapeHtml(p.slug)}</code> ` +
+      `<span class="st-inposts-marks">${p.marks.length} segment${p.marks.length === 1 ? "" : "s"}</span> ` +
+      `<span class="st-inposts-when">${escapeHtml(when)}</span>${voiceTag}`;
+    list.appendChild(li);
+  }
+  panel.appendChild(list);
+
+  // Don't offer the button if any post can't resolve a voice — clicking it
+  // would just return the same refusal as a 400; safer to make the gap
+  // explicit on the row instead.
+  const anyVoiceMissing = lex.inPosts.some((p) => p.voiceError !== null);
+  if (voiceConfigured && !anyVoiceMissing) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "st-btn st-btn-small";
+    btn.textContent = `Regenerate ${total} segment${total === 1 ? "" : "s"} across ${lex.inPosts.length} post${lex.inPosts.length === 1 ? "" : "s"}`;
+    btn.addEventListener("click", () => regenerate({ index: lex.index, inPosts: true }));
+    panel.appendChild(btn);
+  }
+  return panel;
 }
 
 function escapeHtml(s: string): string {
@@ -161,17 +244,34 @@ function escapeHtml(s: string): string {
   );
 }
 
-// Start a regenerate job (one lexeme or all), then poll until it finishes and
-// reload the list. Mirrors the per-segment regenerate flow in narrator.ts.
-async function regenerate(opts: { index?: number; all?: boolean }) {
+// Start a regenerate job (one lexeme, all, or in-posts), then poll until it
+// finishes and reload the list. Mirrors the per-segment regenerate flow in
+// narrator.ts.
+async function regenerate(opts: { index?: number; all?: boolean; inPosts?: boolean }) {
   if (busy) return;
-  const qs = opts.all ? "all=1" : `index=${opts.index}`;
+  const params: string[] = [];
+  if (opts.all) params.push("all=1");
+  if (opts.index !== undefined) params.push(`index=${opts.index}`);
+  if (opts.inPosts) params.push("inPosts=1");
+  const qs = params.join("&");
   setBusy(true);
-  setStatus(opts.all ? "Loading model and rendering all missing…" : "Loading model and rendering…");
+  setStatus(
+    opts.inPosts
+      ? "Loading model and re-rolling matching segments across posts…"
+      : opts.all
+        ? "Loading model and rendering all missing…"
+        : "Loading model and rendering…",
+  );
   try {
     const res = await fetch(`/dev/sound-test/regenerate?${qs}`, { method: "POST" });
     if (res.status === 401) {
       showBanner("You must be signed in to generate audio. Sign in on the blog (to comment), then retry.");
+      setStatus("");
+      setBusy(false);
+      return;
+    }
+    if (res.status === 403) {
+      showBanner(`Forbidden: ${await res.text()}`);
       setStatus("");
       setBusy(false);
       return;
@@ -190,14 +290,29 @@ async function regenerate(opts: { index?: number; all?: boolean }) {
   }
 }
 
+function progressLine(job: JobStatus): string | null {
+  if (!job.posts) return null;
+  const done = job.posts.filter((p) => p.status === "ok").length;
+  const running = job.posts.find((p) => p.status === "running");
+  if (running) {
+    return `Rendering ${running.slug} (${running.marks.length} segments) — ${done}/${job.posts.length} posts done…`;
+  }
+  return `${done}/${job.posts.length} posts done…`;
+}
+
 async function pollUntilDone() {
   // The MOSS model load alone exceeds a normal request timeout, so the endpoint
-  // is start + poll. Keep polling GET until `running` clears.
+  // is start + poll. Keep polling GET until `running` clears. For an in-posts
+  // sweep the status line tracks which post is currently being rendered.
   for (;;) {
     await sleep(1500);
     const res = await fetch("/dev/sound-test/regenerate");
     const job: JobStatus = await res.json();
-    if (job.running) continue;
+    if (job.running) {
+      const line = progressLine(job);
+      if (line) setStatus(line);
+      continue;
+    }
     const ok = job.ok !== false;
     if (ok) {
       setStatus("Done.");

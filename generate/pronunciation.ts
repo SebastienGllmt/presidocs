@@ -94,6 +94,21 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// True iff `text` contains any of `graphemes` under the SAME matching rules as
+// applyLexicon — case-sensitive exact spelling, alphanumeric boundary (not regex
+// `\b`, so terms beginning/ending in punctuation like "SHA-256" still anchor).
+// Used by the sound-test page to find narration segments where a lexeme occurs,
+// so its in-post audio can be re-rolled surgically — and crucially, "occurs"
+// must mean exactly what the substitution would match, otherwise the page would
+// claim a term occurs where it would never actually be substituted (or miss a
+// term it would). Sharing the matcher is the only way to keep those agreed.
+export function matchesAnyGrapheme(text: string, graphemes: string[]): boolean {
+  if (!text || graphemes.length === 0) return false;
+  const alternation = graphemes.map(escapeRegExp).join("|");
+  const re = new RegExp(`(?<![A-Za-z0-9])(?:${alternation})(?![A-Za-z0-9])`);
+  return re.test(text);
+}
+
 export type ApplyOptions = {
   // Whether the target engine accepts inline IPA wrapped in `/.../`. MOSS does;
   // `say` does not (it would read the slashes). When false, an entry's IPA is

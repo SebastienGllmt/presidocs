@@ -9,10 +9,14 @@
 //   bun run generate/sound-test.ts posts/common-terms.pls --all --force  # re-roll all
 //
 // Defaults to `--tts=moss` (the production voice; this whole feature exists to
-// catch MOSS's probabilistic mispronunciations) with the clone reference clip
-// from `MOSS_TTS_VOICE`, exactly like `generate:prod`. Like the post pipeline it
-// loads the multi-GB model once per run, so `--all` synthesizes the whole
-// lexicon in a single model load; a single `--index` re-roll is one segment.
+// catch MOSS's probabilistic mispronunciations). The voice clip is required:
+// pass `--voice=<path>` explicitly, or — on a single-author blog — let it
+// auto-resolve from the one author's `voices/<email>.wav`. The dev-server
+// endpoint always passes `--voice=` (resolved from the session user's
+// `voices/<email>.wav`), so manual auto-resolution is just a CLI convenience.
+// Like the post pipeline it loads the multi-GB model once per run, so `--all`
+// synthesizes the whole lexicon in a single model load; a single `--index`
+// re-roll is one segment.
 //
 // This is offline/localhost-only and is spawned by the dev server's
 // `/dev/sound-test/regenerate` endpoint (the trusted-localhost carve-out from
@@ -24,6 +28,8 @@ import { leadingSilenceTrimMs, trimLeadingMs, type AudioFormat } from "./audio-p
 import { ttsProviders } from "./tts-providers.ts";
 import { parseLexicon } from "./pronunciation.ts";
 import { SOUND_TEST_DIR, audioFileName, synthTextFor, type SoundTestVoice } from "../shared/soundTest.ts";
+import { resolveAuthorVoice } from "../shared/voiceResolution.ts";
+import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 
 const argv = Bun.argv.slice(2);
 const flags = new Map<string, string>();
@@ -45,10 +51,12 @@ if (!plsPath) {
 }
 
 const ttsName = flags.get("tts") ?? "moss";
-const voice =
-  flags.get("voice") ??
-  (ttsName === "moss" ? process.env.MOSS_TTS_VOICE : undefined) ??
-  "Samantha";
+// Voice: explicit --voice wins; otherwise, for moss, auto-resolve once we know
+// the content root (below) — but only when the blog has a single author. The
+// dev-server endpoints always pass --voice explicitly (resolved from the
+// session user); auto-resolution is purely a manual-CLI convenience for the
+// common single-author blog.
+let voice = flags.get("voice") ?? (ttsName === "say" ? "Samantha" : "");
 const rate = Number(flags.get("rate") ?? "180");
 // MOSS interprets IPA (`/.../`); `say` reads the slashes literally. The current
 // common-terms.pls is alias-only, but honor IPA entries on an IPA engine so the
@@ -75,6 +83,43 @@ if (entries.length === 0) {
 const contentRoot = resolve(dirname(plsPath), "..");
 const outDir = join(contentRoot, "generated", SOUND_TEST_DIR);
 await mkdir(outDir, { recursive: true });
+
+// Manual-CLI voice auto-resolution: if `--voice` wasn't passed and we're using
+// MOSS, scan `posts/` for distinct author-emails — if there's exactly one,
+// resolve `voices/<email>.wav`. For multi-author blogs we require --voice to
+// be explicit (the page does this by passing the session user's resolved
+// clip); guessing one author over another would silently audition in the
+// wrong voice. No env-var fallback (the convention is per-author files).
+if (ttsName === "moss" && !voice) {
+  const postsDir = dirname(plsPath);
+  const files = await readdir(postsDir).catch(() => []);
+  const emails = new Set<string>();
+  for (const f of files) {
+    if (!/\.html?$/i.test(f)) continue;
+    const html = await Bun.file(join(postsDir, f)).text();
+    const e = parseAuthorEmailFromHtml(html);
+    if (e) emails.add(e.trim().toLowerCase());
+  }
+  if (emails.size === 0) {
+    console.error(
+      `--tts=moss needs a voice. No author-email found in any ${postsDir}/*.html; pass --voice=<path>.`,
+    );
+    process.exit(1);
+  }
+  if (emails.size > 1) {
+    console.error(
+      `--tts=moss on a multi-author blog needs --voice=<path> (found authors: ${[...emails].join(", ")}).`,
+    );
+    process.exit(1);
+  }
+  const [only] = [...emails];
+  const r = resolveAuthorVoice(contentRoot, only!);
+  if (!r.ok) {
+    console.error(`Cannot resolve MOSS voice clip for ${only}: ${r.reason}.`);
+    process.exit(1);
+  }
+  voice = r.clipPath;
+}
 
 const ttsFactory = ttsProviders[ttsName];
 if (!ttsFactory) {

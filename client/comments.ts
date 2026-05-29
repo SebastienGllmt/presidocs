@@ -249,6 +249,19 @@ class CommentSystem {
   private previousVersionHash: string | null = null;
   private versionBannerEl: HTMLElement | null = null;
   private versionHistoryEl: HTMLElement | null = null;
+  // Author-only at-a-glance unresolved-thread count. Lives in the
+  // column header alongside the version history so the author can see
+  // "are there comments I haven't dealt with yet?" without scrolling
+  // the post. Clicking it cycles through the unresolved threads in
+  // document order. Re-rendered on every renderAll() so polls and
+  // mutations keep it current.
+  private unresolvedCountEl: HTMLButtonElement | null = null;
+  // Index into the document-order list of unresolved threads, used so
+  // repeated clicks on the badge step through them rather than
+  // re-snapping to the same one. Reset whenever the underlying set
+  // shifts (resolved, deleted, …) so we don't index off the end.
+  private unresolvedCycleIndex = 0;
+  private lastUnresolvedIds: string[] = [];
 
   // Below the mobile breakpoint, cards render as fixed-position
   // overlays (popovers) rather than as a stacked column. Tracked
@@ -660,6 +673,96 @@ class CommentSystem {
     }
 
     this.repositionCards();
+  }
+
+  // Author-only at-a-glance counter of unresolved threads, mounted in
+  // the column header. The intent is "did I miss any comments?"
+  // surfacing — without it the author has to scroll the whole post to
+  // be sure. Hidden for non-authors and when there's no thread at all
+  // (a fresh post showing "0 unresolved" is just noise). When the post
+  // has threads we keep it mounted even at 0 so the author sees the
+  // explicit confirmation that everything's been dealt with. Clicks
+  // cycle through the unresolved threads in document order.
+  private renderUnresolvedCount() {
+    if (!this.column) return;
+    const author = this.isAuthorMode();
+    const totalThreads = this.snapshot.length;
+    if (!author || totalThreads === 0) {
+      this.unresolvedCountEl?.remove();
+      this.unresolvedCountEl = null;
+      this.lastUnresolvedIds = [];
+      this.unresolvedCycleIndex = 0;
+      return;
+    }
+
+    const unresolved = this.snapshot.filter((t) => !this.threadIsResolved(t));
+    const count = unresolved.length;
+
+    if (!this.unresolvedCountEl) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "cmt-unresolved-count";
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.jumpToNextUnresolved();
+      });
+      // Mount after the version history (when present), else after the
+      // version banner, else after the identity header. Mirrors the
+      // insertion order renderVersionUI uses so the column header reads
+      // top-to-bottom: identity → banner → version history → unresolved.
+      const insertAfter: Element =
+        this.versionHistoryEl ?? this.versionBannerEl ?? this.identityHeader!;
+      insertAfter.after(btn);
+      this.unresolvedCountEl = btn;
+    }
+
+    const el = this.unresolvedCountEl;
+    if (count === 0) {
+      el.dataset.state = "clear";
+      el.textContent = "All comments resolved";
+      el.title = "No unresolved threads on this post";
+      el.disabled = true;
+    } else {
+      el.dataset.state = "pending";
+      el.textContent = `${count} unresolved comment${count === 1 ? "" : "s"}`;
+      el.title = "Jump to the next unresolved comment";
+      el.disabled = false;
+    }
+  }
+
+  // Step through unresolved threads in document order on each click.
+  // The set is recomputed every call (poll/mutation may have shifted
+  // it) and the cycle index is reset whenever the membership changes
+  // so we never index off the end.
+  private jumpToNextUnresolved() {
+    const ordered = this.snapshot
+      .filter((t) => !this.threadIsResolved(t))
+      .map((t) => ({ thread: t, top: this.computeAnchorTop(t) ?? Infinity }))
+      .sort((a, b) => a.top - b.top)
+      .map((x) => x.thread);
+    if (ordered.length === 0) return;
+
+    const ids = ordered.map((t) => t.id);
+    const sameSet =
+      ids.length === this.lastUnresolvedIds.length &&
+      ids.every((id, i) => id === this.lastUnresolvedIds[i]);
+    if (!sameSet) {
+      this.lastUnresolvedIds = ids;
+      this.unresolvedCycleIndex = 0;
+    }
+
+    const target = ordered[this.unresolvedCycleIndex % ordered.length]!;
+    this.unresolvedCycleIndex =
+      (this.unresolvedCycleIndex + 1) % ordered.length;
+
+    // Surface the card if the author had previously hidden it, so
+    // clicking the badge always brings them to something visible.
+    if (this.hiddenCardIds.has(target.id)) {
+      this.hiddenCardIds.delete(target.id);
+      this.renderAll();
+    }
+    this.scrollAnchorIntoView(target);
+    this.scrollCardIntoView(target.id);
   }
 
   // ===== Mobile popover + hide-all FAB =====
@@ -1077,6 +1180,7 @@ class CommentSystem {
     }
 
     this.updateGraphicIndicators();
+    this.renderUnresolvedCount();
     this.repositionCards();
 
     this.restoreActiveComposer(activeComposer);
@@ -1578,7 +1682,8 @@ class CommentSystem {
     const topReserved =
       (this.identityHeader?.offsetHeight ?? 0) +
       (this.versionBannerEl?.offsetHeight ?? 0) +
-      (this.versionHistoryEl?.offsetHeight ?? 0);
+      (this.versionHistoryEl?.offsetHeight ?? 0) +
+      (this.unresolvedCountEl?.offsetHeight ?? 0);
     let prevBottom = topReserved > 0 ? topReserved - CARD_GAP_PX : 0;
     for (const { card, target } of items) {
       const top = Math.max(target, prevBottom + CARD_GAP_PX);

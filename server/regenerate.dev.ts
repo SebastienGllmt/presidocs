@@ -21,6 +21,7 @@
 
 import { getSessionFromRequest } from "./auth/routes.ts";
 import { isPostAuthor, type PostMetaIndex } from "./postMeta.ts";
+import { resolveAuthorVoice } from "../shared/voiceResolution.ts";
 import { join } from "node:path";
 
 export type RegenerateDeps = {
@@ -91,7 +92,8 @@ export async function handleRegenerateRequest(
 
   // Author gate, keyed on the post PATH (so it must run before we reduce to the
   // slug). Same server-authoritative check the version endpoint uses.
-  if (!isPostAuthor(session, deps.postMeta.get(post))) {
+  const meta = deps.postMeta.get(post);
+  if (!isPostAuthor(session, meta)) {
     return new Response("forbidden", { status: 403 });
   }
 
@@ -104,6 +106,27 @@ export async function handleRegenerateRequest(
   const postFile = join(deps.contentRoot, "posts", `${slug}.html`);
   if (!(await Bun.file(postFile).exists())) {
     return new Response("post not found", { status: 404 });
+  }
+
+  // Resolve the MOSS voice for THIS post's author and pass it explicitly to
+  // generate.ts. The per-post convention is the only source — there's no env
+  // fallback, on purpose (a multi-author blog with a single default would
+  // silently re-roll segments in the wrong voice). Only relevant for
+  // `--tts=moss`: `say`'s `--voice` is a voice name, not a file path, so we
+  // don't override. (For --tts=moss without an explicit --voice, generate.ts
+  // does the same resolution itself; passing it here surfaces the failure
+  // mode at the dev-server boundary instead of a generate.ts exit code.)
+  let voiceArg: string | null = null;
+  if (tts === "moss") {
+    const voiceRes = resolveAuthorVoice(deps.contentRoot, meta?.authorEmail ?? null);
+    if (!voiceRes.ok) {
+      return new Response(
+        `cannot resolve a MOSS voice clip for ${slug}: ${voiceRes.reason}. ` +
+          `Add voices/<author-email>.wav.`,
+        { status: 400 },
+      );
+    }
+    voiceArg = voiceRes.clipPath;
   }
 
   if (job?.running) {
@@ -122,6 +145,7 @@ export async function handleRegenerateRequest(
       join(deps.engineRoot, "generate", "generate.ts"),
       postFile,
       `--tts=${tts}`,
+      ...(voiceArg ? [`--voice=${voiceArg}`] : []),
       `--force-mark=${mark}`,
     ],
     cwd: deps.contentRoot,

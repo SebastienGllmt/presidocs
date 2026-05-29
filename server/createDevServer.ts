@@ -203,11 +203,13 @@ export async function createDevServer(opts: DevServerOptions) {
       handleSoundTestList(req, {
         contentRoot: paths.contentRoot,
         engineRoot: paths.engineRoot,
+        postMeta: postMetaIndex,
       })),
     "/dev/sound-test/regenerate": priv((req) =>
       handleSoundTestRegenerate(req, {
         contentRoot: paths.contentRoot,
         engineRoot: paths.engineRoot,
+        postMeta: postMetaIndex,
       })),
   };
 

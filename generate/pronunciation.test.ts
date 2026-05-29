@@ -3,7 +3,7 @@
 // boundary / longest-match / case behavior is exercised hard.
 
 import { test, expect } from "bun:test";
-import { parseLexicon, applyLexicon, type LexEntry } from "./pronunciation.ts";
+import { parseLexicon, applyLexicon, matchesAnyGrapheme, type LexEntry } from "./pronunciation.ts";
 
 const ipa = { ipaSupported: true };
 const noIpa = { ipaSupported: false };
@@ -154,4 +154,28 @@ test("applyLexicon does not recursively rewrite its own replacement", () => {
     { graphemes: ["C"], alias: "see" },
   ];
   expect(applyLexicon("X", entries, noIpa)).toBe("written in C");
+});
+
+// --- matchesAnyGrapheme -----------------------------------------------------
+// The sound-test page uses this to find segments containing a lexeme. It MUST
+// agree with applyLexicon's matcher exactly — if it claims a match where the
+// substitution wouldn't fire (or vice versa), the page lies about where audio
+// can change.
+
+test("matchesAnyGrapheme honors the alphanumeric boundary", () => {
+  expect(matchesAnyGrapheme("we hash via SHA-256, then ...", ["SHA-256"])).toBe(true);
+  expect(matchesAnyGrapheme("(SHA-256),", ["SHA-256"])).toBe(true);
+  // adjacent alphanumeric on either side → not a match
+  expect(matchesAnyGrapheme("SHA-2560", ["SHA-256"])).toBe(false);
+  expect(matchesAnyGrapheme("xSHA-256", ["SHA-256"])).toBe(false);
+});
+
+test("matchesAnyGrapheme is case-sensitive (case variants are separate graphemes)", () => {
+  expect(matchesAnyGrapheme("we use sha-256 here", ["SHA-256"])).toBe(false);
+  expect(matchesAnyGrapheme("we use sha-256 here", ["SHA-256", "sha-256"])).toBe(true);
+});
+
+test("matchesAnyGrapheme returns false on empty inputs", () => {
+  expect(matchesAnyGrapheme("", ["X"])).toBe(false);
+  expect(matchesAnyGrapheme("nonempty", [])).toBe(false);
 });
