@@ -122,7 +122,7 @@ export async function handleRegenerateRequest(
     if (!voiceRes.ok) {
       return new Response(
         `cannot resolve a MOSS voice clip for ${slug}: ${voiceRes.reason}. ` +
-          `Add voices/<author-email>.wav.`,
+          `Add authors/<author-email>.wav.`,
         { status: 400 },
       );
     }

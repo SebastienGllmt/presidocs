@@ -11,7 +11,7 @@ To ensure ease of AI authoring, each post is a self-contained HTML file that con
 The spoken track is deliberately **not** a read-aloud of the article - it's a parallel narrative that can paraphrase, reorder, skip over, or revisit visual elements the way a presenter does.
 
 Key design decisions that shape the architecture:
-- **The engine is a separate git repo from the content it renders.** This repo (`presidocs`) is the reusable *engine* — player, comments, build/TTS pipeline, server, authoring tools — and holds **no posts of its own**. Each actual blog is its own git repo containing only content (posts, figures, landing, per-blog config) and depends on the engine through a `file:` dependency; its `index.ts`/`worker.ts` are thin wrappers that call engine factories. One fast-moving engine is shared across blogs without copy-paste drift, while each blog's content and deploy config stay independently versioned. The hard rule that falls out of this: **engine code never names a specific post** — it discovers content by convention from a *content root*. See [Repository layout](#repository-layout) for the two folder structures and the wiring between them.
+- **The engine is a separate git repo from the content it renders.** This repo (`presidocs`) is the reusable *engine* — player, comments, build/TTS pipeline, server, authoring tools — and holds **no posts of its own**. Each actual blog is its own git repo containing only content (posts, figures, landing, per-blog config) and depends on the engine through a `bun link` symlink to the sibling engine checkout (`"presidocs": "link:presidocs"`); its `index.ts`/`worker.ts` are thin wrappers that call engine factories. One fast-moving engine is shared across blogs without copy-paste drift, while each blog's content and deploy config stay independently versioned. The hard rule that falls out of this: **engine code never names a specific post** — it discovers content by convention from a *content root*. See [Repository layout](#repository-layout) for the two folder structures and the wiring between them.
 - **One file per post.** Article + spoken script live in the same HTML
   so authoring tools (humans or LLMs) edit one document, not a
   bundle. No other content input is allowed (note: multiple files are allowed to be served, but they have to be generated from the single input)
@@ -40,21 +40,21 @@ Each top-level folder is one concern, so finding code is "pick the folder that m
 - `shared/` — types/helpers used by both sides, including **`blogPaths.ts`**, which resolves `engineRoot` (this repo, from the module's own location) vs `contentRoot` (`$BLOG_CONTENT_DIR ?? cwd`) and every content-relative path. This is how engine code stays content-agnostic while operating on whichever blog invoked it
 - `authoring/` — offline authoring tools (comment export, resolution write-back) run from a content repo's cwd; they resolve content paths via `blogPaths.ts`
 - `specs/` — local copies of the W3C specs referenced above
-- `templates/content-repo/` — the canonical starter a new blog copies: thin `index.ts`/`worker.ts`/`wrangler.toml`, `package.json` (with the `file:` dep + per-blog scripts), a sample post + figure, and the `process-comments` skill. `personal-blog` is a real instance of this template
+- `templates/content-repo/` — the canonical starter a new blog copies: thin `index.ts`/`worker.ts`/`wrangler.toml`, `package.json` (with the `link:` dep + per-blog scripts), a sample post + figure, and the `process-comments` skill. `personal-blog` is a real instance of this template
 
 The engine has **no `posts/`, `index.html`, `generated/`, or `client/figures/`** — those are content. It is not a deployable blog by itself; the `dev`/`build`/`deploy`/`generate` scripts live in each *content* repo's `package.json`, not here (here we keep only `test`).
 
 ### Content repo (e.g. `personal-blog`)
 
-One git repo per blog, depending on the engine via `"presidocs": "file:../presidocs"`:
+One git repo per blog, depending on the engine via `"presidocs": "link:presidocs"` — a `bun link` to the sibling `../presidocs` checkout (a one-time, per-machine `cd ../presidocs && bun link` registration; `bun install` in the blog then creates the symlink). `link:` is deliberate over `file:`: a `file:` dep installs a *per-file copy/symlink farm* fixed at install time, so editing an engine file (or adding a new one) doesn't take effect until you reinstall — exactly the footgun this live-codeveloped engine must avoid. `link:` makes `node_modules/presidocs` a single live symlink instead:
 
 - `index.ts` / `worker.ts` — thin wrappers: import the engine factory + this blog's static post bundles (`.generated/postRoutes.ts`) / build-time maps (`.generated/`), and call it
 - `wrangler.toml` / `.env` — per-blog deploy config (worker name, R2 bucket) and secrets
-- `engine` — a symlink to `node_modules/presidocs`, so a post can reference engine assets as `../engine/client/narrator.ts` and Bun's bundler resolves + bundles them into same-origin (`'self'`) assets. The engine's own deps (shikwasa, Automerge, …) resolve from the engine's `node_modules` via the symlink; the content repo only declares deps its *own* authored code uses (e.g. `gsap` for figures)
+- `engine` — a symlink pointing **directly at the sibling engine checkout** (`../presidocs`), so a post can reference engine assets as `../engine/client/narrator.ts` and Bun's bundler resolves + bundles them into same-origin (`'self'`) assets. It's the real engine in one hop, not an indirection through `node_modules` (`node_modules/presidocs` is a *separate* single symlink to the same checkout, used only to resolve the bare `presidocs/…` imports in `index.ts`/`worker.ts`). The engine's own deps (shikwasa, Automerge, …) resolve from the engine's `node_modules` via the symlink; the content repo only declares deps its *own* authored code uses (e.g. `gsap` for figures)
 - `posts/` — authored inputs (one HTML file per post + the shared `common-terms.pls` lexicon + the generator-managed `versions.json`)
 - `figures/` — this blog's animated figures (`<name>.{ts,css}`). Content, not engine: each post references them relatively and Bun bundles them transitively, so the engine never enumerates them
 - `index.html` — the landing page
-- `voices/` — voice-clone reference clip(s) for production TTS, one per author, named **`<author-email>.wav`** (e.g. `voices/alice@example.com.wav`). See [Per-author voice resolution](#per-author-voice-resolution).
+- `authors/` — per-author assets, one set per author keyed by **`<author-email>`**: the profile (`<email>.json` — display name + social links), the avatar (`<email>.png`/`.jpg`/…), and the production-TTS voice-clone clip (`<email>.wav`). The `.json`/avatar power the reader-facing byline; the `.wav` is a build-only input (never served). One folder, one key. See [Author profiles and bylines](#author-profiles-and-bylines-sharedauthorprofilets-clientbylinets) and [Per-author voice resolution](#per-author-voice-resolution).
 - `generated/` — pipeline output: audio, manifests, the dev comment store (gitignored)
 - `.generated/` — per-build maps + dev route table the engine codegens emit (gitignored; regenerated by `dev`/`build`)
 - `.claude/skills/process-comments/` — the in-session comment-applying workflow (a content-repo concern; it edits `posts/<slug>.html`)
@@ -157,8 +157,8 @@ Auditioning *every* word at once is also what surfaced the [leading-silence guar
 - **The "occurs" check shares the substitution matcher**, not a looser one. Both the page's discovery (`matchesAnyGrapheme`) and the in-post substitution (`applyLexicon`) anchor on the same case-sensitive, alphanumeric-boundary rule, so the segments the page claims will change are exactly the segments the synthesis will substitute. Anything else would be a lie about audio identity.
 - **The regen is surgical via `--force-mark`.** The endpoint shells out to `generate.ts` once per affected post with `--force-mark=<mark1,mark2,...>`: the listed marks bypass the cache *hit* and re-synthesize with the current (edited) lexicon, overwriting their bytes at the same key; every other segment hits cache. Per post you get one model load, then near-instant cache hits for the unaffected segments, and a fresh `full.<hash>.<ext>` rolled at the end. Across N affected posts that's N model loads sequentially — a known cost we accept because `generate.ts` is per-post; a future orchestrator that holds one provider open across posts would amortize this, but isn't worth the refactor today.
 - **Author-gated per post, single-flight with the audition job.** The session must author *every* affected post (refuse-with-list on mismatch, not silent skip), and the sweep shares the same single-flight lock as the audition POSTs — MOSS loads one model at a time, so the two actions mutually exclude. Page state reports per-post progress (`pending` → `running` → `ok`/`error`) so a multi-minute sweep isn't a silent wait.
-- **Voice is resolved per post, not blog-globally.** Each spawn passes an explicit `--voice=` chosen for the post's author (see [Per-author voice resolution](#per-author-voice-resolution)), so a multi-author blog re-rolls each post in *its own author's* voice. The page shows the resolved author per row (`alice@…'s voice`) before the click, and the POST refuses with a list naming any post whose `voices/<author-email>.wav` is missing.
-- **The audition itself is keyed on the *session user's* own voice.** Clicking "Generate" / "Re-roll" for a row synthesizes the audition clip using `voices/<your-email>.wav` — so each author on a multi-author blog auditions the respelling in the voice they author posts with, and the per-voice keyed store keeps everyone's audition clips separate.
+- **Voice is resolved per post, not blog-globally.** Each spawn passes an explicit `--voice=` chosen for the post's author (see [Per-author voice resolution](#per-author-voice-resolution)), so a multi-author blog re-rolls each post in *its own author's* voice. The page shows the resolved author per row (`alice@…'s voice`) before the click, and the POST refuses with a list naming any post whose `authors/<author-email>.wav` is missing.
+- **The audition itself is keyed on the *session user's* own voice.** Clicking "Generate" / "Re-roll" for a row synthesizes the audition clip using `authors/<your-email>.wav` — so each author on a multi-author blog auditions the respelling in the voice they author posts with, and the per-voice keyed store keeps everyone's audition clips separate.
 
 The page is an engine surface (it discovers the lexicon by convention at `posts/common-terms.pls`, never naming a post), so every blog built on the engine gets it for free; `bun run sound-test` renders the whole lexicon from the CLI for the same result without the page.
 
@@ -244,15 +244,15 @@ That context is a **provider-agnostic** addition to the `TtsProvider` contract: 
 - **`acoustic` (opt-in; currently a net loss on the local model).** Feeds the previous segment's actual audio as multi-turn context (`[user(prevText), assistant(prevAudio), user(thisText)]`, generation mode) so the model continues from real measured energy instead of guessing. In theory the strongest fix; in practice on the **1.7B** model it made things markedly *worse* — tone drift, broken clips, duplicated/altered words, and **quality compounding downhill so the last segments of a chapter were the worst**. That downhill signature is the tell: each continuation conditions on the *previous generated* segment (already model output, resampled 24→22.05 kHz and trim-truncated), so re-tokenizing our own degraded audio accumulates artifacts. Two root causes — a design hazard (feeding back lossily-reprocessed model output is an accumulating feedback loop *regardless* of model) and model size (MOSS reserves multi-turn coherence for its larger/Realtime models). Kept behind the flag to retry on an 8B-class model; if so, it should feed the *pre-resample, pre-trim* native audio (or keep the raw `audio_codes` hot in the worker) to break the compounding.
 - **`off`.** No continuity; every segment a fresh utterance (the pre-feature baseline).
 
-The MOSS repo is located via the **`MOSS_TTS_DIR`** env var (no portable default path; `MOSS_TTS_PYTHON` overrides the interpreter, `MOSS_TTS_DEVICE` forces the torch device). The factory validates the interpreter and the reference clip up front, so a misconfiguration fails immediately rather than 30 segments into a run. The voice clip is resolved per post (not from any env var) — see [Per-author voice resolution](#per-author-voice-resolution) — so the **`generate:prod`** one-liner is just `bun run generate:prod <post.html>`: `generate.ts` parses the post's `<meta name="author-email">` and auto-loads `voices/<email>.wav`. `MOSS_TTS_DIR` and `MOSS_TTS_PYTHON` stay env vars because they're per-machine paths (your MOSS checkout); the voice clip is per-blog and committed, so it doesn't.
+The MOSS repo is located via the **`MOSS_TTS_DIR`** env var (no portable default path; `MOSS_TTS_PYTHON` overrides the interpreter, `MOSS_TTS_DEVICE` forces the torch device). The factory validates the interpreter and the reference clip up front, so a misconfiguration fails immediately rather than 30 segments into a run. The voice clip is resolved per post (not from any env var) — see [Per-author voice resolution](#per-author-voice-resolution) — so the **`generate:prod`** one-liner is just `bun run generate:prod <post.html>`: `generate.ts` parses the post's `<meta name="author-email">` and auto-loads `authors/<email>.wav`. `MOSS_TTS_DIR` and `MOSS_TTS_PYTHON` stay env vars because they're per-machine paths (your MOSS checkout); the voice clip is per-blog and committed, so it doesn't.
 
 #### Per-author voice resolution
 
 A blog can have multiple authors (`<meta name="author-email">` is per-post) — and each author's clone reference is a different clip. Re-rolling a post in someone else's voice is a *correctness* bug, not a cosmetic one: voice is part of the TTS cache key (via `cacheVoiceId`), but the *current* `full.<hash>.<ext>` would still be overwritten with the wrong-voice audio for readers. So everything that touches a post — the offline `generate.ts`, the per-segment `/dev/regenerate`, the sound-test in-posts sweep — resolves the clip **per post**, not blog-globally, and passes it as an explicit `--voice=` to the spawn.
 
-The convention is **`<contentRoot>/voices/<author-email>.wav`** (e.g. `voices/alice@example.com.wav`) — discoverable by file listing, no config artifact to keep in sync, one author adding their voice is one file commit. Mirrors how `postMeta` discovers authors by scanning `posts/*.html`. If a post's per-author file is missing, the resolver returns a structured failure and the caller **refuses** — naming the gap (which post, which file is missing) — rather than silently picking the wrong voice. Lives in `shared/voiceResolution.ts` so every per-post action shares one resolution.
+The convention is **`<contentRoot>/authors/<author-email>.wav`** (e.g. `authors/alice@example.com.wav`) — the **same per-author folder** that holds the author's [profile and avatar](#author-profiles-and-bylines-sharedauthorprofilets-clientbylinets), keyed by the same email. Discoverable by file listing, no config artifact to keep in sync, one author adding their voice is one file commit. Mirrors how `postMeta` discovers authors by scanning `posts/*.html`. If a post's per-author file is missing, the resolver returns a structured failure and the caller **refuses** — naming the gap (which post, which file is missing) — rather than silently picking the wrong voice. Lives in `shared/voiceResolution.ts` so every per-post action shares one resolution. (The clip is a build-only input — only `generate.ts` and the dev tools read it — so co-locating it with the served avatar doesn't expose it.)
 
-**No env-var fallback.** A single global default is the *exact* hazard the per-post lookup exists to prevent: the moment a second author shows up, "the default" becomes "the wrong voice" for half the posts, silently. Single-author blogs aren't disadvantaged — they just put their one clip at `voices/<their-email>.wav`, which is one file in the repo rather than an env var on every developer machine. `generate:prod` becomes correspondingly simple: it parses the post's author-email and auto-resolves, so the one-liner stays a one-liner and works correctly on a multi-author blog.
+**No env-var fallback.** A single global default is the *exact* hazard the per-post lookup exists to prevent: the moment a second author shows up, "the default" becomes "the wrong voice" for half the posts, silently. Single-author blogs aren't disadvantaged — they just put their one clip at `authors/<their-email>.wav`, which is one file in the repo rather than an env var on every developer machine. `generate:prod` becomes correspondingly simple: it parses the post's author-email and auto-resolves, so the one-liner stays a one-liner and works correctly on a multi-author blog.
 
 The matching rules are deliberately small: emails are lowercased and used verbatim as the filename (`alice@example.com.wav`), but anything that would let an authored email *escape* the dir — `/`, `\`, NUL, or a leading dot — is dropped before the lookup. Cache identity is unaffected by this convention: the MOSS provider still content-hashes the chosen clip into `cacheVoiceId`, so two authors' caches stay distinct wherever their clips live on disk.
 
@@ -350,6 +350,25 @@ Key architectural things to make this work properly:
 - Active-mark tracking uses **`requestAnimationFrame`** reading
   `player.currentTime`, and not the audio element's `timeupdate` event (`timeupdate` fires ~4x/sec, too coarse for sentence-level marks).
 - Active mark = "latest mark whose `time` ≤ `currentTime`" (recomputed each tick so backward seeks are efficient).
+
+### OS media controls (Media Session API)
+
+The player also speaks the [Media Session API](https://www.w3.org/TR/mediasession/) (`navigator.mediaSession`), so a talk behaves like any other audio the OS knows about: the macOS Now Playing widget / Control Center, the iOS/Android lock screen, the Chrome notification tile, and Windows SMTC all show the post title + artist and drive play/pause/seek; Bluetooth-headset taps, hardware media keys, and OS skip buttons route into the player. It's `setupMediaSession()` in `client/narrator.ts`, called once at the end of `init()`. Three pieces:
+
+- **Metadata** — `navigator.mediaSession.metadata` from the same `data-narration-title` / `data-narration-artist` the dock uses. Artwork is left empty for now (no site cover asset yet; a single PNG is the obvious later add).
+- **Action handlers route into the *existing* controls**, so there's one code path per gesture, not a parallel one:
+
+  | MediaSession action | Player call (already used by) |
+  | --- | --- |
+  | `play` / `pause` / `stop` | `player.play()` / `player.pause()` (Space shortcut) — `stop` maps to pause (no real stop concept) |
+  | `seekforward` / `seekbackward` | `skipBy(±seekOffset)` (the dock's 10 s buttons; OS-supplied offset honored, else 10 s) |
+  | `seekto` | `seekToMs()` (the sample-accurate seek path) |
+  | `previoustrack` / `nexttrack` | `jumpToChapterDelta(∓1)` — a chaptered talk's "track" *is* its chapter, mirroring the 1-9 shortcuts (no wraparound at the ends) |
+
+  Each registration goes through a `safeSet` wrapper that swallows the throw for actions a given UA doesn't expose (e.g. `previoustrack`/`nexttrack` on Firefox/Linux without MPRIS), so one unsupported action can't block the rest.
+- **Position + playback state.** `setPositionState` is pushed from the *same rAF tick* that drives the highlight (the canonical clock), with `position` clamped to `duration` (the spec throws otherwise, and the final frame can drift a hair past). `playbackState` is set explicitly in `onPlay`/`onPause`/`onEnded` rather than left to UA inference — the heuristic can disagree with reality right after a programmatic `currentTime` write (which `seekToMs` does), stranding the lock screen on the wrong icon.
+
+The whole feature is gated on `"mediaSession" in navigator`, so pre-2021 Safari and the like get exactly today's behavior. It's pure runtime — no manifest or build change — and complements the in-page keyboard shortcuts rather than replacing them: MediaSession is the OS-surface input path, the `document` key listeners are the focused-window path, and both call the same player methods.
 
 ## Manifest format (`generated/<slug>/manifest.json`)
 
@@ -809,6 +828,26 @@ The author check requires `session.emailVerified === true`. Without that gate, a
 - In dev builds, `posts/*.html` is the source of truth
 - In prod builds, we use only the generated files (`wrangler dev` works without a build step)
 
+### Author profiles and bylines (`shared/authorProfile.ts`, `client/byline.ts`)
+
+A reader should see *who wrote a post* — name, photo, and social links (X first, but the convention generalizes). The author-email is the only per-post author signal, and it's the join key here too: author **profile** data is author-level, not post-level, so it lives in the per-author `authors/` folder keyed by email — the **same folder** (and same email key) the [voice clip](#per-author-voice-resolution) uses:
+
+```
+authors/<author-email>.json    { name, handle?, links?, avatar? }
+authors/<author-email>.png     avatar (or .jpg/.jpeg/.webp)
+authors/<author-email>.wav     voice-clone clip (build-only input, never served)
+```
+
+Discoverable by file listing, no central config to keep in sync, one author onboarding is a few file commits, **no env-var fallback** — the same reasoning (and the same `safeEmailComponent` path guard, shared from `voiceResolution.ts`) as the voice clip. `resolveAuthorProfile` returns a structured failure naming the gap; a post whose author has no resolvable profile is logged and simply gets **no byline** (degrade, don't fail the build). One folder per author keeps the runtime-boundary honest in a different way: only the `.json`/avatar are published (the avatar copied under a public handle, §below), while the `.wav` is read only by the offline build — so co-location doesn't blur "served" vs "build input".
+
+**The load-bearing constraint: the served byline must never re-leak the email.** The whole reason `<meta name="author-email">` is [stripped from served HTML](#why-email-and-not-userid) is to keep the address away from crawlers. So the email is *only ever a disk/join key* — every value that reaches the client is derived from the public **`handle`** (a sanitized, lowercased slug from the explicit `handle`, else the X link's last segment, else a name-slug), never the email. The served avatar lives at `/assets/authors/<handle>.<ext>`, not `/.../<email>.<ext>`, and the public map the client fetches (`/assets/authors.json`, keyed by post path) carries no email at all. A build-time check confirms `dist/` contains no address.
+
+**The byline is rendered client-side** (`client/byline.ts`), a progressive-enhancement module like the player, comments, and figures — *not* injected into the HTML at build time. The reason is structural: a post is served as an **opaque static bundle in both dev and prod** — Bun's `HTMLBundle` in dev (which can't be rewritten the way the player/comments references are; see `createDevServer.ts`) and Cloudflare's `ASSETS` binding in prod. Only `dist/` gets the [post-build HTML rewrite](#build-time-html-strip-generatestrip-served-htmlts), so a build-time *body* injection would appear in prod but not dev — exactly the drift the rest of the architecture avoids by making in-page features client modules. Client rendering is the one path identical in both. (Crawler/no-JS author metadata is not lost: it's emitted into `<head>` as JSON-LD/Open Graph at build time — see [Structured data](#structured-data-schemaorg-open-graph-twitter-card-sharedinjectstructureddatats). The visible byline is for humans; the structured data is for machines.)
+
+**One builder for dev and prod** (`buildAuthorMap`): the prod build (`copy-static.ts`) writes `dist/assets/authors.json` and publishes each avatar under its public handle; the dev server serves the identical map and avatars fresh per request from the same function — so a new post or edited profile shows on reload without a restart, and dev/prod bylines can't diverge.
+
+**Byline CSS lives in `client/base.css`, not `narrator.css`** — for the same reason the page-global layer was extracted there (see [Opting out of narration](#opting-out-of-narration)): the byline must appear on **every** post, including narration opt-out posts that never link `narrator.css`. The article root is found via the shared `[data-narration-src]` selector (present even on opt-out posts), and the block is inserted after the lede (or the title).
+
 ## AI-assisted authoring (`authoring/` + the `process-comments` skill)
 
 The comment system isn't just a feedback channel — it's the authoring interface itself. The author opens their own post, highlights text, leaves comments like "rephrase this", "add a paragraph about edge cases", etc. — through exactly the same UI a reader uses. The loop:
@@ -997,6 +1036,58 @@ To know which posts are getting traffic, the build step also injects Cloudflare'
 
 **Dev doesn't inject.** Same rationale as the strip step: localhost views aren't meaningful in the analytics dashboard, and skipping the network call to `cloudflareinsights.com` keeps dev tooling offline-friendly. If the dev/prod difference is ever a problem, the env var works on both — set `CF_ANALYTICS_TOKEN` in your local `.env` and the Bun server's dev HTML would need a Bun plugin to inject (see strip's "Dev doesn't strip" note).
 
+### Structured data (Schema.org, Open Graph, Twitter Card) (`shared/injectStructuredData.ts`)
+
+A post URL pasted into Slack/Discord/iMessage/LinkedIn/X should unfurl with a title, description, and share card; Google should be eligible for the **Article rich result** and its **"Listen to this article"** audio surface; and LLM search indexers (which special-case JSON-LD) should get clean structured metadata. None of that exists without `<head>` metadata, so the build emits three layers into every post: a **Schema.org JSON-LD** `BlogPosting` (with a nested `AudioObject`, `Person` author, and `Organization` publisher), **Open Graph** tags, and a **Twitter Card** overlay.
+
+This is the **crawler/unfurl-facing counterpart to the [client-rendered byline](#author-profiles-and-bylines-sharedauthorprofilets-clientbylinets)**, and the two split the work cleanly: the byline is the *visible* author block (JS, identical dev/prod); the structured data is for *machines* (static HTML, no JS), so SEO never depends on the byline script running. They share one data source — `buildAuthorMap` — so the JSON-LD `author` is the same public `Person` (name + `sameAs` X link + avatar as `image`), and **the email never appears here either** (the profile map is emailless by construction).
+
+It rides the same post-build pass as the strip and analytics, via `shared/injectStructuredData.ts`. The split of where each field comes from:
+
+- **Extracted from the post HTML** (a single `HTMLRewriter` read): `headline`/`og:title` from `<title>`; `description` from `<meta name="description">` if present else the `#lede` text; `inLanguage` from `<html lang>`; the publisher/`og:site_name` from the article's existing `data-narration-artist` (already the publisher label — no new knob); and any pre-existing `og:image`.
+- **Passed in by the build** (disk/env context the injector shouldn't gather itself): `datePublished`/`dateModified` from `posts/versions.json` (newest-first, so **oldest entry = published, newest = modified**); the `AudioObject` from the post's `generated/<slug>/manifest.json` (absolute `contentUrl`, `audio/mpeg`, ISO-8601 `duration` from the manifest's ms); the author `Person` from the public profile map; the post's [generated share card](#share-cards-generateshare-cardts) URL (the default `og:image`); and `siteUrl` for making every URL absolute.
+
+Design decisions worth keeping:
+
+- **`SITE_URL`, separate from `OAUTH_REDIRECT_BASE`.** Absolute HTTPS URLs are mandatory for `og:`/JSON-LD (relative and `http://` are rejected by validators), so the canonical origin must be configured. It's a *distinct* env var from the OAuth callback base even though they coincide today — one is "where the site lives," the other is "where auth redirects land." **Unset → the whole structured-data inject is skipped** (fail-silent, exactly like a missing `CF_ANALYTICS_TOKEN`); the blog still works, it just doesn't get rich cards in that deploy.
+- **`og:image`: per-post override wins, else the generated share card.** `og:image` is a *required* Open Graph property, so it must always resolve. A post may declare its own `<meta property="og:image">` (a wide hero); the injector then leaves that tag exactly as authored and **does not emit its own** (no duplicate `og:image`), though JSON-LD `image`/`twitter:image` still resolve it to absolute. With no override, the default is the post's [generated 1200x630 share card](#share-cards-generateshare-cardts) (`/assets/og/<slug>.png`), passed in by the build and gated on the card file actually existing. Because the card's size is known, we also emit `og:image:alt` (the post title) and `og:image:width`/`:height`, and the JSON-LD `image` is an `ImageObject` with those dimensions (an override stays a bare URL — its size is unknown). The Twitter card is `summary_large_image` whenever a share image resolves (the card and any override are both large-format), falling back to `summary` only when there's none. The small author avatar is **never** the share image — it's only the JSON-LD `Person.image`. `twitter:creator` is derived from the X handle.
+- **`article:author` is a profile URL, not a name.** The Open Graph Article type defines `article:author` as a profile reference (a URL), so the injector emits the author's `links.x` (falling back to `links.website`, omitted if neither exists) — never the display name. The human-readable name is still carried correctly by JSON-LD `author.name` and `twitter:creator`.
+- **Degrades field-by-field, never fails the build.** No manifest (a [narration opt-out](#opting-out-of-narration) post) → no `AudioObject`/`og:audio`, the rest still emits. No resolvable author profile → no `Person`/`article:author`. Missing `versions.json` → no dates. Idempotent: a pre-existing JSON-LD block short-circuits the whole inject (same trick as the analytics beacon).
+- **Only real posts get it.** A file is treated as a post only if it has a `versions.json` record; the landing page and any other `dist/` HTML short-circuit (they're not `BlogPosting`s). A `<link rel="canonical">` is emitted alongside, so localhost/preview-deploy variants of a URL don't get indexed as duplicates.
+
+**Dev doesn't inject** — same posture as the strip/analytics steps; crawlers and unfurl bots hit prod, and dev serves un-rewritten source.
+
+### Share cards (`generate/share-card.ts`)
+
+The default `og:image`/`twitter:image` is a **generated 1200x630 PNG per post** — blog name, article title, and author (avatar + name) — so every post has a real share card (not a tiny avatar) and the required `og:image` is always satisfiable. Pipeline: **satori** lays the card out from a plain element tree (no JSX/React — the engine is React-free) into an SVG with the text already converted to vector **paths**, then **@resvg/resvg-wasm** rasterizes that SVG to PNG. Deterministic, no native binary, no headless browser.
+
+- **Static font, vendored.** satori's font parser rejects *variable* fonts (it chokes on the `fvar` table), so two **static** weights are committed under `generate/assets/fonts/` (DejaVu Sans Regular + Bold — freely redistributable; see the `LICENSE` there). Vendored, not read from the system, so the build is reproducible on any machine/CI. Swap typefaces by dropping in different static Regular/Bold TTFs and updating `loadFonts()`.
+- **Where it runs.** A build step after `bun build` (it needs `dist/`) and before [strip-served-html](#structured-data-schemaorg-open-graph-twitter-card-sharedinjectstructureddatats) (which references the card URL when injecting `og:image`). Output: `dist/assets/og/<slug>.png`. Gated on `SITE_URL` like the other discovery features, and **skipped per-post** when the post declares its own `<meta property="og:image">` (that post takes the override path, so no card is wasted).
+- **The avatar feeds the card, not the meta tag.** The author avatar is read from the per-author folder and drawn *into* the card; the small square avatar is never itself the share image.
+
+### Subscription feeds (Atom + Podcast RSS) (`generate/feeds.ts`)
+
+An audio-first blog with no feed is invisible to every podcast client and feed reader — yet every field a feed needs already exists on disk after a build. `generate/feeds.ts` is the final build step (after the strip, so it can splice the *stripped* post body into the feed `<content>` — no email, no narration blobs reach subscribers) and emits three static artifacts, **zero Worker code**:
+
+- **`dist/feed.xml`** — Atom 1.0, one `<entry>` per post. Article-side; doesn't require audio.
+- **`dist/podcast.xml`** — Podcast RSS 2.0 with the `itunes:` and Podcasting-2.0 `podcast:` namespaces, one `<item>` per post that **has narration audio**. Suppressed entirely if no post has audio (an empty podcast feed gets rejected from directory submission).
+- **`dist/generated/<slug>/chapters.json`** — a [Podlove Simple Chapters](https://podlove.org/simple-chapters/) sidecar (referenced by `<podcast:chapters>`), one per audio post.
+
+Decisions:
+
+- **Gated on the same `SITE_URL`** the structured-data inject uses (one canonical-origin var, not a second one) — feeds need absolute URLs for every link/enclosure, so no `SITE_URL` → feeds are skipped (fail-silent, like the other build injects).
+- **Engine stays content-agnostic.** The site title + description are read from the blog's own landing `index.html` at build time (never hardcoded in the engine); the per-post and channel author come from the same public profile map as the [byline](#author-profiles-and-bylines-sharedauthorprofilets-clientbylinets) (so **no email** in the feed by default). The deploy-level knobs are env-driven with defaults (`shared/feedConfig.ts`: `FEED_LANGUAGE`, `PODCAST_CATEGORY`, `PODCAST_EXPLICIT`, plus `PODCAST_OWNER_EMAIL`, `PODCAST_COVER`, `SITE_LAUNCH_YEAR`).
+- **Podcast cover art is a dedicated asset, never the avatar.** Apple requires `<itunes:image>` to be ≥1400² square, so the channel image comes from `PODCAST_COVER`; when unset it's **omitted** (a too-small image gets the feed rejected, whereas an absent one merely degrades). The small author avatar is used only for the Atom `<logo>`.
+- **Podcast owner email is opt-in** (`PODCAST_OWNER_EMAIL`), never auto-pulled from `<meta name="author-email">`. A public feed is exactly the surface the [email strip](#why-email-and-not-userid) exists to keep the address off; Apple *directory submission* needs an owner email, so an author who wants it sets the var, and the feed omits it otherwise.
+- **Dates from `versions.json`.** Newest-first, so oldest entry = `<published>`/`<pubDate>`, newest = `<updated>`.
+- **Atom ids are permanent (RFC 4287 §4.2.6).** Each entry's tagURI takes its date from *that entry's own first-publish year*, so adding a later post with an *earlier* date never changes another entry's `<id>` (a global minimum year would rewrite every id and resurface the whole back catalogue as unread). The feed's own `<id>` uses a fixed `SITE_LAUNCH_YEAR`, never a min-across-posts. RSS `<guid isPermaLink="false">` is the (stable) post URL.
+- **Atom `<content type="html">` is entity-escaped** (the spec's normative form), not CDATA; the RSS `<content:encoded>` stays CDATA (RSS's own convention).
+- **Channel `<podcast:guid>` + `<atom:link rel="self">`.** The RSS channel carries a stable Podcasting-2.0 GUID — a dependency-free UUIDv5 over the feed URL with the spec's fixed namespace (verified against the spec's published example in a test) — plus an Atom self-link, both expected by podcast directories/validators.
+- **`<enclosure length>` is the real byte size** (`stat` of the built MP3), not `duration × bitrate` — MP3 framing isn't uniform and a wrong length makes some clients refuse the episode. The audio URL is the content-hashed `full.<hash>.mp3` read straight from the manifest, so the feed always points at the current track.
+- **Chapters via the JSON sidecar, not ID3 (yet).** `chapters.json` (ms → seconds) gives every modern podcast client chapter markers through `<podcast:chapters>`. ID3v2 CHAP frames muxed into the MP3 itself (for clients that only read in-file chapters) was the proposal's step 3 and is **deliberately deferred**: it requires `generate.ts` to compute chapter offsets *before* the content-hash/encode and a full MOSS re-generate to take effect, for redundant coverage of what the sidecar already provides.
+- **Plain-text fields are entity-decoded** (`shared/htmlEntities.ts`) before XML-escaping, since `HTMLRewriter` hands back `&mdash;` etc. intact and a naive re-escape would double-encode them; body HTML rides in `type="html"` CDATA untouched.
+- **Autodiscovery + MIME.** The strip pass injects `<link rel="alternate" type="application/atom+xml"/rss+xml">` into every page's `<head>` (gated on `SITE_URL`), and `createWorker.ts` overrides the `.xml` Content-Type to `application/atom+xml` / `application/rss+xml` for the two feed paths (strict validators sniff for these). Feeds are a prod/build artifact — dev serves source, not `dist/`, so it doesn't serve them.
+
 ### Secrets
 
 All OAuth client secrets and `SESSION_SECRET` (or `SESSION_SECRETS=v1:…,v2:…` for [key rotation](#sessions-jwt-cookie-hs256-jose)) live in Cloudflare's encrypted secret store (`wrangler secret put ...`), *not* in `wrangler.toml`. Names line up with the dev `.env`, so the route handlers read the same `process.env.*` / `env.*` regardless of runtime.
@@ -1133,13 +1224,17 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 
 - **Web Annotation Data Model** ([spec][AnnotationModel]): the comments system stores every anchor as a Web Annotation *target* (selectors over the post — `RangeSelector` + `TextQuoteSelector`, or a `FragmentSelector` for graphics), and exports threads as a JSON-LD `AnnotationCollection`. See [Comments → Anchoring](#anchoring-the-web-annotation-target-model) and [Exporting to the Web Annotation wire format](#exporting-to-the-web-annotation-wire-format). (Still *not* used for the narration `<mark>` ↔ `id` pairing — that relation is simple enough to need no annotation vocabulary.)
 - **JWT / JWS / JWA** ([RFC 7519][JWT], [RFC 7515][JWS], [RFC 7518][JWA]): session cookies are HS256-signed JWTs — a compact JWS serialization, `HS256` from the JWA algorithm registry — verified by `jose` with a hard-pinned algorithm allowlist (the [JWT BCP][JWT-BCP], RFC 8725) and a `kid` header for key rotation. See [Sessions](#sessions-jwt-cookie-hs256-jose). Provider ID tokens are *also* JWTs, but we deliberately *don't* verify them — see [Userinfo from `/userinfo`](#userinfo-from-userinfo-not-from-a-decoded-id-token).
+- **Media Session API** ([spec][MediaSession]): the narration player wires the OS-level "now playing" surface (lock screen, macOS Now Playing, notification tile) and routes hardware/Bluetooth/media-key controls into the player. See [OS media controls](#os-media-controls-media-session-api).
+- **Schema.org + Open Graph + Twitter Card** ([Schema.org][SchemaOrg], [Open Graph][OpenGraph], [Twitter Cards][TwitterCards]): the post-build pass injects a Schema.org `BlogPosting` (with a nested `AudioObject`, `Person` author, and `Organization` publisher) as JSON-LD, plus Open Graph and Twitter Card `<meta>` tags — so a shared link unfurls with title/description/image/audio and Google's Article rich result + "Listen to this article" audio surface become eligible. The author `Person` (name, `sameAs` social link, avatar `image`) is the same public profile the byline uses, so no email is emitted. See [Structured data](#structured-data-schemaorg-open-graph-twitter-card-sharedinjectstructureddatats).
+- **Atom 1.0 + Podcast RSS 2.0 + Podcasting 2.0** ([Atom / RFC 4287][Atom], [RSS 2.0][RSS2], Apple's [`itunes:` podcast namespace][ApplePodcast], [Podcasting 2.0 namespace][PodcastNS]): the build emits an Atom feed for article subscriptions (entry `<id>`s are [tag URIs, RFC 4151][TagURI], immutable across edits), a Podcast RSS feed for audio posts (`<enclosure>` + `itunes:`/`podcast:` tags, `<pubDate>` in RFC 822 form), and a [Podlove Simple Chapters][Podlove] JSON sidecar referenced by `<podcast:chapters>`. See [Subscription feeds](#subscription-feeds-atom--podcast-rss-generatefeedsts).
 
 ### Possibly usable later
 
 - **EPUB 3 Media Overlays** ([spec][EPUB]): Media Overlays pair text fragments with audio clips via SMIL
 - **SMIL 3** ([spec][SMIL3]): the host language behind Media Overlays
 - **W3C Sync Media for Publications (Lite)** ([spec][SyncMedia]): HTML-first alternative to Media Overlays
-- **Media Session API** ([spec][MediaSession]): browser-native API for surfacing media metadata (title, artwork) on the OS lock screen / notification shade and handling system play/pause/skip controls (headphone clicks, hardware media keys, Bluetooth remotes). Would slot in around the existing Shikwasa player — set `navigator.mediaSession.metadata` once the manifest loads, register `setActionHandler('play' | 'pause' | 'seekto' | 'previoustrack' | 'nexttrack', ...)` to route system events into our existing controls, and update `setPositionState` from the same rAF tick that already drives the progress bar. Chapter skip lines up naturally with `previoustrack`/`nexttrack`. No build-time work — pure runtime additions to `client/narrator.ts`.
+- **ID3v2 Chapter Frames (CHAP / CTOC)** ([spec][ID3Chapters]): in-file chapter markers muxed into the MP3 itself, for the podcast clients that read chapters from the file rather than the `<podcast:chapters>` sidecar. Deferred from the feeds work — it needs `generate.ts` to compute chapter offsets *before* the content-hash/encode and a full re-generate to take effect, for coverage the [Podlove sidecar](#subscription-feeds-atom--podcast-rss-generatefeedsts) already gives every modern client.
+- **JSON Feed 1.1** ([spec][JSONFeed]): a JSON-shaped sibling of the Atom feed — same data, friendlier to hand-author. Not added because every reader we care about consumes Atom; trivial to mirror from the same feed walker if a subscriber ever asks.
 
 ### Considered, not used
 
@@ -1162,13 +1257,27 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 [SSML]: https://www.w3.org/TR/speech-synthesis11/
 [SSML-mark]: https://www.w3.org/TR/speech-synthesis11/#S3.3.2
 [MediaSession]: https://www.w3.org/TR/mediasession/
+[SchemaOrg]: https://schema.org/BlogPosting
+[OpenGraph]: https://ogp.me/
+[TwitterCards]: https://developer.x.com/en/docs/twitter-for-websites/cards/overview/abouts-cards
+[Atom]: https://www.rfc-editor.org/rfc/rfc4287
+[RSS2]: https://www.rssboard.org/rss-specification
+[ApplePodcast]: https://podcasters.apple.com/support/823-podcast-requirements
+[PodcastNS]: https://podcastindex.org/namespace/1.0
+[TagURI]: https://www.rfc-editor.org/rfc/rfc4151
+[Podlove]: https://podlove.org/simple-chapters/
+[ID3Chapters]: https://id3.org/id3v2-chapters-1.0
+[JSONFeed]: https://www.jsonfeed.org/version/1.1/
 [JWT]: https://datatracker.ietf.org/doc/html/rfc7519
 [JWS]: https://datatracker.ietf.org/doc/html/rfc7515
 [JWA]: https://datatracker.ietf.org/doc/html/rfc7518
 [JWT-BCP]: https://datatracker.ietf.org/doc/html/rfc8725
 [PASETO]: https://paseto.io/
 
-<!-- For LLMs: local copies of the specs above.
+<!-- For LLMs: local copies of the specs above. (No local copy of [TwitterCards]
+— developer.x.com renders it client-side as a JS app, so there is no static
+document to mirror; use the web link. The Twitter Card vocabulary we emit also
+falls back to Open Graph, which IS mirrored.)
 [EPUB]: ./specs/EPUB3-spec.html
 [SMIL3]: ./specs/SMIL3-spec.html
 [SyncMedia]: ./specs/SyncMediaLite-spec.html
@@ -1180,6 +1289,16 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 [SSML]: ./specs/SSML-spec.html
 [SSML-mark]: ./specs/SSML-spec.html (section 3.3.2)
 [MediaSession]: ./specs/MediaSession-spec.html
+[SchemaOrg]: ./specs/SchemaOrg-spec.html
+[OpenGraph]: ./specs/OpenGraph-spec.html
+[Atom]: ./specs/Atom-spec.html
+[RSS2]: ./specs/RSS2-spec.html
+[ApplePodcast]: ./specs/ApplePodcast-spec.html
+[PodcastNS]: ./specs/PodcastNamespace-spec.md
+[TagURI]: ./specs/TagURI-spec.html
+[Podlove]: ./specs/PodloveSimpleChapters-spec.html
+[ID3Chapters]: ./specs/ID3Chapters-spec.html
+[JSONFeed]: ./specs/JSONFeed-spec.html
 [JWT]: ./specs/JWT-spec.html
 [JWS]: ./specs/JWS-spec.html
 [JWA]: ./specs/JWA-spec.html

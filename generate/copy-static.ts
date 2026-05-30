@@ -19,9 +19,10 @@
 // Runs as part of `bun run build` (between `bun build` and the HTML
 // strip). Idempotent; safe to re-run.
 
-import { cp, mkdir, readdir, stat } from "node:fs/promises";
+import { cp, mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
+import { buildAuthorMap } from "../shared/authorProfile.ts";
 
 const paths = resolveBlogPaths();
 const ROOT = paths.contentRoot;
@@ -90,6 +91,38 @@ async function copyAutomergeWasm(): Promise<boolean> {
   return true;
 }
 
+// Author bylines: write the public author map the client byline fetches
+// (`/assets/authors.json`, post path → {name, links, avatar}) and publish each
+// author's avatar under its PUBLIC handle (`dist/assets/authors/<handle>.<ext>`)
+// — never under the email, so the served byline can't re-leak the address the
+// HTML strip removes. Dev produces the identical map/avatars from the same
+// `buildAuthorMap`, so bylines match in dev and prod. See shared/authorProfile.ts.
+async function copyAuthorAssets(): Promise<number> {
+  const { map, avatars } = await buildAuthorMap(
+    paths.postsDir,
+    ROOT,
+    (msg) => console.warn(msg),
+  );
+
+  const assetsDir = join(DIST, "assets");
+  await mkdir(assetsDir, { recursive: true });
+  await writeFile(
+    join(assetsDir, "authors.json"),
+    JSON.stringify(map),
+    "utf8",
+  );
+
+  const avatarEntries = Object.entries(avatars);
+  if (avatarEntries.length > 0) {
+    const dst = join(assetsDir, "authors");
+    await mkdir(dst, { recursive: true });
+    for (const [servedName, srcPath] of avatarEntries) {
+      await cp(srcPath, join(dst, servedName));
+    }
+  }
+  return avatarEntries.length;
+}
+
 async function main(): Promise<void> {
   console.log("Copying static assets into dist/…");
   if (!(await exists(DIST))) {
@@ -102,6 +135,10 @@ async function main(): Promise<void> {
   console.log(`  generated/ → dist/generated/ (${audioCount} file(s))`);
   const wasmOk = await copyAutomergeWasm();
   if (wasmOk) console.log(`  automerge.wasm → dist/assets/automerge.wasm`);
+  const avatarCount = await copyAuthorAssets();
+  console.log(
+    `  authors/ → dist/assets/authors.json + ${avatarCount} avatar(s)`,
+  );
   console.log("Done.");
 }
 

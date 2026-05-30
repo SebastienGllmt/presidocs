@@ -153,6 +153,57 @@ class Narrator {
     // Shikwasa's chapter plugin fires this whenever the active chapter changes
     // — including when the user drags the scrub bar across a boundary.
     this.player.on("chapterchange", () => this.updateActiveChapter());
+
+    this.setupMediaSession();
+  }
+
+  // Wire the OS-level "now playing" surfaces (lock screen, macOS menu-bar
+  // widget + Control Center, Android/Chrome notification tile, Windows SMTC)
+  // and route hardware/OS media controls (Bluetooth headset taps, keyboard
+  // media keys) into the same player calls the in-page dock and keyboard
+  // shortcuts already use. Entirely additive and feature-detected: a no-op on
+  // browsers without `navigator.mediaSession`. No build/manifest changes — the
+  // manifest already carries title/artist/duration/chapters.
+  private setupMediaSession() {
+    if (!("mediaSession" in navigator) || !this.manifest) return;
+    const ms = navigator.mediaSession;
+
+    ms.metadata = new MediaMetadata({
+      title: this.title,
+      artist: this.artist,
+      // Site/publisher label; becomes the grouping line on the iOS lock screen.
+      album: this.artist,
+      artwork: [], // see methodology — no site cover art asset yet
+    });
+
+    // setActionHandler throws for actions a given UA doesn't support; swallow
+    // per-action so one unsupported action doesn't block the rest (notably
+    // previoustrack/nexttrack on Firefox/Linux without MPRIS).
+    const safeSet = (
+      action: MediaSessionAction,
+      handler: ((d: MediaSessionActionDetails) => void) | null,
+    ) => {
+      try {
+        ms.setActionHandler(action, handler);
+      } catch {
+        /* unsupported action — ignore */
+      }
+    };
+
+    safeSet("play", () => this.player?.play());
+    safeSet("pause", () => this.player?.pause());
+    // No real "stop" concept for a single track; pause matches user intent.
+    safeSet("stop", () => this.player?.pause());
+    safeSet("seekbackward", (d) => this.skipBy(asMs(-((d.seekOffset ?? 10) * 1000))));
+    safeSet("seekforward", (d) => this.skipBy(asMs((d.seekOffset ?? 10) * 1000)));
+    safeSet("seekto", (d) => {
+      if (d.seekTime == null) return;
+      this.seekToMs(asMs(d.seekTime * 1000));
+    });
+    // On a chaptered talk the user's "track" IS the chapter — mirrors the 1-9
+    // keyboard shortcuts (no wraparound at the ends).
+    safeSet("previoustrack", () => this.jumpToChapterDelta(-1));
+    safeSet("nexttrack", () => this.jumpToChapterDelta(1));
   }
 
   private jumpToChapter(chapter: ManifestChapter) {
@@ -162,6 +213,20 @@ class Narrator {
     // startTime && t < endTime).
     this.seekToMs(asMs(chapter.startTime + 10));
     this.player.play();
+  }
+
+  // Jump to the neighbouring chapter (MediaSession previoustrack/nexttrack).
+  // Silent no-op at the first/last chapter — same feel as the 1-9 shortcuts.
+  private jumpToChapterDelta(delta: -1 | 1) {
+    if (!this.manifest || !this.player) return;
+    const tMs = secondsToMs(asSeconds(this.player.currentTime));
+    const idx = this.manifest.chapters.findIndex(
+      (c) => tMs >= c.startTime && tMs < c.endTime,
+    );
+    if (idx < 0) return;
+    const target = this.manifest.chapters[idx + delta];
+    if (!target) return;
+    this.jumpToChapter(target);
   }
 
   // Injects one always-visible "Listen" pill in the viewport's bottom-right
@@ -605,20 +670,31 @@ class Narrator {
     }
   }
 
+  // Set the OS "now playing" state explicitly rather than letting the UA infer
+  // it from the <audio> element — the heuristic can disagree with reality after
+  // a programmatic `currentTime` write (which seekToMs does), leaving the lock
+  // screen showing Play while audio plays.
+  private setPlaybackState(state: MediaSessionPlaybackState) {
+    if ("mediaSession" in navigator) navigator.mediaSession.playbackState = state;
+  }
+
   private onPlay() {
     this.playing = true;
     if (this.highlightEnabled) this.narrationRoot.classList.add("narrating");
     this.startTicker();
+    this.setPlaybackState("playing");
   }
   private onPause() {
     this.playing = false;
     this.stopTicker();
+    this.setPlaybackState("paused");
   }
   private onEnded() {
     this.playing = false;
     this.stopTicker();
     this.narrationRoot.classList.remove("narrating");
     this.setActive(null);
+    this.setPlaybackState("none");
   }
 
   // rAF gives smoother highlight transitions than `timeupdate` (which only
@@ -652,6 +728,20 @@ class Narrator {
       else break;
     }
     this.setActive(active ? active.name : null);
+
+    // Drive the lock-screen / Now-Playing scrubber off the same canonical
+    // clock. Coalesced internally by the UA, so rAF-rate calls are fine. The
+    // spec requires position <= duration and throws otherwise; the final frame
+    // can drift a hair past duration, so clamp.
+    if ("mediaSession" in navigator && navigator.mediaSession.setPositionState) {
+      const audio = (this.player as unknown as { audio?: HTMLAudioElement }).audio;
+      const durationSec = msToSeconds(this.manifest.duration);
+      navigator.mediaSession.setPositionState({
+        duration: durationSec,
+        position: Math.min(msToSeconds(tMs), durationSec),
+        playbackRate: audio?.playbackRate ?? 1,
+      });
+    }
   }
 
   private setActive(id: string | null) {

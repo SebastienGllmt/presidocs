@@ -20,7 +20,7 @@
 // MOSS-TTS voice clone. The `generate:prod` npm script is `--tts=moss`; with
 // `MOSS_TTS_DIR` (your checkout) set in `.env`, production is just
 // `bun run generate:prod <post.html>`. The voice clip is resolved per-post
-// from `<meta name="author-email">` via `voices/<email>.wav` (see
+// from `<meta name="author-email">` via `authors/<email>.wav` (see
 // methodology.md "Per-author voice resolution"); pass `--voice=<reference.wav>`
 // to override. Optional MOSS env overrides:
 // `MOSS_TTS_PYTHON` (interpreter), `MOSS_TTS_DEVICE` (torch device),
@@ -78,7 +78,7 @@ const mock = flags.has("mock");
 const ttsName = flags.get("tts") ?? "say";
 // `--voice` is the `say` voice name OR, for `moss`, the path to the clone
 // reference clip. When --voice isn't passed and tts=moss, we auto-resolve from
-// the post's `<meta name="author-email">` via `voices/<email>.wav` — see the
+// the post's `<meta name="author-email">` via `authors/<email>.wav` — see the
 // per-author voice resolution in methodology.md. That happens after the HTML
 // is loaded; this `voice` is initialized lazily below.
 let voice = flags.get("voice") ?? (ttsName === "say" ? "Samantha" : "");
@@ -114,7 +114,7 @@ const projectRoot = resolve(dirname(htmlPath), "..");
 const outDir = join(projectRoot, "generated", slug);
 await mkdir(outDir, { recursive: true });
 
-// MOSS voice: when --voice isn't passed, look up `voices/<author-email>.wav`
+// MOSS voice: when --voice isn't passed, look up `authors/<author-email>.wav`
 // for THIS post's author (parsed from the post HTML). No env-var fallback —
 // the per-author convention is the only source so a multi-author blog can't
 // silently render the wrong voice (see methodology.md "Per-author voice
@@ -125,7 +125,7 @@ if (ttsName === "moss" && !voice) {
   if (!r.ok) {
     console.error(
       `Cannot resolve MOSS voice clip for ${htmlPath}: ${r.reason}.\n` +
-        `  Add the clip at voices/<author-email>.wav, or pass --voice=<path>.`,
+        `  Add the clip at authors/<author-email>.wav, or pass --voice=<path>.`,
     );
     process.exit(1);
   }

@@ -9,7 +9,7 @@
     "generate:prod": "bun engine/generate/generate.ts --tts=moss",
     "sound-test": "bun engine/generate/sound-test.ts posts/common-terms.pls --tts=moss --all",
     "clean": "bun engine/generate/clean.ts",
-    "build": "bun engine/generate/post-meta.ts && bun engine/generate/post-versions.ts && bun build ./index.html ./posts/*.html --outdir ./dist --target browser && bun engine/generate/copy-static.ts && bun engine/generate/strip-served-html.ts",
+    "build": "bun engine/generate/post-meta.ts && bun engine/generate/post-versions.ts && bun build ./index.html ./posts/*.html --outdir ./dist --target browser && bun engine/generate/copy-static.ts && bun engine/generate/share-card.ts && bun engine/generate/strip-served-html.ts && bun engine/generate/feeds.ts",
     "deploy": "bun run build && wrangler deploy",
     "resolve-threads": "bun engine/authoring/resolveThreads.ts",
     "export-annotations": "bun engine/authoring/exportAnnotations.ts",
@@ -18,7 +18,7 @@
     "push-resolutions": "bun engine/authoring/r2Sync.ts push"
   },
   "dependencies": {
-    "presidocs": "file:../presidocs",
+    "presidocs": "link:presidocs",
     "gsap": "^3.15.0"
   },
   "devDependencies": {

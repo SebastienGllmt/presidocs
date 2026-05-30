@@ -27,6 +27,7 @@ import { handlePostVersionRequest } from "./postVersionsRoute.ts";
 import { handleRegenerateRequest } from "./regenerate.dev.ts";
 import { handleSoundTestList, handleSoundTestRegenerate } from "./soundTest.dev.ts";
 import { withSecurityHeaders } from "../shared/securityHeaders.ts";
+import { buildAuthorMap } from "../shared/authorProfile.ts";
 import type { BlogPaths } from "../shared/blogPaths.ts";
 // Dev-only sound-test page. A static HTML bundle imported here (not in the
 // content repo's index.ts) because it's an engine surface, not blog content;
@@ -164,6 +165,34 @@ export async function createDevServer(opts: DevServerOptions) {
           "Cache-Control": "public, max-age=2592000, immutable",
         },
       })),
+    // Author byline data (client/byline.ts fetches this). Built fresh per
+    // request from the same `buildAuthorMap` the prod build uses, so a new post
+    // or edited profile shows up on reload without a restart. The map carries
+    // NO email — only public name/links/avatar-URL. Prod serves the identical
+    // file written into dist/assets by copy-static.ts.
+    "/assets/authors.json": pub(async () => {
+      const { map } = await buildAuthorMap(paths.postsDir, paths.contentRoot);
+      return new Response(JSON.stringify(map), {
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        },
+      });
+    }),
+    // Avatars, served under the PUBLIC handle (`<handle>.<ext>`) — never the
+    // email. The on-disk source is `authors/<email>.<ext>`; buildAuthorMap maps
+    // the public served name back to that source path.
+    "/assets/authors/*": pub(async (req) => {
+      const file = decodeURIComponent(
+        new URL(req.url).pathname.replace("/assets/authors/", ""),
+      );
+      const { avatars } = await buildAuthorMap(paths.postsDir, paths.contentRoot);
+      const srcPath = avatars[file];
+      if (!srcPath) return new Response("not found", { status: 404 });
+      return new Response(Bun.file(srcPath), {
+        headers: { "Cache-Control": "no-store" },
+      });
+    }),
     "/auth/google": priv(startGoogleAuth),
     "/auth/google/callback": priv(googleCallback),
     "/auth/microsoft": priv(startMicrosoftAuth),

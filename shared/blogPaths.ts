@@ -9,9 +9,9 @@
 //   to the current working directory, overridable via BLOG_CONTENT_DIR. For
 //   the presidocs repo itself, cwd === engineRoot so the two coincide and
 //   behavior is identical to before the engine/content split. For an external
-//   content repo (e.g. personal-blog) that depends on the engine via a `file:`
-//   dependency, cwd is the content repo and engineRoot resolves into
-//   node_modules/presidocs.
+//   content repo (e.g. personal-blog) that links the engine via `bun link`
+//   (`link:presidocs`), cwd is the content repo and engineRoot resolves
+//   through the (single) symlink to the real engine checkout.
 //
 // Rule of thumb: anything content-specific (posts, generated audio, the built
 // dist, the per-build generated maps) hangs off contentRoot; anything
@@ -37,11 +37,11 @@ export type BlogPaths = {
   automergeWasm: string;
 };
 
-// Resolve the vendored Automerge WASM. A `file:` install of the engine hoists
-// @automerge into the *content* repo's node_modules rather than the engine's
-// own, so a hardcoded engineRoot/node_modules path would miss. Bun's resolver
-// walks up from engineRoot and finds it in either place; fall back to the
-// nested path (the standalone-presidocs case) if resolution somehow fails.
+// Resolve the vendored Automerge WASM. Depending on how Bun hoists, @automerge
+// may sit in the *content* repo's node_modules or the engine's own, so a single
+// hardcoded path would sometimes miss. Try Bun's resolver first (it walks up
+// from engineRoot through the engine symlink); fall back to engineRoot/
+// node_modules, which holds it in the bun-link and standalone-presidocs cases.
 function resolveAutomergeWasm(engineRoot: string): string {
   const spec = "@automerge/automerge/dist/automerge.wasm";
   try {

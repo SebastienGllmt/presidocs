@@ -175,6 +175,29 @@ export function createWorkerHandler(content: WorkerContent) {
       // @ts-expect-error - ASSETS.fetch takes the same Request shape but
       //     types between the runtime Request and DOM Request don't unify.
       const assetResponse: Response = await env.ASSETS.fetch(req);
+
+      // The feeds are static assets, but the Static Assets binding serves .xml
+      // as generic application/xml. Override with the feed-specific MIME types
+      // that strict feed validators sniff for (Atom / RSS).
+      const path = new URL(req.url).pathname;
+      const feedCt =
+        path === "/feed.xml"
+          ? "application/atom+xml; charset=utf-8"
+          : path === "/podcast.xml"
+            ? "application/rss+xml; charset=utf-8"
+            : null;
+      if (feedCt && assetResponse.status === 200) {
+        const headers = new Headers(assetResponse.headers);
+        headers.set("Content-Type", feedCt);
+        return withSecurityHeaders(
+          new Response(assetResponse.body, {
+            status: assetResponse.status,
+            statusText: assetResponse.statusText,
+            headers,
+          }),
+        );
+      }
+
       return withSecurityHeaders(await applyRangeSupport(req, assetResponse));
     },
   };

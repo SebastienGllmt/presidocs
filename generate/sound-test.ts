@@ -11,9 +11,9 @@
 // Defaults to `--tts=moss` (the production voice; this whole feature exists to
 // catch MOSS's probabilistic mispronunciations). The voice clip is required:
 // pass `--voice=<path>` explicitly, or — on a single-author blog — let it
-// auto-resolve from the one author's `voices/<email>.wav`. The dev-server
+// auto-resolve from the one author's `authors/<email>.wav`. The dev-server
 // endpoint always passes `--voice=` (resolved from the session user's
-// `voices/<email>.wav`), so manual auto-resolution is just a CLI convenience.
+// `authors/<email>.wav`), so manual auto-resolution is just a CLI convenience.
 // Like the post pipeline it loads the multi-GB model once per run, so `--all`
 // synthesizes the whole lexicon in a single model load; a single `--index`
 // re-roll is one segment.
@@ -86,7 +86,7 @@ await mkdir(outDir, { recursive: true });
 
 // Manual-CLI voice auto-resolution: if `--voice` wasn't passed and we're using
 // MOSS, scan `posts/` for distinct author-emails — if there's exactly one,
-// resolve `voices/<email>.wav`. For multi-author blogs we require --voice to
+// resolve `authors/<email>.wav`. For multi-author blogs we require --voice to
 // be explicit (the page does this by passing the session user's resolved
 // clip); guessing one author over another would silently audition in the
 // wrong voice. No env-var fallback (the convention is per-author files).

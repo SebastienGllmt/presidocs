@@ -1,0 +1,309 @@
+// Build-time injection of discovery metadata into a post's served <head>:
+// Schema.org JSON-LD (BlogPosting + AudioObject + Person + Organization),
+// Open Graph, and a Twitter Card. This is the crawler/unfurl-facing counterpart
+// to the client-rendered byline — search engines, chat unfurls (Slack/Discord/
+// iMessage/LinkedIn), and LLM indexers read these tags, and Google's "Listen to
+// this article" audio surface needs the BlogPosting→AudioObject linkage.
+//
+// Build-time, not runtime: same posture as injectAnalytics.ts — runs in the
+// post-build rewrite over dist/ (server/createDevServer.ts serves un-rewritten
+// source in dev, which is fine; crawlers hit prod). No new dependency, no
+// source-HTML edits required.
+//
+// Title/description/lang/publisher are EXTRACTED from the post HTML (the data is
+// already there); dates/audio/author/site-URL/card are PASSED IN by the caller
+// (strip-served-html.ts), which has the disk + env context. The author Person
+// is sourced from the same public profile the byline uses (shared/authorProfile)
+// — so this file never sees the email either. `og:image`/`image` use the
+// generated 1200x630 share card (generate/share-card.ts); the small author
+// avatar is only the JSON-LD `Person.image`.
+//
+// Idempotent: if a JSON-LD block is already present, the whole inject is skipped.
+
+import { decodeHtmlEntities } from "./htmlEntities.ts";
+
+// The generated share card is a fixed 1200x630 PNG (generate/share-card.ts).
+// We know its dimensions here, so og:image:width/height and the JSON-LD
+// ImageObject can advertise them without re-reading the file.
+const CARD_WIDTH = 1200;
+const CARD_HEIGHT = 630;
+
+export type StructuredDataAuthor = {
+  name: string;
+  /** Public social links, e.g. { x: "https://x.com/Handle" }. */
+  links: Record<string, string>;
+  /** Absolute avatar URL, or null. Used only as the JSON-LD Person.image. */
+  avatarUrl: string | null;
+};
+
+export type StructuredDataContext = {
+  /** Canonical site origin, no trailing slash (e.g. "https://blog.example.com"). */
+  siteUrl: string;
+  /** Post path, e.g. "/posts/offer-files". */
+  postPath: string;
+  author: StructuredDataAuthor | null;
+  /** ISO-8601 timestamps from versions.json (oldest build / newest build). */
+  publishedAt: string | null;
+  modifiedAt: string | null;
+  /** Narration track, when the post has one. */
+  audio: { url: string; durationMs: number } | null;
+  /**
+   * The generated 1200x630 share card for this post (`/assets/og/<slug>.png`),
+   * or null when the card wasn't produced (the post declares its own og:image,
+   * or share-card.ts didn't run). This is the default og:image / twitter:image /
+   * JSON-LD image; a per-post og:image override still takes precedence.
+   */
+  cardUrl: string | null;
+};
+
+// Fields we read out of the post HTML in a single rewriter pass.
+type Extracted = {
+  title: string;
+  description: string; // <meta name=description> wins over #lede
+  lede: string;
+  lang: string;
+  publisher: string; // data-narration-artist (the site/publisher label)
+  ogImageOverride: string | null;
+  hasJsonLd: boolean;
+};
+
+function extract(html: string): Extracted {
+  const out: Extracted = {
+    title: "",
+    description: "",
+    lede: "",
+    lang: "",
+    publisher: "",
+    ogImageOverride: null,
+    hasJsonLd: html.includes("application/ld+json"),
+  };
+  let inTitle = false;
+  let inLede = false;
+  new HTMLRewriter()
+    .on("html", {
+      element(el) {
+        out.lang = el.getAttribute("lang") ?? "";
+      },
+    })
+    .on("title", {
+      element() {
+        inTitle = true;
+      },
+      text(t) {
+        if (inTitle) out.title += t.text;
+        if (t.lastInTextNode) inTitle = false;
+      },
+    })
+    .on('meta[name="description"]', {
+      element(el) {
+        out.description = el.getAttribute("content") ?? "";
+      },
+    })
+    .on("#lede", {
+      element() {
+        inLede = true;
+      },
+      text(t) {
+        if (inLede) out.lede += t.text;
+        if (t.lastInTextNode) inLede = false;
+      },
+    })
+    .on("[data-narration-artist]", {
+      element(el) {
+        if (!out.publisher) out.publisher = el.getAttribute("data-narration-artist") ?? "";
+      },
+    })
+    .on('meta[property="og:image"]', {
+      element(el) {
+        out.ogImageOverride = el.getAttribute("content");
+      },
+    })
+    .transform(html);
+  return out;
+}
+
+function collapseWs(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+// Escape for use inside a double-quoted HTML attribute.
+function attr(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// Milliseconds → ISO-8601 duration (e.g. 94096 → "PT1M34S"). Rounded to seconds.
+function msToIsoDuration(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  let out = "PT";
+  if (h) out += `${h}H`;
+  if (m) out += `${m}M`;
+  if (s || (!h && !m)) out += `${s}S`;
+  return out;
+}
+
+// og:locale wants `xx_YY`; bare "en" → "en_US" is the well-tested default.
+function toOgLocale(lang: string): string | null {
+  if (!lang) return null;
+  if (lang.includes("-")) return lang.replace("-", "_");
+  if (lang.toLowerCase() === "en") return "en_US";
+  return lang;
+}
+
+// Make an absolute URL: siteUrl already has no trailing slash; pathOrUrl is
+// either an absolute URL (override) or a site-root-relative path.
+function abs(siteUrl: string, pathOrUrl: string): string {
+  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+  return `${siteUrl}${pathOrUrl.startsWith("/") ? "" : "/"}${pathOrUrl}`;
+}
+
+// `https://x.com/Handle` → `@Handle` for twitter:creator.
+function xCreator(xUrl: string | undefined): string | null {
+  if (!xUrl) return null;
+  const seg = xUrl.replace(/\/+$/, "").split("/").pop();
+  return seg ? `@${seg}` : null;
+}
+
+export function injectStructuredData(
+  html: string,
+  ctx: StructuredDataContext,
+): string {
+  const ex = extract(html);
+  // Idempotent — never inject twice (a re-run of the build, or pre-existing
+  // hand-authored JSON-LD).
+  if (ex.hasJsonLd) return html;
+
+  const siteUrl = ctx.siteUrl.replace(/\/+$/, "");
+  const url = `${siteUrl}${ctx.postPath}`;
+  // Decode HTML entities (HTMLRewriter leaves them intact) before these
+  // plain-text fields hit JSON.stringify / attribute escaping, or e.g.
+  // `&mdash;` would double-encode to `&amp;mdash;` and render literally.
+  const title = decodeHtmlEntities(collapseWs(ex.title));
+  const description = decodeHtmlEntities(collapseWs(ex.description || ex.lede));
+  const lang = ex.lang || "en";
+  const publisher = decodeHtmlEntities(collapseWs(ex.publisher));
+  // og:image is a REQUIRED Open Graph property. Per-post override wins; else the
+  // generated 1200x630 card. `usingCard` distinguishes the card (whose dims we
+  // know) from an override (whose dims we don't).
+  const shareImage = ex.ogImageOverride
+    ? abs(siteUrl, ex.ogImageOverride)
+    : ctx.cardUrl
+      ? abs(siteUrl, ctx.cardUrl)
+      : null;
+  const usingCard = !ex.ogImageOverride && !!ctx.cardUrl;
+
+  // ---- JSON-LD (BlogPosting) ----
+  const ld: Record<string, unknown> = {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    "@id": `${url}#article`,
+    mainEntityOfPage: { "@type": "WebPage", "@id": url },
+    headline: title,
+    inLanguage: lang,
+  };
+  if (description) ld.description = description;
+  if (ctx.publishedAt) ld.datePublished = ctx.publishedAt;
+  if (ctx.modifiedAt) ld.dateModified = ctx.modifiedAt;
+  if (ctx.author) {
+    const person: Record<string, unknown> = {
+      "@type": "Person",
+      name: ctx.author.name,
+    };
+    const sameAs = Object.values(ctx.author.links).filter(Boolean);
+    if (sameAs.length) person.sameAs = sameAs;
+    if (ctx.author.avatarUrl) person.image = abs(siteUrl, ctx.author.avatarUrl);
+    ld.author = person;
+  }
+  if (publisher) {
+    ld.publisher = { "@type": "Organization", name: publisher };
+  }
+  // Google parses both a bare URL and an ImageObject; the object form (with
+  // dimensions) is the documented-preferred shape for the Article rich result.
+  // We only know the dims for our own card; an override stays a URL string.
+  if (shareImage) {
+    ld.image = usingCard
+      ? { "@type": "ImageObject", url: shareImage, width: CARD_WIDTH, height: CARD_HEIGHT }
+      : shareImage;
+  }
+  if (ctx.audio) {
+    ld.audio = {
+      "@type": "AudioObject",
+      "@id": `${url}#audio`,
+      contentUrl: abs(siteUrl, ctx.audio.url),
+      encodingFormat: "audio/mpeg",
+      duration: msToIsoDuration(ctx.audio.durationMs),
+      name: title ? `${title} (narrated)` : "Narration",
+      inLanguage: lang,
+    };
+  }
+  // Escape `<` so the JSON can never break out of the <script> element.
+  const ldJson = JSON.stringify(ld).replace(/</g, "\\u003c");
+
+  // ---- Open Graph + Twitter Card meta tags ----
+  const tags: string[] = [];
+  const meta = (prop: string, content: string, kind: "property" | "name" = "property") =>
+    tags.push(`<meta ${kind}="${prop}" content="${attr(content)}" />`);
+
+  tags.push(`<link rel="canonical" href="${attr(url)}" />`);
+  meta("og:type", "article");
+  if (title) meta("og:title", title);
+  if (description) meta("og:description", description);
+  meta("og:url", url);
+  if (publisher) meta("og:site_name", publisher);
+  const locale = toOgLocale(lang);
+  if (locale) meta("og:locale", locale);
+  // Only emit our own og:image when the source didn't already declare one —
+  // otherwise the author's per-post override tag stays and we'd duplicate it.
+  // (JSON-LD `image` / `twitter:image` below still use the resolved shareImage.)
+  if (shareImage && !ex.ogImageOverride) {
+    meta("og:image", shareImage);
+    // og:image:alt SHOULD accompany every og:image (OG "Structured Properties").
+    // The post title describes the card (blog name + title + author).
+    if (title) meta("og:image:alt", title);
+    // The card's size is fixed and known, so advertise it — unfurlers can lay
+    // out the card without first fetching the image.
+    if (usingCard) {
+      meta("og:image:width", String(CARD_WIDTH));
+      meta("og:image:height", String(CARD_HEIGHT));
+    }
+  }
+  if (ctx.audio) {
+    const audioUrl = abs(siteUrl, ctx.audio.url);
+    meta("og:audio", audioUrl);
+    meta("og:audio:secure_url", audioUrl);
+    meta("og:audio:type", "audio/mpeg");
+  }
+  if (ctx.publishedAt) meta("article:published_time", ctx.publishedAt);
+  if (ctx.modifiedAt) meta("article:modified_time", ctx.modifiedAt);
+  // article:author is typed as a profile URL (OG Article type → "profile array"),
+  // not a display name. Emit the author's X/website profile; the human-readable
+  // name is still carried by JSON-LD author.name and twitter:creator.
+  const authorUrl = ctx.author?.links.x ?? ctx.author?.links.website ?? null;
+  if (authorUrl) meta("article:author", authorUrl);
+
+  // The generated card and any wide override are large-format; only fall back to
+  // the small `summary` when there's no share image at all. Twitter falls back
+  // to OG for unset fields.
+  meta("twitter:card", shareImage ? "summary_large_image" : "summary", "name");
+  if (title) meta("twitter:title", title, "name");
+  if (description) meta("twitter:description", description, "name");
+  if (shareImage) meta("twitter:image", shareImage, "name");
+  const creator = xCreator(ctx.author?.links.x);
+  if (creator) meta("twitter:creator", creator, "name");
+
+  const block = `<script type="application/ld+json">${ldJson}</script>` + tags.join("");
+
+  return new HTMLRewriter()
+    .on("head", {
+      element(el) {
+        el.append(block, { html: true });
+      },
+    })
+    .transform(html);
+}

@@ -122,7 +122,7 @@ function soundTestDir(deps: SoundTestDeps): string {
 // respelling in the voice they author posts with. On a multi-author blog each
 // author sees their own audition state (the store keys on voice identity, so
 // Alice and Bob's clips coexist under different hash filenames). Returns null
-// when the user has no voices/<email>.wav, in which case the page lists the
+// when the user has no authors/<email>.wav, in which case the page lists the
 // lexemes for reference but can't generate/play audio for them.
 function voiceIdentityFor(
   session: SessionLike | null,
@@ -151,7 +151,7 @@ export async function handleSoundTestList(
 
   const entries = parseLexicon(await Bun.file(plsPath).text());
   // Audition state is keyed on the session user's voice — each author sees
-  // their own clips. If they haven't logged in (or have no voices/<email>.wav)
+  // their own clips. If they haven't logged in (or have no authors/<email>.wav)
   // we still list lexemes for reference, just without audio status.
   const session = await getSessionFromRequest(req);
   const identity = voiceIdentityFor(session, deps);
@@ -255,7 +255,7 @@ function jobStatus(): Job | { running: false } {
 async function runInPostsSweep(deps: SoundTestDeps, current: Job): Promise<void> {
   for (const p of current.posts!) {
     p.status = "running";
-    // EXPLICIT --voice per post (resolved from voices/<author-email>.wav) so a
+    // EXPLICIT --voice per post (resolved from authors/<author-email>.wav) so a
     // multi-author blog renders each post in its OWN author's clone. There's
     // intentionally no global default; a single fallback would silently
     // overwrite `full.<hash>.<ext>` with the wrong voice on a multi-author
@@ -361,7 +361,7 @@ export async function handleSoundTestRegenerate(
       );
     }
     // Resolve a voice clip per post BEFORE starting. Each post must render in
-    // its own author's voice (`voices/<author-email>.wav`). An unresolved post
+    // its own author's voice (`authors/<author-email>.wav`). An unresolved post
     // means the sweep would have no voice at all — refuse, listing the
     // offending posts so the gap is fixable.
     type Resolved = { slug: string; marks: string[]; clipPath: string };
@@ -380,7 +380,7 @@ export async function handleSoundTestRegenerate(
       const lines = unresolved.map((u) => `  ${u.slug}: ${u.reason}`).join("\n");
       return new Response(
         `cannot resolve a MOSS voice clip for these post(s):\n${lines}\n` +
-          `Add the missing voices/<author-email>.wav file(s).`,
+          `Add the missing authors/<author-email>.wav file(s).`,
         { status: 400 },
       );
     }
@@ -415,12 +415,12 @@ export async function handleSoundTestRegenerate(
   // --- audition-clip action (existing): one shell-out, one child -------------
   // The audition store keys on ONE voice — the session user's own — so the
   // user auditions the respelling in the voice they author posts with. The
-  // session is required (gated above) AND the user must have voices/<email>.wav;
+  // session is required (gated above) AND the user must have authors/<email>.wav;
   // refuse with a clear hint if they don't.
   const identity = voiceIdentityFor(session, deps);
   if (!identity) {
     return new Response(
-      `cannot resolve your voice clip (voices/${session.email.toLowerCase()}.wav). ` +
+      `cannot resolve your voice clip (authors/${session.email.toLowerCase()}.wav). ` +
         `Add it to audition. Per-post voice resolution for ?inPosts=1 is separate.`,
       { status: 400 },
     );

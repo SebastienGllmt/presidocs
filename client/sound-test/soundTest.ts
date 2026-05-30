@@ -13,7 +13,7 @@ type InPost = {
   marks: string[];
   manifestMtime: number; // 0 if never generated
   authorEmail: string | null;
-  voiceError: string | null; // non-null if no voices/<author-email>.wav for this post
+  voiceError: string | null; // non-null if no authors/<author-email>.wav for this post
 };
 
 type Lexeme = {
@@ -40,7 +40,7 @@ type PostProgress = {
   slug: string;
   marks: string[];
   // The voice clip the sweep is using for this post (resolved from
-  // voices/<author-email>.wav).
+  // authors/<author-email>.wav).
   voiceClipPath: string;
   status: "pending" | "running" | "ok" | "error";
   error?: string;
@@ -100,7 +100,7 @@ function render(data: ListResponse) {
   }
   if (!data.voiceConfigured) {
     showBanner(
-      "No voice clip for your account (voices/<your-email>.wav). " +
+      "No voice clip for your account (authors/<your-email>.wav). " +
         "Add it to generate and audition audio; terms are listed below for reference.",
     );
   } else {

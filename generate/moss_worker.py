@@ -71,7 +71,10 @@ def main():
         device = "cuda"
     else:
         device = "cpu"
-    dtype = torch.float32
+    # bf16 on CUDA so the ~1.7B model + ~1.6B audio tokenizer fit in modest
+    # VRAM (e.g. an 11 GB card); float32 would need ~13 GB and OOM. MPS/CPU
+    # keep float32, which is what those backends prefer.
+    dtype = torch.bfloat16 if device == "cuda" else torch.float32
     print(f"[moss-worker] device={device} dtype={dtype}", file=sys.stderr)
 
     processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
