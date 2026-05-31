@@ -24,6 +24,16 @@ html, body {
   font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 }
 
+/* Smooth-scroll any hash navigation (in-page deep-links into headings,
+   chapter pills jumping by id, etc.) site-wide. Respects the user's
+   prefers-reduced-motion via @media below — the browser honors that
+   automatically for `scroll-behavior: smooth` in modern engines, but the
+   explicit override keeps it consistent across older Safari builds. */
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+}
+
 /* Article meta strip (client/byline.ts → buildPostMeta). Sits directly under
    the <h1> title — the standard "date / reading time / mode toggle" slot on
    blogs. Currently shows "Last updated <date>"; later it'll be the home for
@@ -180,4 +190,107 @@ html, body {
   height: 1.35em;
   fill: currentColor;
   display: block;
+}
+
+/* Heading deep-link affordance (client/headerLinks.ts). A small link icon
+   sits to the right of every <h2>/<h3>/<h4> in the article, hidden until the
+   user hovers (or keyboard-focuses) the heading or the icon itself. Click
+   copies the absolute URL with #id to the clipboard and briefly swaps the
+   icon to a checkmark; the native <a href="#id"> still smooth-scrolls + lets
+   right-click → "Copy link address" work. */
+
+/* When a hash deep-links into a heading, keep it clear of the viewport top
+   so the heading isn't flush against the edge after the smooth-scroll lands.
+   Applies to every heading the module touches, plus the post title. */
+article h1, article h2, article h3, article h4, article h5, article h6 {
+  scroll-margin-top: 1rem;
+}
+
+/* The heading is the positioning context for its absolutely-positioned link
+   icon. We keep it `static` by default (so the icon flows in the text on
+   small screens) and switch to `relative` only at desktop widths where
+   there's gutter space for an absolute-positioned icon. */
+article h2, article h3, article h4 {
+  position: relative;
+}
+
+.heading-link {
+  /* Sit in the left gutter, just outside the heading's left edge — the
+     GitHub / Docusaurus convention readers already know. `right: 100%`
+     pins the icon's right edge to the heading's left edge; the small
+     `margin-right` is the gap between icon and text. */
+  position: absolute;
+  top: 0;
+  right: 100%;
+  display: inline-flex;
+  align-items: center;
+  height: 1.2em;
+  margin-top: 0.15em;
+  margin-right: 0.25rem;
+  padding: 0.15rem 0.3rem;
+  border-radius: 4px;
+  color: var(--page-fg-muted);
+  text-decoration: none;
+  opacity: 0;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+}
+/* Reveal on hover anywhere over the heading, on hover over the icon itself,
+   and on keyboard focus of the icon (so a Tab user can find it). */
+article h2:hover > .heading-link,
+article h3:hover > .heading-link,
+article h4:hover > .heading-link,
+.heading-link:hover,
+.heading-link:focus-visible {
+  opacity: 1;
+}
+.heading-link:hover {
+  color: var(--page-fg);
+  background: rgba(31, 35, 40, 0.06);
+}
+.heading-link:focus-visible {
+  outline: 2px solid var(--page-fg-muted);
+  outline-offset: 2px;
+}
+
+/* Icon stack — both icons live in the same wrap and we cross-fade by
+   toggling .heading-link-copied on the anchor. No layout shift between
+   states because both occupy the same grid cell. */
+.heading-link-icon-wrap {
+  position: relative;
+  display: inline-flex;
+  width: 1em;
+  height: 1em;
+}
+.heading-link-icon {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 100ms ease;
+}
+.heading-link-icon-default { opacity: 1; }
+.heading-link-icon-copied { opacity: 0; color: #1a7f37; }
+.heading-link.heading-link-copied .heading-link-icon-default { opacity: 0; }
+.heading-link.heading-link-copied .heading-link-icon-copied { opacity: 1; }
+.heading-link-svg {
+  width: 0.7em;
+  height: 0.7em;
+  fill: currentColor;
+  display: block;
+}
+
+/* On touch / no-hover devices the hover trigger never fires, so the icon
+   would never appear. Make it always-visible (and slightly dimmed) so the
+   affordance is reachable from a tap — and switch to inline-after-text
+   positioning, because the absolute `right: 100%` desktop placement sits
+   the icon in the left gutter, which clips off-screen on narrow mobile
+   viewports where the article hugs the viewport edge. */
+@media (hover: none) {
+  .heading-link {
+    position: static;
+    margin: 0 0 0 0.4rem;
+    vertical-align: middle;
+    opacity: 0.55;
+  }
 }
