@@ -156,7 +156,18 @@ export async function buildSilence(
 // arriving on a non-seekable pipe (it won't trust the data-chunk size
 // without a seek to verify), even when the header is correct. Decoding
 // to `-f null` and parsing the final `time=HH:MM:SS.ms` line gives us
-// the encoder's view of processed input duration, ms-precise, in-memory.
+// the encoder's view of processed input duration.
+//
+// IMPORTANT: this is centisecond-precise and SYSTEMATICALLY UNDERREPORTS
+// by up to ~46ms per buffer — ffmpeg's `time=HH:MM:SS.cc` is the timestamp
+// of the last fully-encoded packet to the null muxer, not the total input
+// duration, so a 19.633s WAV reads as `time=00:00:19.59`. That loss is
+// invisible on a single buffer but compounds per-segment when manifest
+// chapter times are accumulated from per-segment durations: ~5s of drift
+// over a 30-minute post, enough that a chapter mark seek lands inside the
+// previous chapter's audio. For a working-format (WAV PCM) buffer prefer
+// `pcmDurationMs` — it reads the data-chunk size from the header and is
+// exact. This function stays for MP3 / non-WAV inputs (tests, debugging).
 export async function durationViaFfmpeg(buf: Uint8Array): Promise<Milliseconds> {
   const proc = Bun.spawn({
     cmd: [
@@ -427,7 +438,12 @@ export function createMp3AudioPipeline(
     deliveryMime: "audio/mpeg",
     requiredBinaries: ["ffmpeg"],
     silence: (ms) => buildSilence(ms, format),
-    duration: durationViaFfmpeg,
+    // Read the WAV data-chunk size directly from the header (the working
+    // format is always WAV PCM here). Sample-accurate and free of the
+    // ~46ms-per-buffer underreport that `durationViaFfmpeg` carries — see
+    // the note on that function for why this matters when accumulating
+    // per-segment durations into manifest chapter times.
+    duration: async (buf) => pcmDurationMs(buf, format),
     concat: (bufs) => concatWavs(bufs, format),
     leadingSilenceMs,
     leadingSilenceTrimMs,

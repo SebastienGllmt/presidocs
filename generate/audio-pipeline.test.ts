@@ -55,10 +55,12 @@ test("durationViaFfmpeg handles a piped WAV (ffprobe regression)", async () => {
   // even when the header is correct, because it won't seek to verify the
   // data-chunk size. durationViaFfmpeg uses `ffmpeg -f null -stats` to
   // sidestep that. If this test starts failing with "no time= stat" or
-  // similar, ffmpeg's stats line format has changed.
+  // similar, ffmpeg's stats line format has changed. Tolerance is generous
+  // because the underlying `time=` value lags actual duration by up to one
+  // ffmpeg frame (~46ms) — see the comment on durationViaFfmpeg.
   const buf = await buildSilence(asMs(700), fmt);
   const dur = await durationViaFfmpeg(buf);
-  expect(dur).toBeCloseTo(700, -2);
+  expect(Math.abs(dur - 700)).toBeLessThan(100);
 });
 
 test("leadingSilenceMs returns 0 when audio starts with sound", async () => {
@@ -115,14 +117,16 @@ test("trimLeadingMs(buf, 0) is the identity (same reference)", async () => {
 test("trimLeadingMs removes the requested duration", async () => {
   const buf = await buildSilence(asMs(1500), fmt);
   const trimmed = await trimLeadingMs(buf, asMs(500));
-  expect(await durationViaFfmpeg(trimmed)).toBeCloseTo(1000, -2);
+  // pcmDurationMs (not durationViaFfmpeg) — sample-accurate from the header.
+  expect(pcmDurationMs(trimmed, fmt)).toBeCloseTo(1000, -2);
 });
 
 test("concatWavs sums input durations losslessly", async () => {
   const a = await buildSilence(asMs(500), fmt);
   const b = await buildSilence(asMs(800), fmt);
   const combined = concatWavs([a, b], fmt);
-  expect(await durationViaFfmpeg(combined)).toBeCloseTo(1300, -2);
+  // pcmDurationMs (not durationViaFfmpeg) — sample-accurate from the header.
+  expect(pcmDurationMs(combined, fmt)).toBe(asMs(1300));
 });
 
 test("concatWavs refuses zero inputs", () => {
@@ -156,7 +160,8 @@ test("end-to-end: silence + sound → detect → trim → verify what's left", a
 
   const leading = await leadingSilenceMs(combined);
   const trimmed = await trimLeadingMs(combined, leading);
-  const afterDur = await durationViaFfmpeg(trimmed);
+  // pcmDurationMs (not durationViaFfmpeg) — sample-accurate from the header.
+  const afterDur = pcmDurationMs(trimmed, fmt);
 
   // What's left after trimming should be (≈) the sound portion alone.
   expect(afterDur).toBeCloseTo(500, -2);
@@ -167,10 +172,41 @@ test("pcmDurationMs reads duration from the WAV header (no subprocess)", async (
   expect(pcmDurationMs(buf, fmt)).toBeCloseTo(1234, -2);
 });
 
+test("pcmDurationMs is sample-accurate where durationViaFfmpeg under-reports", async () => {
+  // ffmpeg's `-stats time=` is the timestamp of the last fully-encoded
+  // packet to the null muxer, not the total input duration — it lags the
+  // truth by up to one frame (~46ms on PCM). The drift was invisible per-
+  // buffer but accumulated to ~5s over a 30-min post when manifest chapter
+  // times were derived from per-segment durations, sending chapter-mark
+  // seeks into the previous chapter's audio. The pipeline's `duration` op
+  // now reads the WAV header (pcmDurationMs); this test pins the
+  // discrepancy so we don't quietly re-introduce the ffmpeg path.
+  const buf = await buildSilence(asMs(19633), fmt);
+  expect(pcmDurationMs(buf, fmt)).toBe(asMs(19633));
+  const viaFfmpeg = await durationViaFfmpeg(buf);
+  expect(asMs(19633) - viaFfmpeg).toBeGreaterThanOrEqual(0);
+});
+
+test("pipeline.duration accumulates losslessly over many segments", async () => {
+  // Accumulating per-segment durations is exactly what generate.ts does to
+  // place chapter marks on the master track. Pin the property: summing
+  // pipeline.duration over a batch equals the duration of the concatenated
+  // buffer, so manifest offsets cannot drift relative to the audio.
+  const pipeline = createMp3AudioPipeline(fmt, "64k");
+  const lengths = [123, 456, 789, 1000, 333, 666, 999, 1234].map((n) => asMs(n));
+  const bufs = await Promise.all(lengths.map((ms) => pipeline.silence(ms)));
+  const summed = (
+    await Promise.all(bufs.map((b) => pipeline.duration(b)))
+  ).reduce((a, b) => a + b, 0);
+  const concatDur = await pipeline.duration(pipeline.concat(bufs));
+  expect(summed).toBe(concatDur);
+});
+
 test("truncateToMs keeps only the first N ms", async () => {
   const buf = await makeSineWav(asMs(1000));
   const cut = await truncateToMs(buf, asMs(600));
-  expect(await durationViaFfmpeg(cut)).toBeCloseTo(600, -2);
+  // pcmDurationMs (not durationViaFfmpeg) — sample-accurate from the header.
+  expect(pcmDurationMs(cut, fmt)).toBeCloseTo(600, -2);
 });
 
 test("trailingArtifactTrimMs detects a short noise burst after a trailing silence gap", async () => {
