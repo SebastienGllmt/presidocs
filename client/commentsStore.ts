@@ -37,7 +37,7 @@ type Doc<T> = AutomergeNS.Doc<T>;
 // URL the slim init fetches to instantiate the WebAssembly module.
 // Override via `setCommentsWasmSource(...)` (used by tests, which run
 // in Bun's Node-like runtime and read the file from disk instead).
-type WasmSource = string | URL | Request | Uint8Array | ArrayBuffer;
+type WasmSource = string | Uint8Array;
 let _wasmSource: WasmSource = "/assets/automerge.wasm";
 
 export function setCommentsWasmSource(src: WasmSource): void {

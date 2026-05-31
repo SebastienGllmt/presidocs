@@ -26,5 +26,9 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+  // The starter template imports `presidocs/...` and `./.generated/...`
+  // paths that only resolve once it's been copied into a consumer repo —
+  // it can't typecheck where it lives.
+  "exclude": ["templates/content-repo"]
 }
