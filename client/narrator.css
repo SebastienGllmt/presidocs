@@ -869,16 +869,37 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   overflow-y: auto;
   /* Contain scroll: keep wheel/touch scrolling from chaining to the page. */
   overscroll-behavior: contain;
-  padding: 8px 12px 32px;
+  /* No top padding: the first chapter heading is sticky and needs to butt
+     against the drawer header so scrolled segments don't peek through a
+     gap above it. Top breathing room is folded into the h3's own padding. */
+  padding: 0 12px 32px;
   scroll-behavior: smooth;
+  /* Sticky offset used by sub-chapter headings to stack just below the
+     parent chapter heading. Must match the parent h3's effective height. */
+  --sticky-chapter-h: 40px;
 }
 
 .spoken-chapter {
   margin: 0;
 }
 
-.spoken-chapter h3 {
-  margin: 18px 8px 6px;
+/* Chapter heading rendered as a labeled divider, mirroring the article's
+   `.section-divider-labeled`. Sticky to the drawer-body top so the title
+   stays visible while reading the chapter's content (sticky-scroll, like
+   modern editors), and the flanking hairlines meet the vertical rule
+   drawn down the segment list below. */
+.spoken-chapter > h3 {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--page-bg);
+  min-height: var(--sticky-chapter-h);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 0.8em;
+  margin: 0;
+  padding: 12px 0 8px;
   font-size: 0.74rem;
   font-weight: 700;
   letter-spacing: 0.1em;
@@ -886,10 +907,64 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   color: var(--page-fg-muted);
 }
 
+.spoken-chapter > h3::before,
+.spoken-chapter > h3::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid currentColor;
+  opacity: 0.5;
+}
+
+/* Vertical hairline running from the chapter heading down to the next
+   chapter. The 6px padding-left shifts segment content just clear of the
+   rule so the line doesn't crowd the play button. Direct rgba (not
+   color-mix) — the muted color is already medium-dark, so anything above
+   ~35% alpha visually reads as solid. */
 .spoken-segments {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: 0 0 0 6px;
+  border-left: 1px solid rgba(87, 96, 106, 0.35);
+}
+
+/* Sub-chapter: in-place subheading rather than a new chapter divider.
+   Distinct shape from the parent: text is left-aligned with a hairline
+   extending to the right (vs. the parent's centered label flanked by two
+   hairlines), so even out of sticky context it reads as "still inside
+   the chapter, just a sub-section". Sticks just below the parent heading
+   so both stay visible while scrolling. The left rule continues the
+   parent chapter's vertical line straight through it. */
+.spoken-chapter[data-subchapter="true"] > h3 {
+  position: sticky;
+  top: var(--sticky-chapter-h);
+  z-index: 1;
+  background: var(--page-bg);
+  display: flex;
+  align-items: center;
+  gap: 0.8em;
+  margin: 0;
+  padding: 8px 0 6px 6px;
+  border-left: 1px solid rgba(87, 96, 106, 0.35);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  color: color-mix(in srgb, var(--page-fg-muted) 50%, transparent);
+}
+
+/* Suppress only the leading hairline — keep the trailing one so the
+   subheading visually flows into a line that extends to the right edge. */
+.spoken-chapter[data-subchapter="true"] > h3::before {
+  display: none;
+}
+
+/* Override the inherited parent-h3 rule: subchapter text color is already
+   alpha-faded, so currentColor × opacity:0.5 would make the trailing
+   hairline nearly invisible. Pin it to a fixed alpha that matches the
+   vertical rule instead. */
+.spoken-chapter[data-subchapter="true"] > h3::after {
+  border-top: 1px solid rgba(87, 96, 106, 0.35);
+  opacity: 1;
 }
 
 .spoken-segments > li {

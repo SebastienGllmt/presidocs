@@ -1229,6 +1229,9 @@ class Narrator {
     drawer.appendChild(header);
 
     // Body: one section per chapter, each section is a list of segments.
+    // Sub-chapter sections nest INSIDE their parent's section so the parent
+    // heading can stay sticky for the duration of its sub-chapters (sticky
+    // scoping is bounded by the containing block).
     const body = document.createElement("div");
     body.className = "narrate-drawer-body";
 
@@ -1238,24 +1241,51 @@ class Narrator {
       byChapter.get(mark.chapter)!.push(mark);
     }
 
+    const childrenOf = new Map<string, ManifestChapter[]>();
     for (const chapter of manifest.chapters) {
+      if (chapter.parentId === undefined) continue;
+      if (!childrenOf.has(chapter.parentId)) childrenOf.set(chapter.parentId, []);
+      childrenOf.get(chapter.parentId)!.push(chapter);
+    }
+
+    const buildSection = (
+      chapter: ManifestChapter,
+      isSub: boolean,
+    ): HTMLElement | null => {
       const marks = byChapter.get(chapter.id) ?? [];
-      if (marks.length === 0) continue;
+      const subs = isSub ? [] : (childrenOf.get(chapter.id) ?? []);
+      if (marks.length === 0 && subs.length === 0) return null;
+
       const section = document.createElement("section");
       section.className = "spoken-chapter";
       section.dataset.chapter = chapter.id;
+      if (isSub) section.dataset.subchapter = "true";
 
       const heading = document.createElement("h3");
       heading.textContent = chapter.title;
       section.appendChild(heading);
 
-      const ol = document.createElement("ol");
-      ol.className = "spoken-segments";
-      for (const mark of marks) {
-        ol.appendChild(this.renderSegment(mark));
+      if (marks.length > 0) {
+        const ol = document.createElement("ol");
+        ol.className = "spoken-segments";
+        for (const mark of marks) {
+          ol.appendChild(this.renderSegment(mark));
+        }
+        section.appendChild(ol);
       }
-      section.appendChild(ol);
-      body.appendChild(section);
+
+      for (const sub of subs) {
+        const subSection = buildSection(sub, true);
+        if (subSection) section.appendChild(subSection);
+      }
+
+      return section;
+    };
+
+    for (const chapter of manifest.chapters) {
+      if (chapter.parentId !== undefined) continue;
+      const section = buildSection(chapter, false);
+      if (section) body.appendChild(section);
     }
     drawer.appendChild(body);
 
