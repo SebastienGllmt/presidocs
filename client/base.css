@@ -24,6 +24,30 @@ html, body {
   font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 }
 
+/* Article meta strip (client/byline.ts → buildPostMeta). Sits directly under
+   the <h1> title — the standard "date / reading time / mode toggle" slot on
+   blogs. Currently shows "Last updated <date>"; later it'll be the home for
+   the slideshow-mode toggle and any other consumption-mode controls —
+   anything that's *about the article*, distinct from the author block.
+   Snugged up to the title with a 0 top margin so it reads as a subtitle line
+   rather than a floating block. */
+.post-meta {
+  font-size: .75rem;
+  color: var(--page-fg-muted);
+  /* Negative top margin pulls the strip up tight against the title so it reads
+     as a subtitle line rather than a separate paragraph block. */
+  margin: -24px 0 .25rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .4em;
+  opacity: 0.75;
+}
+/* Fade the "Last updated" label so the date itself is the line's focal point. */
+.post-meta-label {
+  opacity: .85;
+}
+
 /* Author byline (client/byline.ts). Lives in base.css — not narrator.css —
    because it must appear on every post, including narration opt-out posts that
    never link narrator.css (same reasoning that moved the page-global layer
@@ -34,6 +58,12 @@ html, body {
   align-items: center;
   gap: .75rem;
   margin: 1rem 0 1.5rem;
+}
+/* When post-meta sits above the byline, its margin-bottom already provides the
+   gap, so the byline only needs a thin top margin (otherwise the two stack
+   with awkward space between them). */
+.post-meta + .byline {
+  margin-top: .25rem;
 }
 .byline-avatar {
   width: 48px;
@@ -52,13 +82,30 @@ html, body {
 }
 .byline-links {
   display: flex;
-  gap: .6rem;
+  align-items: center;
+  gap: .55rem;
   font-size: .9rem;
 }
 .byline-link {
   color: var(--page-fg-muted);
   text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
 }
 .byline-link:hover {
+  color: var(--page-fg);
   text-decoration: underline;
+}
+/* The icon variant of a byline-link has no visible text — only an inline SVG
+   with aria-label on the anchor. Strip the hover underline so an empty text
+   node doesn't paint a stray rule. */
+.byline-link:has(> .byline-icon):hover {
+  text-decoration: none;
+}
+.byline-icon {
+  width: 1.1em;
+  height: 1.1em;
+  fill: currentColor;
+  display: block;
 }

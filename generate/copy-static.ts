@@ -23,6 +23,7 @@ import { cp, mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { buildAuthorMap } from "../shared/authorProfile.ts";
+import { buildPublicPostVersionsMap } from "../shared/publicPostVersions.ts";
 
 const paths = resolveBlogPaths();
 const ROOT = paths.contentRoot;
@@ -123,6 +124,23 @@ async function copyAuthorAssets(): Promise<number> {
   return avatarEntries.length;
 }
 
+// Public per-post last-updated date served at /assets/post-versions.json. The
+// client byline fetches this and renders the date; we deliberately publish only
+// the most recent builtAt (no hash, no per-build history) so this stays a
+// human-readable freshness signal, distinct from the gated /post-version
+// endpoint. Dev produces the identical file from the same `posts/versions.json`.
+async function copyPublicPostVersions(): Promise<number> {
+  const map = await buildPublicPostVersionsMap(paths.versionsJson);
+  const assetsDir = join(DIST, "assets");
+  await mkdir(assetsDir, { recursive: true });
+  await writeFile(
+    join(assetsDir, "post-versions.json"),
+    JSON.stringify(map),
+    "utf8",
+  );
+  return Object.keys(map).length;
+}
+
 async function main(): Promise<void> {
   console.log("Copying static assets into dist/…");
   if (!(await exists(DIST))) {
@@ -138,6 +156,10 @@ async function main(): Promise<void> {
   const avatarCount = await copyAuthorAssets();
   console.log(
     `  authors/ → dist/assets/authors.json + ${avatarCount} avatar(s)`,
+  );
+  const versionCount = await copyPublicPostVersions();
+  console.log(
+    `  posts/versions.json → dist/assets/post-versions.json (${versionCount} post(s))`,
   );
   console.log("Done.");
 }

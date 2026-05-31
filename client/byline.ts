@@ -17,21 +17,62 @@
 // keeping the address out of the response exactly as the served-HTML strip
 // intends. See shared/authorProfile.ts.
 
+// FontAwesome Free v7 brand/solid SVGs, imported as inline text so they end up
+// in the JS bundle (no webfont, no extra <link>, nothing for CSP `font-src` to
+// govern). Each SVG paints with `fill="currentColor"`, so the icon inherits
+// the anchor's text color and hover state automatically. Unknown link keys
+// fall back to a plain text label.
+import faGithub from "@fortawesome/fontawesome-free/svgs/brands/github.svg" with { type: "text" };
+import faXTwitter from "@fortawesome/fontawesome-free/svgs/brands/x-twitter.svg" with { type: "text" };
+import faBluesky from "@fortawesome/fontawesome-free/svgs/brands/bluesky.svg" with { type: "text" };
+import faMastodon from "@fortawesome/fontawesome-free/svgs/brands/mastodon.svg" with { type: "text" };
+import faLinkedin from "@fortawesome/fontawesome-free/svgs/brands/linkedin.svg" with { type: "text" };
+import faYoutube from "@fortawesome/fontawesome-free/svgs/brands/youtube.svg" with { type: "text" };
+import faThreads from "@fortawesome/fontawesome-free/svgs/brands/threads.svg" with { type: "text" };
+import faInstagram from "@fortawesome/fontawesome-free/svgs/brands/instagram.svg" with { type: "text" };
+import faFacebook from "@fortawesome/fontawesome-free/svgs/brands/facebook.svg" with { type: "text" };
+import faReddit from "@fortawesome/fontawesome-free/svgs/brands/reddit.svg" with { type: "text" };
+import faTwitch from "@fortawesome/fontawesome-free/svgs/brands/twitch.svg" with { type: "text" };
+import faDiscord from "@fortawesome/fontawesome-free/svgs/brands/discord.svg" with { type: "text" };
+import faTiktok from "@fortawesome/fontawesome-free/svgs/brands/tiktok.svg" with { type: "text" };
+import faGlobe from "@fortawesome/fontawesome-free/svgs/solid/globe.svg" with { type: "text" };
+import faEnvelope from "@fortawesome/fontawesome-free/svgs/solid/envelope.svg" with { type: "text" };
+import faRss from "@fortawesome/fontawesome-free/svgs/solid/rss.svg" with { type: "text" };
+
 type PublicAuthorProfile = {
   name: string;
   links: Record<string, string>;
   avatar: string | null;
 };
 
-// Display label for a known link key; unknown keys fall back to the key itself.
-const LINK_LABELS: Record<string, string> = {
-  x: "X",
-  twitter: "X",
-  github: "GitHub",
-  bluesky: "Bluesky",
-  mastodon: "Mastodon",
-  website: "Website",
-  web: "Website",
+// Public per-post version metadata (no hash; just the most recent builtAt).
+// Mirrors shared/publicPostVersions.ts. See `/assets/post-versions.json`.
+type PublicPostVersion = { lastUpdated: string };
+
+type LinkPresentation = { label: string; svg: string };
+
+// Display label + icon for a known link key. Aliases map onto the same icon
+// (twitter→X, web→website). Unknown keys fall back to a plain text anchor —
+// the author can add a custom key without breaking the byline.
+const LINK_PRESENTATION: Record<string, LinkPresentation> = {
+  x: { label: "X", svg: faXTwitter },
+  twitter: { label: "X", svg: faXTwitter },
+  github: { label: "GitHub", svg: faGithub },
+  bluesky: { label: "Bluesky", svg: faBluesky },
+  mastodon: { label: "Mastodon", svg: faMastodon },
+  linkedin: { label: "LinkedIn", svg: faLinkedin },
+  youtube: { label: "YouTube", svg: faYoutube },
+  threads: { label: "Threads", svg: faThreads },
+  instagram: { label: "Instagram", svg: faInstagram },
+  facebook: { label: "Facebook", svg: faFacebook },
+  reddit: { label: "Reddit", svg: faReddit },
+  twitch: { label: "Twitch", svg: faTwitch },
+  discord: { label: "Discord", svg: faDiscord },
+  tiktok: { label: "TikTok", svg: faTiktok },
+  website: { label: "Website", svg: faGlobe },
+  web: { label: "Website", svg: faGlobe },
+  email: { label: "Email", svg: faEnvelope },
+  rss: { label: "RSS", svg: faRss },
 };
 
 function normalizePath(pathname: string): string {
@@ -39,6 +80,45 @@ function normalizePath(pathname: string): string {
   // trailing slash, and never key on a bare `/`.
   if (pathname.length > 1 && pathname.endsWith("/")) return pathname.slice(0, -1);
   return pathname;
+}
+
+// Format an ISO timestamp as "Last updated May 31, 2026". Falls back to the
+// raw ISO if parsing fails — better an awkward date than no date.
+function formatLastUpdated(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  try {
+    return d.toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    });
+  } catch {
+    return d.toISOString().slice(0, 10);
+  }
+}
+
+// Article meta strip — shown directly above the byline (and, in the future,
+// home to the slideshow-mode toggle and other consumption-mode controls). Kept
+// separate from the byline because the two are different concerns: this is
+// metadata *about the article*, the byline is metadata *about the author*.
+// Conflating them was forcing the byline's text column taller than the 48px
+// avatar; splitting them lets the byline shrink back to identity-only.
+function buildPostMeta(version: PublicPostVersion | null): HTMLElement | null {
+  if (!version?.lastUpdated) return null;
+  const meta = document.createElement("div");
+  meta.className = "post-meta";
+  const label = document.createElement("span");
+  label.className = "post-meta-label";
+  label.textContent = "Last updated ";
+  const time = document.createElement("time");
+  time.className = "post-meta-updated";
+  // Machine-readable datetime stays the original ISO; the text is human-formatted.
+  time.dateTime = version.lastUpdated;
+  time.textContent = formatLastUpdated(version.lastUpdated);
+  meta.appendChild(label);
+  meta.appendChild(time);
+  return meta;
 }
 
 function buildByline(profile: PublicAuthorProfile): HTMLElement {
@@ -81,7 +161,26 @@ function buildByline(profile: PublicAuthorProfile): HTMLElement {
       // `author`/`me` mark this as the author's own identity link; `noopener`
       // for the new tab.
       a.rel = "author me noopener";
-      a.textContent = LINK_LABELS[key] ?? key;
+      const preset = LINK_PRESENTATION[key];
+      const label = preset?.label ?? key;
+      // Tooltip + accessible name on the anchor itself, so the icon-only link
+      // is readable to screen readers and hover-discoverable to sighted users.
+      a.setAttribute("aria-label", label);
+      a.title = label;
+      if (preset) {
+        // Inline SVG (from FontAwesome, fill="currentColor") so the icon
+        // inherits text color and there's no extra network fetch — no webfont,
+        // no separate image asset, nothing for CSP to govern.
+        a.innerHTML = preset.svg;
+        const svgEl = a.querySelector("svg");
+        if (svgEl) {
+          svgEl.setAttribute("aria-hidden", "true");
+          svgEl.setAttribute("focusable", "false");
+          svgEl.classList.add("byline-icon");
+        }
+      } else {
+        a.textContent = label;
+      }
       links.appendChild(a);
     }
     text.appendChild(links);
@@ -99,26 +198,57 @@ async function boot(): Promise<void> {
   // Idempotent — never render two bylines.
   if (article.querySelector(".byline")) return;
 
+  // Both maps key by post path. Fetched in parallel — the byline never blocks
+  // on the date (it renders without one if the file is missing).
+  const [authorsRes, versionsRes] = await Promise.allSettled([
+    fetch("/assets/authors.json", { credentials: "omit" }),
+    fetch("/assets/post-versions.json", { credentials: "omit" }),
+  ]);
+
   let map: Record<string, PublicAuthorProfile>;
   try {
-    const res = await fetch("/assets/authors.json", { credentials: "omit" });
-    if (!res.ok) return;
-    map = (await res.json()) as Record<string, PublicAuthorProfile>;
+    if (authorsRes.status !== "fulfilled" || !authorsRes.value.ok) return;
+    map = (await authorsRes.value.json()) as Record<string, PublicAuthorProfile>;
   } catch {
     return;
   }
 
-  const profile = map[normalizePath(location.pathname)];
+  let versions: Record<string, PublicPostVersion> = {};
+  if (versionsRes.status === "fulfilled" && versionsRes.value.ok) {
+    try {
+      versions = (await versionsRes.value.json()) as Record<string, PublicPostVersion>;
+    } catch {
+      versions = {};
+    }
+  }
+
+  const postPath = normalizePath(location.pathname);
+  const profile = map[postPath];
   if (!profile || !profile.name) return;
+  const version = versions[postPath] ?? null;
 
   const byline = buildByline(profile);
-  // Place it directly under the lede if present, else under the <h1> title,
-  // else at the top of the article.
+  const postMeta = buildPostMeta(version);
   const lede = article.querySelector("#lede");
   const title = article.querySelector("#title");
+
+  // Byline keeps its old slot — under the lede if present, else under the title.
   if (lede) lede.after(byline);
   else if (title) title.after(byline);
   else article.prepend(byline);
+
+  // Post-meta sits *directly under the <h1> title* — where readers expect
+  // "date / reading time / mode toggle" type info on a blog. With a lede this
+  // separates the title from its lede with the date row, which is the standard
+  // pattern (NYT/Guardian/Substack). Insertion is `title.after(postMeta)` AFTER
+  // the byline insertion above — so in the no-lede case where both share the
+  // title anchor, DOM order is title → postMeta → byline (each .after() inserts
+  // as the title's *immediate* next sibling, pushing the previous insertion
+  // down).
+  if (postMeta) {
+    if (title) title.after(postMeta);
+    else article.prepend(postMeta);
+  }
 }
 
 if (document.readyState === "loading") {

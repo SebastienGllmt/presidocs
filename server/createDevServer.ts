@@ -28,6 +28,7 @@ import { handleRegenerateRequest } from "./regenerate.dev.ts";
 import { handleSoundTestList, handleSoundTestRegenerate } from "./soundTest.dev.ts";
 import { withSecurityHeaders } from "../shared/securityHeaders.ts";
 import { buildAuthorMap } from "../shared/authorProfile.ts";
+import { buildPublicPostVersionsMap } from "../shared/publicPostVersions.ts";
 import type { BlogPaths } from "../shared/blogPaths.ts";
 // Dev-only sound-test page. A static HTML bundle imported here (not in the
 // content repo's index.ts) because it's an engine surface, not blog content;
@@ -172,6 +173,20 @@ export async function createDevServer(opts: DevServerOptions) {
     // file written into dist/assets by copy-static.ts.
     "/assets/authors.json": pub(async () => {
       const { map } = await buildAuthorMap(paths.postsDir, paths.contentRoot);
+      return new Response(JSON.stringify(map), {
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        },
+      });
+    }),
+    // Public per-post last-updated date (client/byline.ts fetches this). Built
+    // fresh per request from posts/versions.json — the same source the prod
+    // build reads — so a new commit's builtAt picks up on reload without a
+    // restart. Public counterpart to the gated /post-version endpoint; carries
+    // no hash, only the most recent ISO timestamp.
+    "/assets/post-versions.json": pub(async () => {
+      const map = await buildPublicPostVersionsMap(paths.versionsJson);
       return new Response(JSON.stringify(map), {
         headers: {
           "Content-Type": "application/json",
