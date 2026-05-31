@@ -499,6 +499,26 @@ class CommentSystem {
         this.showActionBarFor(this.pendingRange);
       }
     });
+
+    // Brighten the logged-out sign-in CTA once the reader scrolls past a
+    // small threshold — the engagement signal the CSS dim-by-default is
+    // waiting for. One-shot: removes itself once fired, and skipped
+    // entirely for signed-in readers (the card isn't a CTA for them).
+    // If the page loads already scrolled (deep-link to a #anchor),
+    // reveal immediately so the card doesn't look broken.
+    if (!this.identity) {
+      const revealThreshold = 200;
+      const reveal = () => {
+        if (window.scrollY < revealThreshold) return;
+        document.body.classList.add("cmt-identity-revealed");
+        window.removeEventListener("scroll", reveal);
+      };
+      if (window.scrollY >= revealThreshold) {
+        document.body.classList.add("cmt-identity-revealed");
+      } else {
+        window.addEventListener("scroll", reveal, { passive: true });
+      }
+    }
   }
 
   // ===== Indexing =====
