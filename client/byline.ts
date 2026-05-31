@@ -121,6 +121,41 @@ function buildPostMeta(version: PublicPostVersion | null): HTMLElement | null {
   return meta;
 }
 
+// Build one social-link anchor with the inline icon (or text fallback for
+// unknown keys). Shared by the byline at the top of the post and the follow-
+// CTA at the bottom so both stay byte-identical in markup and CSS surface;
+// only the parent class differs.
+function buildLinkAnchor(key: string, href: string, parentClass: string): HTMLAnchorElement {
+  const a = document.createElement("a");
+  a.className = `${parentClass}-link ${parentClass}-link-${key}`;
+  a.href = href;
+  a.target = "_blank";
+  // `author`/`me` mark this as the author's own identity link; `noopener`
+  // for the new tab.
+  a.rel = "author me noopener";
+  const preset = LINK_PRESENTATION[key];
+  const label = preset?.label ?? key;
+  // Tooltip + accessible name on the anchor itself, so the icon-only link
+  // is readable to screen readers and hover-discoverable to sighted users.
+  a.setAttribute("aria-label", label);
+  a.title = label;
+  if (preset) {
+    // Inline SVG (from FontAwesome, fill="currentColor") so the icon
+    // inherits text color and there's no extra network fetch — no webfont,
+    // no separate image asset, nothing for CSP to govern.
+    a.innerHTML = preset.svg;
+    const svgEl = a.querySelector("svg");
+    if (svgEl) {
+      svgEl.setAttribute("aria-hidden", "true");
+      svgEl.setAttribute("focusable", "false");
+      svgEl.classList.add(`${parentClass}-icon`);
+    }
+  } else {
+    a.textContent = label;
+  }
+  return a;
+}
+
 function buildByline(profile: PublicAuthorProfile): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "byline";
@@ -154,37 +189,69 @@ function buildByline(profile: PublicAuthorProfile): HTMLElement {
     for (const key of linkKeys) {
       const href = profile.links[key];
       if (!href) continue;
-      const a = document.createElement("a");
-      a.className = `byline-link byline-link-${key}`;
-      a.href = href;
-      a.target = "_blank";
-      // `author`/`me` mark this as the author's own identity link; `noopener`
-      // for the new tab.
-      a.rel = "author me noopener";
-      const preset = LINK_PRESENTATION[key];
-      const label = preset?.label ?? key;
-      // Tooltip + accessible name on the anchor itself, so the icon-only link
-      // is readable to screen readers and hover-discoverable to sighted users.
-      a.setAttribute("aria-label", label);
-      a.title = label;
-      if (preset) {
-        // Inline SVG (from FontAwesome, fill="currentColor") so the icon
-        // inherits text color and there's no extra network fetch — no webfont,
-        // no separate image asset, nothing for CSP to govern.
-        a.innerHTML = preset.svg;
-        const svgEl = a.querySelector("svg");
-        if (svgEl) {
-          svgEl.setAttribute("aria-hidden", "true");
-          svgEl.setAttribute("focusable", "false");
-          svgEl.classList.add("byline-icon");
-        }
-      } else {
-        a.textContent = label;
-      }
-      links.appendChild(a);
+      links.appendChild(buildLinkAnchor(key, href, "byline"));
     }
     text.appendChild(links);
   }
+
+  wrap.appendChild(text);
+  return wrap;
+}
+
+// Follow-the-author CTA appended at the bottom of every post. Same data as
+// the byline (no second fetch), but a larger, card-styled presentation so it
+// reads as a call-to-action rather than identity metadata. Renders nothing
+// if the author has no follow links — no point inviting a reader to follow
+// when there's nowhere to go. Markup uses only div/span/a/img (not P/H*/etc.)
+// so the comments layer's block walker doesn't index it as a commentable
+// segment — same constraint that already shapes buildByline.
+function buildFollowCta(profile: PublicAuthorProfile): HTMLElement | null {
+  const linkKeys = Object.keys(profile.links).filter((k) => profile.links[k]);
+  if (linkKeys.length === 0) return null;
+
+  const wrap = document.createElement("div");
+  wrap.className = "author-cta";
+  wrap.setAttribute("role", "complementary");
+  wrap.setAttribute("aria-label", "Follow the author");
+
+  if (profile.avatar) {
+    const img = document.createElement("img");
+    img.className = "author-cta-avatar";
+    img.src = profile.avatar;
+    img.width = 72;
+    img.height = 72;
+    img.alt = profile.name;
+    img.loading = "lazy";
+    img.decoding = "async";
+    wrap.appendChild(img);
+  }
+
+  const text = document.createElement("div");
+  text.className = "author-cta-text";
+
+  const headline = document.createElement("div");
+  headline.className = "author-cta-headline";
+  headline.textContent = "Enjoyed this post?";
+  text.appendChild(headline);
+
+  const sub = document.createElement("div");
+  sub.className = "author-cta-sub";
+  const subPrefix = document.createElement("span");
+  subPrefix.className = "author-cta-sub-prefix";
+  subPrefix.textContent = "Follow ";
+  const subName = document.createElement("span");
+  subName.className = "author-cta-name";
+  subName.textContent = profile.name;
+  sub.appendChild(subPrefix);
+  sub.appendChild(subName);
+  text.appendChild(sub);
+
+  const links = document.createElement("div");
+  links.className = "author-cta-links";
+  for (const key of linkKeys) {
+    links.appendChild(buildLinkAnchor(key, profile.links[key]!, "author-cta"));
+  }
+  text.appendChild(links);
 
   wrap.appendChild(text);
   return wrap;
@@ -249,6 +316,13 @@ async function boot(): Promise<void> {
     if (title) title.after(postMeta);
     else article.prepend(postMeta);
   }
+
+  // Follow-CTA at the bottom of the article — same data, prominent
+  // presentation. Appended last so it sits as the final block after the
+  // closing paragraph. Idempotent via the buildFollowCta null return + the
+  // top-of-boot byline-existence check (boot itself only runs once).
+  const cta = buildFollowCta(profile);
+  if (cta) article.appendChild(cta);
 }
 
 if (document.readyState === "loading") {

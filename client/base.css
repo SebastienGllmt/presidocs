@@ -109,3 +109,75 @@ html, body {
   fill: currentColor;
   display: block;
 }
+
+/* Follow-the-author CTA (client/byline.ts → buildFollowCta). Appended at the
+   end of every article that has at least one follow link. Card-styled so it
+   reads as a deliberate call-to-action distinct from the identity byline at
+   the top — larger avatar, headline, and link row. Shares the link-icon SVG
+   shape with the byline via a parallel `author-cta-*` class surface. */
+.author-cta {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin: 3rem 0 1.5rem;
+  padding: 1.25rem 1.5rem;
+  border: 1px solid rgba(31, 35, 40, 0.12);
+  border-radius: 12px;
+  background: #fff;
+}
+.author-cta-avatar {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+}
+.author-cta-text {
+  display: flex;
+  flex-direction: column;
+  gap: .2rem;
+  min-width: 0;
+}
+.author-cta-headline {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--page-fg);
+}
+.author-cta-sub {
+  font-size: .95rem;
+  color: var(--page-fg-muted);
+}
+.author-cta-name {
+  color: var(--page-fg);
+  font-weight: 600;
+}
+.author-cta-links {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .75rem;
+  margin-top: .5rem;
+  font-size: 1rem;
+}
+.author-cta-link {
+  color: var(--page-fg-muted);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+}
+.author-cta-link:hover {
+  color: var(--page-fg);
+  text-decoration: underline;
+}
+/* Icon-only follow links: strip the hover underline (same reason as the
+   byline — no visible text, only an SVG with aria-label on the anchor). */
+.author-cta-link:has(> .author-cta-icon):hover {
+  text-decoration: none;
+}
+.author-cta-icon {
+  width: 1.35em;
+  height: 1.35em;
+  fill: currentColor;
+  display: block;
+}
