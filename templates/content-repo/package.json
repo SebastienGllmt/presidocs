@@ -3,7 +3,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "bun engine/generate/post-routes.ts && bun --hot index.ts",
+    "dev": "bun engine/scripts/dev.ts",
     "start": "bun engine/generate/post-routes.ts && bun index.ts",
     "generate": "bun engine/generate/generate.ts",
     "generate:prod": "bun engine/generate/generate.ts --tts=moss",

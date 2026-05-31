@@ -40,6 +40,7 @@ Each top-level folder is one concern, so finding code is "pick the folder that m
 - `server/` — server-side helpers and the two entry-point factories `createDevServer.ts` (Bun dev) and `createWorker.ts` (Cloudflare prod) that a content repo's thin `index.ts`/`worker.ts` call; plus `server/auth/` (OAuth + sessions), comments, post-meta/version
 - `shared/` — types/helpers used by both sides, including **`blogPaths.ts`**, which resolves `engineRoot` (this repo, from the module's own location) vs `contentRoot` (`$BLOG_CONTENT_DIR ?? cwd`) and every content-relative path. This is how engine code stays content-agnostic while operating on whichever blog invoked it
 - `authoring/` — offline authoring tools (comment export, resolution write-back) run from a content repo's cwd; they resolve content paths via `blogPaths.ts`
+- `scripts/` — engine-side dev/diagnostic scripts invoked from a content repo's package.json, notably `dev.ts` (the dev-server wrapper — see [Dev server wrapper](#dev-server-wrapper))
 - `specs/` — local copies of the W3C specs referenced above
 - `templates/content-repo/` — the canonical starter a new blog copies: thin `index.ts`/`worker.ts`/`wrangler.toml`, `package.json` (with the `link:` dep + per-blog scripts), a sample post + figure, and the `process-comments` skill. `personal-blog` is a real instance of this template
 
@@ -1026,6 +1027,15 @@ This works until per-deploy total assets approach Cloudflare's Static Assets lim
 | Generated audio + manifest | served from `generated/` via `serveFromDir` | copied into `dist/generated/` by `generate/copy-static.ts`, served by the `ASSETS` binding |
 | Automerge WASM | served from `node_modules` via `/assets/automerge.wasm` route | copied into `dist/assets/automerge.wasm`, served by the `ASSETS` binding |
 | OAuth redirects | `http://localhost:3000/auth/<provider>/callback` | `https://<your-domain>/auth/<provider>/callback` — both URIs registered at each provider |
+
+### Dev server wrapper
+
+`bun run dev` doesn't call `bun --hot index.ts` directly — it goes through `presidocs/scripts/dev.ts`, a thin wrapper that spawns the `--hot` child and hard-restarts it on the changes `--hot` can't see. Two classes of change motivate it:
+
+- **Engine edits.** Bun's `--hot` explicitly excludes `node_modules` from its watch registry. With the `link:presidocs` dep the engine's source lives under `node_modules/presidocs/` from the runtime's perspective, so saving a file in the sibling engine checkout never triggered a reload.
+- **New / renamed posts.** The dev route table is codegenned from `posts/` into `.generated/postRoutes.ts` once at startup. Dropping a post in didn't get mounted until you restarted *and* re-ran the codegen by hand.
+
+The wrapper folds both into one rule: watch `node_modules/presidocs/**`, `posts/**`, and `authors/**`; on any change, debounce 100 ms, re-run `engine/generate/post-routes.ts`, and respawn the server. In-project edits to `index.ts`/`worker.ts`/etc. still go through the child's fast HMR — the wrapper only handles the cross-boundary cases. Outputs like `.generated/` and `.comments-dev/` are excluded from the watch list so the codegen and the dev comment store don't trigger restart loops.
 
 ### Deploy unit
 
