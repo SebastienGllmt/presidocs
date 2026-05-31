@@ -14,6 +14,17 @@
 import "shikwasa/dist/style.css";
 import { Player, Chapter } from "shikwasa";
 import { asMs, msToSeconds, secondsToMs, asSeconds, type Milliseconds } from "../shared/time.ts";
+import { computeActiveMark, findActiveWord } from "../shared/narratorTiming.ts";
+import {
+  SPOKEN_ID_PREFIX,
+  spokenSegmentId,
+  firstMarkAfter,
+  parseSpokenHash,
+  loadCaptureControls,
+  saveCaptureControls,
+  topLevelChapterByNumber,
+  shouldIgnoreKeyboardShortcut,
+} from "./narratorDom.ts";
 
 // Per-word timing entry inside a mark. `s`/`e` are character offsets into the
 // mark's `text` (the ORIGINAL/displayed text — for terms substituted via PLS,
@@ -53,11 +64,9 @@ type Manifest = {
   marks: ManifestMark[];
 };
 
-// Stable ID prefix for spoken segments inside the drawer. Kept separate from
-// the article's element ids (which marks already reference by name) so
-// `#title` lands on the article and `#spoken-title` lands on the drawer.
-const SPOKEN_ID_PREFIX = "spoken-";
-const spokenSegmentId = (markName: string) => SPOKEN_ID_PREFIX + markName;
+// SPOKEN_ID_PREFIX / spokenSegmentId are imported from ./narratorDom.ts —
+// re-export here so any in-file uses don't need to re-import.
+// (Both are used by both the drawer DOM build and applyHashIfMatching.)
 
 function formatClockTime(ms: Milliseconds) {
   const total = Math.max(0, Math.round(msToSeconds(ms)));
@@ -164,13 +173,11 @@ class Narrator {
     // first-play arming path in `onPlay` reads this flag, and a returning
     // reader who released last session must stay released on the very
     // first play of this page load.
-    try {
-      this.captureControls =
-        localStorage.getItem("narrate-capture-controls") !== "off";
-    } catch {
-      // private mode / storage disabled — fall back to the default.
-      this.captureControls = true;
-    }
+    // Reads the persisted pref via the pure helper (handles missing
+    // storage, throw-on-read, and the "absent ⇒ ON" rule uniformly).
+    this.captureControls = loadCaptureControls(
+      typeof localStorage !== "undefined" ? localStorage : null,
+    );
 
     this.player = new Player({
       container: this.playerContainer,
@@ -420,11 +427,10 @@ class Narrator {
   private setupKeyboardShortcuts() {
     document.addEventListener("keydown", (e) => {
       if (!this.player || !this.manifest) return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const t = e.target as HTMLElement | null;
-      if (
-        t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)
-      ) return;
+      // Modifier-and-focus filter lives in ./narratorDom.ts so the unit
+      // tests can exercise it directly without spinning up the rest of
+      // the narrator.
+      if (shouldIgnoreKeyboardShortcut(e.target, e)) return;
 
       if (e.code === "Space") {
         // Override the default Space-activates-focused-button behavior so a
@@ -446,15 +452,12 @@ class Narrator {
         return;
       }
 
-      if (e.key >= "1" && e.key <= "9") {
-        // 1-9 index the TOP-LEVEL chapters (parts + flat chapters),
-        // matching the number shown on the level-1 pills. Sub-chapters are
-        // reached by click or MediaSession next-track, not by number. (Posts
-        // with >9 top-level chapters still truncate at 9 — coarser but strictly
-        // more complete than indexing the flat leaf list as before.)
-        const topLevel = this.manifest.chapters.filter((c) => c.parentId === undefined);
-        const chapter = topLevel[Number(e.key) - 1];
-        if (!chapter) return;
+      // 1-9 index the TOP-LEVEL chapters (parts + flat chapters), matching
+      // the number shown on the level-1 pills. Sub-chapters are reached by
+      // click or MediaSession next-track, not by number. Resolution
+      // (including the >9 truncation rule) lives in topLevelChapterByNumber.
+      const chapter = topLevelChapterByNumber(this.manifest.chapters, e.key);
+      if (chapter) {
         e.preventDefault();
         this.jumpToChapter(chapter);
       }
@@ -623,12 +626,10 @@ class Narrator {
     } else {
       this.teardownMediaSession();
     }
-    try {
-      if (enabled) localStorage.removeItem("narrate-capture-controls");
-      else localStorage.setItem("narrate-capture-controls", "off");
-    } catch {
-      // private mode / storage disabled — pref is best-effort, the
-      // in-memory flag still governs this session.
+    if (typeof localStorage !== "undefined") {
+      // Persist via the pure helper (handles "absent ⇒ ON" by removing
+      // the key, and swallows storage-disabled throws).
+      saveCaptureControls(localStorage, enabled);
     }
   }
 
@@ -1030,25 +1031,11 @@ class Narrator {
     }
   }
 
-  // The earliest mark (manifest order is ascending time) whose highlighted
-  // element is the divider itself or follows it in document order. A part's
-  // section-intro anchors its first mark ON the divider, so this returns that
-  // intro — playing it starts the part from the top; for a silent divider with
-  // no intro it falls through to the first mark below. Null when nothing is
-  // narrated at or below the divider.
+  // Thin wrapper around the pure helper in ./narratorDom.ts — keeps the
+  // existing `this.firstMarkAfter(divider)` call sites readable.
   private firstMarkAfter(divider: Element): ManifestMark | null {
     if (!this.manifest) return null;
-    for (const m of this.manifest.marks) {
-      const el = this.narrationRoot.querySelector(`#${CSS.escape(m.name)}`);
-      if (!el) continue;
-      if (
-        el === divider ||
-        divider.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING
-      ) {
-        return m;
-      }
-    }
-    return null;
+    return firstMarkAfter(divider, this.manifest.marks, this.narrationRoot);
   }
 
   private updateActiveChapter() {
@@ -1135,14 +1122,9 @@ class Narrator {
     this.updateActiveChapter();
     this.updateBar();
     const tMs = secondsToMs(asSeconds(this.player.currentTime));
-    // Find the latest mark with time <= tMs. This works for both linear
-    // playback AND backward seeks — we never advance an index, we derive
-    // the active mark from currentTime each tick.
-    let active: ManifestMark | null = null;
-    for (const m of this.manifest.marks) {
-      if (m.time <= tMs) active = m;
-      else break;
-    }
+    // Pure bisect — works for both linear playback AND backward seeks
+    // because nothing is cached. See shared/narratorTiming.ts.
+    const active = computeActiveMark(this.manifest.marks, tMs);
     this.setActive(active ? active.name : null);
     this.updateActiveWord(active?.name ?? null, tMs);
 
@@ -1412,13 +1394,9 @@ class Narrator {
       this.clearActiveWord();
       return;
     }
-    // Latest word with t <= tMs. Linear scan is fine — segments are short.
-    // A binary search would shave microseconds and complicate the code.
-    let idx = -1;
-    for (let i = 0; i < words.length; i++) {
-      if (words[i]!.t <= tMs) idx = i;
-      else break;
-    }
+    // Pure bisect — see shared/narratorTiming.ts. Returns -1 before the
+    // first word; we treat that as "nothing to highlight yet."
+    const idx = findActiveWord(words, tMs);
     if (idx < 0) {
       this.clearActiveWord();
       return;
@@ -1476,11 +1454,10 @@ class Narrator {
   // Plain `#elementId` fragments still scroll the article as the browser does
   // by default — we only intervene for our prefixed ids.
   private applyHashIfMatching() {
-    const hash = window.location.hash;
-    if (!hash || hash.length < 2) return;
-    const id = decodeURIComponent(hash.slice(1));
-    if (!id.startsWith(SPOKEN_ID_PREFIX)) return;
-    const markName = id.slice(SPOKEN_ID_PREFIX.length);
+    // Parse via the pure helper — it covers the empty-hash, malformed-
+    // `%xx`, and "not our prefix" cases uniformly. See narratorDom.ts.
+    const markName = parseSpokenHash(window.location.hash);
+    if (!markName) return;
     const seg = this.segmentEls.get(markName);
     if (!seg) return;
     this.setDrawerOpen(true);

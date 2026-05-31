@@ -35,7 +35,7 @@ const FEEDBACK_MS = 1200;
 // Turn a heading's text into a URL-safe slug. Lowercased ASCII, hyphen-
 // separated, with leading/trailing punctuation trimmed. Matches the GitHub /
 // Docusaurus convention authors already expect when they hand-write ids.
-function slugify(text: string): string {
+export function slugify(text: string): string {
   return text
     .trim()
     .toLowerCase()
@@ -139,7 +139,7 @@ async function copyToClipboard(text: string): Promise<boolean> {
 
 // Walk the article, give every <h2>/<h3>/<h4> an id (preserving authored ones),
 // and attach the hover-link anchor to each.
-function installHeadingLinks(article: HTMLElement): void {
+export function installHeadingLinks(article: HTMLElement): void {
   // Seed used-id set with every existing id in the document so our slugs
   // never collide with author-written ids on neighboring elements
   // (e.g. a `<p id="problem-body">` next to an `<h2 id="problem-heading">`).

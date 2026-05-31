@@ -13,6 +13,12 @@ import { createRequire } from "node:module";
 // Installed at module top-level (before `import` of commentsStore.ts
 // would call any of these — though our store only reads localStorage
 // inside `create()` / `mutate()`, not at module load).
+//
+// We use `Object.defineProperty` instead of plain `globalThis.localStorage =`
+// so this still works when another test file in the same `bun test` run has
+// registered happy-dom (see ../happydom.ts) — happy-dom installs its own
+// `localStorage` as a non-writable property, which would reject a plain
+// assignment.
 
 const storage = new Map<string, string>();
 const localStorageShim: Storage = {
@@ -31,8 +37,11 @@ const localStorageShim: Storage = {
     return storage.size;
   },
 };
-(globalThis as unknown as { localStorage: Storage }).localStorage =
-  localStorageShim;
+Object.defineProperty(globalThis, "localStorage", {
+  value: localStorageShim,
+  writable: true,
+  configurable: true,
+});
 
 // ---- Now import the store (after shim is in place) ---------------------
 

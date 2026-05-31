@@ -925,6 +925,47 @@ A long-form post is read in pieces — a reader (or the author, sharing context 
 
 **Scroll re-anchor on *load*, never on click.** When someone arrives with `#problem-heading` already in the URL, the browser's initial hash-scroll fires *before* progressive-enhancement modules (byline injection, this module's id-backfill) finish settling the DOM. The targeted heading may have moved by the time JS is done, so `reanchorToHashIfNeeded()` runs once at the end of `boot()` and re-`scrollIntoView`s the target. The click-copy path doesn't re-anchor (the heading hasn't moved) and explicitly suppresses the scroll — different cases, opposite handling. The `html { scroll-behavior: smooth }` rule (with a `prefers-reduced-motion` override) lives in `base.css` so any future in-page anchor (TOC, drawer link, anything) gets smooth-scroll for free without each feature wiring its own.
 
+## Testing layout
+
+Tests are colocated with the code they cover — `<module>.test.ts` sits next to `<module>.ts` rather than in a separate `tests/` tree, matching how `types/` and `proposals/` are absent in favor of "the code owns its own surface." `bun test` is the single entry point; the `presidocs/package.json` `test` script runs nothing more elaborate than that.
+
+The suite splits into three layers by what each test needs from the runtime:
+
+- **Server / generate / shared** — the bulk of the tests, exercising offline pipeline code (`generate/`), the Worker entry points (`server/`), and runtime-agnostic helpers (`shared/`). These run in plain Bun: no DOM, no preload, no fetch stubs at the file boundary. Anything that runs only on the offline build or the edge belongs here.
+- **Client (DOM) — per-file opt-in happy-dom** — see [DOM testing harness](#dom-testing-harness-clientts) below.
+- **Tier-0 pure extractions** — math/string functions lifted *out* of DOM-coupled client modules into `shared/` so they can be tested without happy-dom. `shared/narratorTiming.ts` (mark + word bisect) is the canonical example; `client/commentsStale.ts` (segment-hash drift check), `client/narratorDom.ts` (hash parsing, capture-controls localStorage, keyboard-shortcut guard, top-level chapter resolver), and `client/commentsDom.ts` (block walker, popover-placement math, hide-all storage) follow the same pattern. The rule: anything testable as `(input) → output` lives outside the class, gets a dedicated `.test.ts`, and runs without any DOM. The DOM-coupled wrappers in `narrator.ts` / `comments.ts` then call into these helpers, so a regression in the math is caught at the pure-test layer before it can reach a DOM test.
+
+### DOM testing harness (`client/*.ts`)
+
+Client modules target the browser, not the Bun runtime, so testing them needs `document` / `window` / `localStorage`-as-Storage. We use **happy-dom**, registered per-file rather than via a global Bun preload.
+
+**Registration is per-file via `import "../happydom.ts";`**. The helper at `presidocs/happydom.ts` calls `GlobalRegistrator.register()` exactly once (a `globalThis.__HAPPY_DOM_REGISTERED__` flag short-circuits subsequent imports). Each DOM test file's first import is `"../happydom.ts"`, before any import of the module under test — happy-dom must install `document` before the module's top-level code runs.
+
+**Why per-file, not the docs-recommended global `[test] preload`.** The happy-dom docs recommend a `bunfig.toml` entry like `preload = ["./happydom.ts"]` that registers the browser environment for *every* test file. Tried, rejected. Two concrete breakages in the existing server / generate suite:
+
+1. **`commentsStore.test.ts`'s `localStorage` shim** — the file installs an in-memory `localStorage` for testing the CRDT store outside a browser. happy-dom registers `globalThis.localStorage` as a *non-writable* property (`Object.defineProperty` with `writable: false`), so a plain `globalThis.localStorage = shim` assignment throws once happy-dom has run. Defensible fix: rewrite the shim install as `Object.defineProperty(globalThis, "localStorage", { value: shim, writable: true, configurable: true })`. That's now the project pattern for ANY test that wants to replace a happy-dom-installed global (the same shape is used in `client/postVersion.test.ts`'s `fetch` stub).
+2. **`audio-pipeline.test.ts`'s `Bun.spawn` calls** — happy-dom mutates fields on `process` (its own browser shim for `process.stdio` triplet semantics differs from Bun's), and `Bun.spawn`'s stdio config rejects the mutated shape with `TypeError: stdio must be an array of 'inherit', 'ignore', or null`. There's no clean shim for this on the test side; the fix is to keep happy-dom out of those tests entirely, which per-file opt-in does for free.
+
+Per-file opt-in keeps happy-dom's blast radius scoped to exactly the files that ask for it. The docs' advice still applies for projects that are 100% browser-side; in this mixed engine, per-file is the right tradeoff.
+
+**One `beforeEach` reset.** Every DOM test starts with `beforeEach(() => { document.body.innerHTML = ""; })`. Without it, fixture markup from one test pollutes the next within the same file. Tests that also touch `localStorage` follow with `localStorage.clear()`, and tests that replace globals (the fetch stub pattern) restore them in `afterEach` via `Object.defineProperty`.
+
+**What's tested in this layer.** Pure-DOM construction and pure-state-machine logic in the four DOM-coupled client modules:
+
+- `client/narratorDom.ts` — chapter-number resolver, divider-speaker "first below" element, capture-controls localStorage round-trip, keyboard-shortcut focus / modifier guard, deep-link hash parser. The full Narrator class isn't tested directly — its constructor needs Shikwasa Player, which needs real `<audio>` decoding (see "deliberately not tested" below).
+- `client/commentsDom.ts` — block walker, hash-stability `normalizeText`, mobile popover placement math, hide-all FAB localStorage. The full CommentSystem class isn't tested directly — it needs Automerge boot, identity fetch, polling controllers, and a CRDT store, all of which the same-file `commentsStore.test.ts` already exercises at the data layer without a DOM.
+- `client/byline.ts` — placement rules (under `#lede` if present, else under `#title`, else prepended), profile rendering, the privacy property that the served avatar URL never embeds the author email, post-meta date formatting.
+- `client/headerLinks.ts` — slugify rules + dedupe, idempotent id backfill, anchor injection.
+
+**What's deliberately NOT tested in this layer.**
+
+- **Anything that needs real audio playback** — the rAF tick reading `player.currentTime`, the active-mark application path (`updateActive` → `setActive`), Shikwasa's chapter-strip rendering, OS lock-screen widgets. happy-dom has a JS-visible `<audio>` element but no decoder, so `play()` doesn't advance time and `timeupdate` doesn't fire. The pure math (`computeActiveMark`, `findActiveWord` in `shared/narratorTiming.ts`) is covered server-style; the integration is covered by the manual release-check at `scripts/release-check.md`.
+- **Real CSS layout** — `repositionCards` (Google-Docs-style overlap avoidance), the desktop comment column's pinned identity card, the dim-on-load → reveal-on-scroll threshold for the sign-in CTA. happy-dom returns zeros for `getBoundingClientRect()` unless a test hand-mocks each element's rect, which produces tests that pass only against their own fake. The integration is real-browser territory; the manual checklist covers it.
+- **Service Worker installation, push delivery, OAuth redirects, OS clipboard** — substrate behaviour the browser owns. No automated test in any tier here can verify these meaningfully; manual is the only honest layer.
+- **Tier-2 modules where the bug-cost hasn't yet justified the test** — `identity.ts`, `commentsSync.ts`, `commentsAggregator.ts`, `resolutionsStore.ts`, `commentsPolling.ts`, `commentsApi.ts`, `resolutionsApi.ts`. Each is a small fetch wrapper or single-flight controller; the contract surface is exercised end-to-end by the integration of the modules that consume them. The rule is "first concrete regression motivates the test, not speculation."
+
+**No real-browser harness (today).** No Playwright, no WebdriverIO, no Puppeteer. The case-by-case analysis is in `scripts/release-check.md`; the short version is that real Chromium tests would either re-verify what happy-dom already covers (the JS-visible API surface) or test substrate behaviour that no Chromium-from-a-test can actually reach (the OS surface). When [proposal 6 (PWA + Service Worker)](./proposals/06-pwa-offline.md) ships, the SW lifecycle becomes the first feature where the marginal value of real-browser testing is high enough to revisit; until then, the manual release checklist plus the happy-dom + Tier-0 layers cover what's worth covering.
+
 ## AI-assisted authoring (`authoring/` + the `process-comments` skill)
 
 The comment system isn't just a feedback channel — it's the authoring interface itself. The author opens their own post, highlights text, leaves comments like "rephrase this", "add a paragraph about edge cases", etc. — through exactly the same UI a reader uses. The loop:

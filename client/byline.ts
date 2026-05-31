@@ -75,7 +75,7 @@ const LINK_PRESENTATION: Record<string, LinkPresentation> = {
   rss: { label: "RSS", svg: faRss },
 };
 
-function normalizePath(pathname: string): string {
+export function normalizePath(pathname: string): string {
   // Map paths consistently with the build's keys (`/posts/<slug>`): drop a
   // trailing slash, and never key on a bare `/`.
   if (pathname.length > 1 && pathname.endsWith("/")) return pathname.slice(0, -1);
@@ -84,7 +84,7 @@ function normalizePath(pathname: string): string {
 
 // Format an ISO timestamp as "Last updated May 31, 2026". Falls back to the
 // raw ISO if parsing fails — better an awkward date than no date.
-function formatLastUpdated(iso: string): string {
+export function formatLastUpdated(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   try {
@@ -104,7 +104,7 @@ function formatLastUpdated(iso: string): string {
 // metadata *about the article*, the byline is metadata *about the author*.
 // Conflating them was forcing the byline's text column taller than the 48px
 // avatar; splitting them lets the byline shrink back to identity-only.
-function buildPostMeta(version: PublicPostVersion | null): HTMLElement | null {
+export function buildPostMeta(version: PublicPostVersion | null): HTMLElement | null {
   if (!version?.lastUpdated) return null;
   const meta = document.createElement("div");
   meta.className = "post-meta";
@@ -156,7 +156,7 @@ function buildLinkAnchor(key: string, href: string, parentClass: string): HTMLAn
   return a;
 }
 
-function buildByline(profile: PublicAuthorProfile): HTMLElement {
+export function buildByline(profile: PublicAuthorProfile): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "byline";
   wrap.setAttribute("role", "group");
@@ -205,7 +205,7 @@ function buildByline(profile: PublicAuthorProfile): HTMLElement {
 // when there's nowhere to go. Markup uses only div/span/a/img (not P/H*/etc.)
 // so the comments layer's block walker doesn't index it as a commentable
 // segment — same constraint that already shapes buildByline.
-function buildFollowCta(profile: PublicAuthorProfile): HTMLElement | null {
+export function buildFollowCta(profile: PublicAuthorProfile): HTMLElement | null {
   const linkKeys = Object.keys(profile.links).filter((k) => profile.links[k]);
   if (linkKeys.length === 0) return null;
 
@@ -263,7 +263,7 @@ function buildFollowCta(profile: PublicAuthorProfile): HTMLElement | null {
 // a single CSS override. Subtle by design: muted-text-color, small font, no
 // border or card framing. Kept dependency-free (no SVG icon) so the attribution
 // is a single text-and-anchor row that survives any stylesheet stripping.
-function buildEngineAttribution(): HTMLElement {
+export function buildEngineAttribution(): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "engine-attribution";
   wrap.setAttribute("role", "contentinfo");
@@ -281,6 +281,67 @@ function buildEngineAttribution(): HTMLElement {
   wrap.appendChild(prefix);
   wrap.appendChild(link);
   return wrap;
+}
+
+/**
+ * Mount the byline, post-meta strip, follow-CTA, and engine attribution
+ * into the article root using the placement rules documented inline.
+ * Exported so the unit tests can drive it without standing up the
+ * `fetch` round trip.
+ *
+ *   - Byline: under `#lede` if present, else under `#title`, else
+ *     prepended to the article.
+ *   - Post-meta strip: directly after `#title` when present, else
+ *     prepended. The strip is omitted entirely when no `lastUpdated` is
+ *     available (rather than rendering "Last updated undefined").
+ *   - Follow-CTA + engine attribution: always appended at the end.
+ *     CTA only when at least one social link is present; attribution
+ *     unconditional.
+ *
+ * Idempotent against the same article: callers should check
+ * `article.querySelector(".byline")` before invoking; this function does
+ * NOT re-check (so a fixture test can mount multiple times in a row to
+ * verify idempotence at the call-site level rather than here).
+ */
+export function mountBylineInto(
+  article: HTMLElement,
+  profile: PublicAuthorProfile,
+  version: PublicPostVersion | null,
+): void {
+  const byline = buildByline(profile);
+  const postMeta = buildPostMeta(version);
+  const lede = article.querySelector("#lede");
+  const title = article.querySelector("#title");
+
+  // Byline keeps its old slot — under the lede if present, else under the title.
+  if (lede) lede.after(byline);
+  else if (title) title.after(byline);
+  else article.prepend(byline);
+
+  // Post-meta sits *directly under the <h1> title* — where readers expect
+  // "date / reading time / mode toggle" type info on a blog. With a lede this
+  // separates the title from its lede with the date row, which is the standard
+  // pattern (NYT/Guardian/Substack). Insertion is `title.after(postMeta)` AFTER
+  // the byline insertion above — so in the no-lede case where both share the
+  // title anchor, DOM order is title → postMeta → byline (each .after() inserts
+  // as the title's *immediate* next sibling, pushing the previous insertion
+  // down).
+  if (postMeta) {
+    if (title) title.after(postMeta);
+    else article.prepend(postMeta);
+  }
+
+  // Follow-CTA at the bottom of the article — same data, prominent
+  // presentation. Appended last so it sits as the final block after the
+  // closing paragraph. Null when the profile has no social links — no
+  // point inviting a reader to follow when there's nowhere to go.
+  const cta = buildFollowCta(profile);
+  if (cta) article.appendChild(cta);
+
+  // Engine attribution after the CTA — subtle "Built with presidocs" line.
+  // Independent of the author profile (no data dependency), so it always
+  // renders.
+  article.appendChild(buildEngineAttribution());
 }
 
 async function boot(): Promise<void> {
@@ -320,41 +381,7 @@ async function boot(): Promise<void> {
   if (!profile || !profile.name) return;
   const version = versions[postPath] ?? null;
 
-  const byline = buildByline(profile);
-  const postMeta = buildPostMeta(version);
-  const lede = article.querySelector("#lede");
-  const title = article.querySelector("#title");
-
-  // Byline keeps its old slot — under the lede if present, else under the title.
-  if (lede) lede.after(byline);
-  else if (title) title.after(byline);
-  else article.prepend(byline);
-
-  // Post-meta sits *directly under the <h1> title* — where readers expect
-  // "date / reading time / mode toggle" type info on a blog. With a lede this
-  // separates the title from its lede with the date row, which is the standard
-  // pattern (NYT/Guardian/Substack). Insertion is `title.after(postMeta)` AFTER
-  // the byline insertion above — so in the no-lede case where both share the
-  // title anchor, DOM order is title → postMeta → byline (each .after() inserts
-  // as the title's *immediate* next sibling, pushing the previous insertion
-  // down).
-  if (postMeta) {
-    if (title) title.after(postMeta);
-    else article.prepend(postMeta);
-  }
-
-  // Follow-CTA at the bottom of the article — same data, prominent
-  // presentation. Appended last so it sits as the final block after the
-  // closing paragraph. Idempotent via the buildFollowCta null return + the
-  // top-of-boot byline-existence check (boot itself only runs once).
-  const cta = buildFollowCta(profile);
-  if (cta) article.appendChild(cta);
-
-  // Engine attribution after the CTA — subtle "Built with presidocs" line.
-  // Independent of the author profile (no data dependency), so it always
-  // renders. Boot only runs once and the byline-existence check at the top
-  // of boot already guards against double-render.
-  article.appendChild(buildEngineAttribution());
+  mountBylineInto(article, profile, version);
 }
 
 if (document.readyState === "loading") {

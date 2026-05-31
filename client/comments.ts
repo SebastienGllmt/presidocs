@@ -63,6 +63,15 @@ import {
   type PostVersionResponse,
 } from "./postVersion.ts";
 import { DraftsStorage } from "./draftsStorage.ts";
+import { compareSegmentHashes } from "./commentsStale.ts";
+import {
+  BLOCK_TAGS,
+  computePopoverPositionForRect,
+  loadHighlightsHidden,
+  normalizeText,
+  saveHighlightsHidden,
+  walkBlocks,
+} from "./commentsDom.ts";
 
 type BlockInfo = {
   id: string;
@@ -72,10 +81,11 @@ type BlockInfo = {
   text: string;
 };
 
-const BLOCK_TAGS = new Set([
-  "H1", "H2", "H3", "H4", "H5", "H6",
-  "P", "LI", "BLOCKQUOTE", "PRE", "FIGCAPTION",
-]);
+// BLOCK_TAGS, normalizeText, walkBlocks are imported from ./commentsDom.ts
+// — extracting them gave the indexer's leaf-tag set, whitespace rule, and
+// document-order walker a place to be tested without instantiating the
+// whole CommentSystem.
+
 // v1: only `<figure>` is a commentable graphic. The authoring convention
 // (per methodology.md) wraps each graphic in a figure with an id, and that
 // lets us attach an HTML button child without worrying about SVG namespace
@@ -97,18 +107,8 @@ const BOTTOM_CLEARANCE_PX = 24;
 // `data-mobile-active`-tagged card pops up as a fixed overlay.
 const MOBILE_BREAKPOINT_PX = 1099;
 
-// Persisted user toggle: when on, all highlights / graphic indicators
-// are visually suppressed and the popover model is disabled. Same
-// key on both desktop and mobile so a user who hides on mobile sees
-// the same view on desktop.
-const HIGHLIGHTS_HIDDEN_KEY = "blog-comments-highlights-hidden";
-
 function uid(): string {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-}
-
-function normalizeText(s: string): string {
-  return s.replace(/\s+/g, " ").trim();
 }
 
 async function sha256(s: string): Promise<string> {
@@ -117,29 +117,6 @@ async function sha256(s: string): Promise<string> {
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
-}
-
-// Walk descendants of `root` in document order, yielding elements matching
-// `tagSet`. Doesn't recurse into matched elements (block tags are leaves in
-// our authoring style).
-function* walkBlocks(
-  root: Element,
-  tagSet: Set<string>,
-): Generator<HTMLElement> {
-  const stack: Element[] = [root];
-  while (stack.length) {
-    const node = stack.pop()!;
-    if (node !== root) {
-      if (node.tagName === "SCRIPT" || node.tagName === "STYLE") continue;
-      if (tagSet.has(node.tagName)) {
-        yield node as HTMLElement;
-        continue;
-      }
-    }
-    for (let i = node.children.length - 1; i >= 0; i--) {
-      stack.push(node.children[i]!);
-    }
-  }
 }
 
 function offsetInBlock(block: HTMLElement, node: Node, offset: number): number {
@@ -891,44 +868,27 @@ class CommentSystem {
     }
     if (!anchorEl) return null;
 
-    const rect = anchorEl.getBoundingClientRect();
-    const viewportH = window.innerHeight;
-    const GAP = 8;
-    const TOP_MARGIN = 16;
-    // Reserve room at the bottom for the narrator's "Listen" pill
-    // plus player dock area. The dock's measured height is published
-    // by narrator.ts as `--narrate-dock-height`; we read it back
-    // here so the reservation tracks the actual dock size.
-    const BOTTOM_RESERVE = this.dockHeightPx() + 24;
-    const MIN_HEIGHT = 140;
-
-    const spaceBelow = viewportH - BOTTOM_RESERVE - rect.bottom - GAP;
-    const spaceAbove = rect.top - TOP_MARGIN - GAP;
-
-    // Prefer below — it's where the eye expects a contextual menu —
-    // unless there's clearly more room above.
-    const placeBelow =
-      spaceBelow >= MIN_HEIGHT || spaceBelow >= spaceAbove;
-
-    if (placeBelow) {
-      return {
-        top: `${Math.round(Math.max(TOP_MARGIN, rect.bottom + GAP))}px`,
-        maxHeight: `${Math.max(MIN_HEIGHT, spaceBelow)}px`,
-      };
-    }
-    return {
-      bottom: `${Math.round(Math.max(BOTTOM_RESERVE, viewportH - rect.top + GAP))}px`,
-      maxHeight: `${Math.max(MIN_HEIGHT, spaceAbove)}px`,
-    };
+    // Resolve the anchor's geometry, then delegate the placement math to
+    // the pure helper in ./commentsDom.ts. Splitting the two halves means
+    // the unit tests can fuzz the math without faking
+    // `getBoundingClientRect()` on every variant.
+    return computePopoverPositionForRect(anchorEl.getBoundingClientRect(), {
+      viewportHeight: window.innerHeight,
+      // Reserve room at the bottom for the narrator's "Listen" pill plus
+      // player dock area. The dock's measured height is published by
+      // narrator.ts as `--narrate-dock-height`; we read it back here so
+      // the reservation tracks the actual dock size.
+      dockHeight: this.dockHeightPx(),
+    });
   }
 
   private mountHideAllFab(): void {
-    this.highlightsHidden = false;
-    try {
-      this.highlightsHidden = localStorage.getItem(HIGHLIGHTS_HIDDEN_KEY) === "1";
-    } catch {
-      // localStorage blocked — fall back to default-visible.
-    }
+    // Read the persisted pref via the pure helper — handles
+    // unavailable / throwing storage and the "anything other than '1'
+    // means visible" rule.
+    this.highlightsHidden = loadHighlightsHidden(
+      typeof localStorage !== "undefined" ? localStorage : null,
+    );
 
     const fab = document.createElement("button");
     fab.type = "button";
@@ -948,11 +908,12 @@ class CommentSystem {
 
   private setHighlightsHidden(hidden: boolean): void {
     this.highlightsHidden = hidden;
-    try {
-      localStorage.setItem(HIGHLIGHTS_HIDDEN_KEY, hidden ? "1" : "0");
-    } catch {
-      // Persistence is best-effort — the in-memory state still
-      // works for the rest of this session.
+    if (typeof localStorage !== "undefined") {
+      // Persist via the pure helper. The fire-and-forget API matches the
+      // capture-controls pattern in narrator.ts: in-memory state is
+      // authoritative for the live session; storage is the next-page-load
+      // contract.
+      saveHighlightsHidden(localStorage, hidden);
     }
     this.applyHighlightsHidden();
     // Dismiss any popover when hiding — otherwise the overlay
@@ -2120,12 +2081,13 @@ class CommentSystem {
 
   private threadIsStale(thread: Thread): boolean {
     if (!isTextTarget(thread.target)) return false;
-    for (const seg of textTargetParts(thread.target).blocks) {
-      const block = this.blocksById.get(seg.id);
-      if (!block) return true;
-      if (block.hash !== seg.hash) return true;
-    }
-    return false;
+    // Pure check — see commentsStale.ts. The Map is supplied as-is; the
+    // helper only reads `.hash` from each value so the BlockInfo's other
+    // fields are irrelevant here.
+    return compareSegmentHashes(
+      textTargetParts(thread.target).blocks,
+      this.blocksById,
+    );
   }
 
   // ===== Highlight wrapping (DOM-mutating; reversed by `unwrap`) =====
