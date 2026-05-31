@@ -185,6 +185,13 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 .narrate-highlight-btn[aria-pressed="false"] svg { color: rgba(255, 255, 255, 0.35); }
 .narrate-highlight-btn[aria-pressed="false"]:hover svg { color: rgba(255, 255, 255, 0.7); }
 
+/* Media-key / headset capture toggle, sitting just left of the highlight
+   button in the controls row. Same color-only state signal as above:
+   accent = capturing (default), dim = released. */
+.narrate-capture-btn[aria-pressed="true"] svg { color: var(--accent); }
+.narrate-capture-btn[aria-pressed="false"] svg { color: rgba(255, 255, 255, 0.35); }
+.narrate-capture-btn[aria-pressed="false"]:hover svg { color: rgba(255, 255, 255, 0.7); }
+
 /* Always-visible "Listen" pill that toggles dock visibility. */
 .narrate-toggle {
   position: fixed;
@@ -223,25 +230,19 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 
 .narrate-toggle svg { color: var(--accent); }
 
-/* On narrow viewports the dock spans almost the full width
-   (`width: min(720px, calc(100% - 24px))`) and the floating Listen
-   pill would otherwise sit on top of the dock's right edge. Instead
-   of relocating the pill, we hide it whenever the dock is expanded
-   on a narrow viewport — the in-player × (`.narrate-close-btn`,
-   injected by narrator.ts and shown by the same breakpoint) becomes
-   the dismiss affordance. The breakpoint is wider than "phone" widths
-   because the overlap geometry kicks in well before that. */
-@media (max-width: 1000px) {
-  .narrate-toggle[aria-expanded="true"] { display: none; }
-}
+/* The Listen pill and the in-player × are the open/close pair of one
+   dismiss affordance: × is always the close, the pill is always the
+   re-open. Hiding the pill while the dock is expanded keeps them from
+   coexisting on screen (also avoids visual clash with the new
+   `.narrate-capture-btn` headphones icon, which lives inside the
+   dock). */
+.narrate-toggle[aria-expanded="true"] { display: none; }
 
-/* In-player close × — only visible on the same narrow-viewport
-   breakpoint that swallows the floating Listen pill. The `.shk-player`
-   needs an explicit positioning context for the absolutely-placed
-   button. */
+/* In-player close × — always visible. The `.shk-player` needs an
+   explicit positioning context for the absolutely-placed button. */
 #narrate-player .shk-player { position: relative; }
 .narrate-close-btn {
-  display: none;
+  display: inline-flex;
   position: absolute;
   top: 6px;
   right: 8px;
@@ -260,9 +261,6 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   transition: color 120ms ease, background-color 120ms ease;
 }
 .narrate-close-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.10); }
-@media (max-width: 1000px) {
-  .narrate-close-btn { display: inline-flex; }
-}
 
 /* --- Chapter pill strip ----------------------------------------------------- */
 
@@ -555,20 +553,18 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
     0 4px 12px -6px rgba(15, 25, 40, 0.10);
 }
 
-/* In the band where the player is still in its horizontal layout
-   (Shikwasa switches to vertical at ≤640px) but our × is already
-   shown, the highlight-toggle button at the right end of the
-   controls row would collide with the corner ×. Reserve enough
+/* In the horizontal layout (Shikwasa switches to vertical at ≤640px)
+   the highlight-toggle button at the right end of the controls row
+   would collide with the always-visible corner ×. Reserve enough
    right padding inside the card to push the controls inward and
    leave a clear corner for the ×. Not needed in the vertical layout
-   (controls are below the title, away from the corner) or on
-   desktop (× is hidden).
+   (controls sit below the title, away from the corner).
 
    NOTE: this MUST stay after the base `.shk-player` rule above,
    which sets `padding` via the shorthand (resetting padding-right).
    Equal selector specificity means source order decides the winner;
    placed earlier, the shorthand silently clobbers this override. */
-@media (min-width: 641px) and (max-width: 1000px) {
+@media (min-width: 641px) {
   #narrate-player .shk-player { padding-right: 44px; }
 }
 

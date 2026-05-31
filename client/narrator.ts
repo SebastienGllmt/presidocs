@@ -78,6 +78,24 @@ class Narrator {
   private toggleBtn: HTMLButtonElement | null = null;
   private highlightEnabled = true;
   private highlightBtn: HTMLButtonElement | null = null;
+  // One-shot latch flipped on the user's first play, so
+  // setupMediaSession() arms exactly once (idempotent in principle,
+  // but no point re-running it). Defers OS "now playing" metadata +
+  // action-handler registration until the reader has actually started
+  // the talk — Chrome/Safari only make the tab the OS session target
+  // on first <audio>.play() anyway, so this just aligns our
+  // registration with the platform behaviour and keeps the lock
+  // screen clean for talks that never start.
+  private hasPlayed = false;
+  // Whether the player captures the OS media-session surface (lock
+  // screen, headset taps, hardware media keys). When false the
+  // entire surface is released so the reader's own music gets those
+  // gestures back. Persisted globally in localStorage under
+  // `narrate-capture-controls` (absent ⇒ ON; "off" ⇒ OFF); applied
+  // before the first-play arming so a returning reader who released
+  // last session stays released without having to re-toggle.
+  private captureControls = true;
+  private captureBtn: HTMLButtonElement | null = null;
   // Spoken-script drawer + per-mark segment elements.
   private drawerEl: HTMLElement | null = null;
   private drawerTabBtn: HTMLButtonElement | null = null;
@@ -116,6 +134,18 @@ class Narrator {
     this.manifest = manifest;
     this.postPath = window.location.pathname;
 
+    // Read the OS-capture pref before constructing the player — the
+    // first-play arming path in `onPlay` reads this flag, and a returning
+    // reader who released last session must stay released on the very
+    // first play of this page load.
+    try {
+      this.captureControls =
+        localStorage.getItem("narrate-capture-controls") !== "off";
+    } catch {
+      // private mode / storage disabled — fall back to the default.
+      this.captureControls = true;
+    }
+
     this.player = new Player({
       container: this.playerContainer,
       // We position the surrounding `.narrate-dock` ourselves so Shikwasa
@@ -128,7 +158,14 @@ class Narrator {
       theme: "dark",
       themeColor: "#58a6ff",
       speedOptions: [1, 1.25, 1.5, 1.75, 2, 3],
-      preload: "auto",
+      // `none` so a passive reader pays no audio bytes — a 30-min talk
+      // is ~14 MB at 64 kbps mono. Shikwasa's scrub bar still shows the
+      // right duration because we hand it `manifest.duration` directly
+      // (`duration:` below); no metadata fetch needed. First press of
+      // play opens the connection (~200-500 ms one-shot latency), and
+      // the Range support in createDevServer/createWorker takes over
+      // for subsequent seeks.
+      preload: "none",
       audio: {
         title: this.title,
         artist: this.artist,
@@ -146,6 +183,12 @@ class Narrator {
     this.renderChapters(manifest);
     this.setupChapterStrip();
     this.setupVisibilityToggle();
+    // Capture goes in BEFORE highlight: both `insertBefore(.shk-btn_more)`,
+    // so the one that arrives last sits just left of `.shk-btn_more` (i.e.
+    // rightmost interactive control). Keeping highlight rightmost preserves
+    // the existing `padding-right: 44px` × collision fix in the 641-1000px
+    // band — see methodology's Audio Player section.
+    this.setupCaptureToggle();
     this.setupHighlightToggle();
     this.setupCloseButton();
     this.setupSmoothBar();
@@ -164,7 +207,10 @@ class Narrator {
     // — including when the user drags the scrub bar across a boundary.
     this.player.on("chapterchange", () => this.updateActiveChapter());
 
-    this.setupMediaSession();
+    // Media Session arming deferred to `onPlay` — see `hasPlayed`. A
+    // tab isn't the OS session target until audio actually plays
+    // (Chrome/Safari), so pre-arming metadata + handlers would just
+    // pollute the lock screen for a reader who never starts.
   }
 
   // Wire the OS-level "now playing" surfaces (lock screen, macOS menu-bar
@@ -218,6 +264,37 @@ class Narrator {
     safeSet("nexttrack", () => this.jumpToChapterDelta(1));
   }
 
+  // Exact inverse of setupMediaSession: null every action handler (so the
+  // OS stops routing media keys / headset taps to this tab), drop the
+  // metadata (so the OS "now playing" widget no longer shows the blog),
+  // and set playbackState back to "none". Paired with the `captureControls`
+  // gate on `setPlaybackState` and the rAF push so a running ticker can't
+  // re-acquire the session a frame after we release it.
+  private teardownMediaSession() {
+    if (!("mediaSession" in navigator)) return;
+    const ms = navigator.mediaSession;
+    for (
+      const a of [
+        "play",
+        "pause",
+        "stop",
+        "seekbackward",
+        "seekforward",
+        "seekto",
+        "previoustrack",
+        "nexttrack",
+      ] as MediaSessionAction[]
+    ) {
+      try {
+        ms.setActionHandler(a, null);
+      } catch {
+        /* unsupported action — ignore, mirrors `safeSet` */
+      }
+    }
+    ms.metadata = null;
+    ms.playbackState = "none";
+  }
+
   private jumpToChapter(chapter: ManifestChapter) {
     if (!this.player) return;
     // Seek a hair past startTime so the chapter plugin reliably considers
@@ -241,17 +318,20 @@ class Narrator {
     this.jumpToChapter(target);
   }
 
-  // Injects one always-visible "Listen" pill in the viewport's bottom-right
-  // corner that toggles the dock's visibility. Clicking it when the dock is
-  // open slides the dock off-screen; clicking it when the dock is hidden
-  // brings the dock back. Audio keeps playing in either case.
+  // Injects a "Listen" pill in the viewport's bottom-right corner that
+  // re-opens the dock after the in-player × has dismissed it. Hidden
+  // while the dock is open (see `narrate-toggle[aria-expanded="true"]`
+  // in narrator.css) and only revealed once `setDockHidden(true)` runs;
+  // the in-player × (`setupCloseButton`) is the always-visible close
+  // partner. The split-affordance shape — × on the player, pill in the
+  // corner — keeps the pill from colliding with the dock on narrow
+  // viewports AND avoids two on-screen headphones glyphs at once (the
+  // pill's glyph and the capture toggle's glyph would otherwise both
+  // be visible inside the open dock).
   //
-  // On narrow viewports (≤ 1000px) the dock spans almost the full
-  // width, so we hide the floating Listen pill while the dock is open
-  // and use an in-player × instead (see `setupCloseButton`). The
-  // dock's measured height is still mirrored into a CSS custom
-  // property (`--narrate-dock-height`) for downstream consumers —
-  // notably the comments mobile-popover positioner, which reserves
+  // The dock's measured height is mirrored into a CSS custom property
+  // (`--narrate-dock-height`) for downstream consumers — notably the
+  // comments mobile-popover positioner, which reserves
   // bottom-of-viewport space above the dock. ResizeObserver keeps the
   // variable in sync as the player or chapter strip changes height
   // (e.g. on orientation change or when a wrapping chapter row
@@ -306,13 +386,11 @@ class Narrator {
     // read along undistracted. They can pause with Space if they want.
   }
 
-  // Page-global keyboard shortcuts:
-  //   Space        → toggle play/pause (ALWAYS — even when a button has
-  //                   focus; matches Apple Podcasts / Spotify / YouTube)
-  //   ←  /  →      → rewind / fast-forward by 10s (matches the dock's
-  //                   own backward/forward buttons)
-  //   1..9         → jump to top-level chapter (part) N (1-indexed)
-  // Skipped while typing in a form field or with a modifier held.
+  // Page-global keyboard shortcuts (Space / arrows / 1-9). Armed from
+  // init, not gated on engagement — Space/1-9 are how a reader who
+  // knows the shortcut starts the talk cold, mirroring the in-page
+  // play button. Skipped while typing in a form field or with a
+  // modifier held.
   private setupKeyboardShortcuts() {
     document.addEventListener("keydown", (e) => {
       if (!this.player || !this.manifest) return;
@@ -357,6 +435,46 @@ class Narrator {
     });
   }
 
+  // Injects a toggle inside Shikwasa's basic controls row that releases
+  // (or re-acquires) the OS media-session surface — lock screen, hardware
+  // media keys, Bluetooth-headset taps. When OFF the metadata, action
+  // handlers, and rAF position-state pushes are all torn down; when ON
+  // the surface is armed exactly as it is by default after first play.
+  // Persisted globally in localStorage (`narrate-capture-controls`), so
+  // the choice carries between posts — the pref is about the reader's
+  // relationship to their own music, not about any one talk.
+  private setupCaptureToggle() {
+    const basic = this.playerContainer.querySelector(".shk-controls_basic");
+    if (!basic) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "shk-btn narrate-capture-btn";
+    btn.setAttribute("aria-label", "Toggle media key capture");
+    btn.setAttribute("aria-pressed", String(this.captureControls));
+    btn.title = this.captureControls
+      ? "Release media keys & headset controls"
+      : "Capture media keys & headset controls";
+    // Headphones glyph — the surface this toggle governs is specifically
+    // about audio devices (lock screen, hardware media keys, Bluetooth
+    // headset). State is signalled by color only (see narrator.css),
+    // mirroring the highlight button — no second SVG variant to keep
+    // in sync.
+    btn.innerHTML =
+      '<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">' +
+      '<path d="M12 1C7.03 1 3 5.03 3 10v7a3 3 0 0 0 3 3h3v-9H5v-1a7 7 0 1 1 14 0v1h-4v9h3a3 3 0 0 0 3-3v-7c0-4.97-4.03-9-9-9z" fill="currentColor"/>' +
+      "</svg>";
+    btn.addEventListener("click", () => {
+      this.setCaptureControls(!this.captureControls);
+    });
+    // Insert before the highlight button (which insertBefore-s `.shk-btn_more`
+    // when it runs immediately after this in init). That keeps highlight
+    // rightmost and preserves the existing corner-× collision fix.
+    const moreBtn = basic.querySelector(".shk-btn_more");
+    if (moreBtn) basic.insertBefore(btn, moreBtn);
+    else basic.appendChild(btn);
+    this.captureBtn = btn;
+  }
+
   // Injects a toggle inside Shikwasa's basic controls row that turns
   // narration highlighting on/off. When off:
   //   - `.narration-active` is not applied to any element
@@ -389,13 +507,15 @@ class Narrator {
     this.highlightBtn = btn;
   }
 
-  // Inject a close × in the top-right corner of the player card. Shown
-  // only on small screens (CSS media query) — on desktop the floating
-  // "Listen" pill is the close affordance and the in-player × would
-  // just be redundant. On mobile the dock takes most of the viewport
-  // width and the pill would otherwise sit on top of the dock, so the
-  // pill is hidden when the dock is open and the in-player × replaces
-  // it as the dismiss control.
+  // Inject a close × in the top-right corner of the player card —
+  // always visible. The Listen pill (`setupVisibilityToggle`) is the
+  // re-open partner and is hidden while the dock is open, so × and
+  // pill never coexist on screen. Two side effects of always-on ×:
+  // it avoids a second on-screen headphones glyph competing with the
+  // capture toggle, and the corner-clearing `padding-right` rule on
+  // `.shk-player` now applies across the whole horizontal-layout band
+  // (see narrator.css's `@media (min-width: 641px)`), not just the
+  // 641-1000px slice it covered when × was viewport-conditional.
   private setupCloseButton() {
     const player = this.playerContainer.querySelector(".shk-player") as HTMLElement | null;
     if (!player) return;
@@ -455,6 +575,34 @@ class Narrator {
         const el = this.narrationRoot.querySelector(`#${CSS.escape(this.activeId)}`);
         el?.classList.remove("narration-active");
       }
+    }
+  }
+
+  private setCaptureControls(enabled: boolean) {
+    this.captureControls = enabled;
+    if (this.captureBtn) {
+      this.captureBtn.setAttribute("aria-pressed", String(enabled));
+      this.captureBtn.title = enabled
+        ? "Release media keys & headset controls"
+        : "Capture media keys & headset controls";
+    }
+    if (enabled) {
+      // Re-arm only if we've already played at least once — otherwise the
+      // next onPlay() will arm via the deferred-first-play path (which is
+      // also gated on `captureControls`). Calling setupMediaSession
+      // pre-firstplay would silently arm metadata + handlers for a talk
+      // that hasn't started, exactly what the first-play deferral exists
+      // to prevent.
+      if (this.hasPlayed) this.setupMediaSession();
+    } else {
+      this.teardownMediaSession();
+    }
+    try {
+      if (enabled) localStorage.removeItem("narrate-capture-controls");
+      else localStorage.setItem("narrate-capture-controls", "off");
+    } catch {
+      // private mode / storage disabled — pref is best-effort, the
+      // in-memory flag still governs this session.
     }
   }
 
@@ -901,11 +1049,26 @@ class Narrator {
   // it from the <audio> element — the heuristic can disagree with reality after
   // a programmatic `currentTime` write (which seekToMs does), leaving the lock
   // screen showing Play while audio plays.
+  //
+  // The `captureControls` guard is load-bearing: this helper is the SINGLE
+  // chokepoint for `playbackState` writes (called from onPlay/onPause/onEnded),
+  // so gating it here means the next play after a teardown can't silently
+  // re-acquire the session a frame later.
   private setPlaybackState(state: MediaSessionPlaybackState) {
+    if (!this.captureControls) return;
     if ("mediaSession" in navigator) navigator.mediaSession.playbackState = state;
   }
 
   private onPlay() {
+    if (!this.hasPlayed) {
+      // First explicit play: arm the OS surface (metadata + action handlers
+      // + position pushes). The latch is one-way — a later pause doesn't tear
+      // it down, since the reader has now signalled they want player control.
+      // Skipped entirely if the reader has previously released capture; the
+      // toggle (or a re-toggle later this session) is what re-arms instead.
+      this.hasPlayed = true;
+      if (this.captureControls) this.setupMediaSession();
+    }
     this.playing = true;
     if (this.highlightEnabled) this.narrationRoot.classList.add("narrating");
     this.startTicker();
@@ -959,8 +1122,15 @@ class Narrator {
     // Drive the lock-screen / Now-Playing scrubber off the same canonical
     // clock. Coalesced internally by the UA, so rAF-rate calls are fine. The
     // spec requires position <= duration and throws otherwise; the final frame
-    // can drift a hair past duration, so clamp.
-    if ("mediaSession" in navigator && navigator.mediaSession.setPositionState) {
+    // can drift a hair past duration, so clamp. Gated on `captureControls` so
+    // the ticker doesn't silently re-acquire the OS session a frame after a
+    // teardown — the other half of the chokepoint that `setPlaybackState`
+    // guards.
+    if (
+      this.captureControls &&
+      "mediaSession" in navigator &&
+      navigator.mediaSession.setPositionState
+    ) {
       const audio = (this.player as unknown as { audio?: HTMLAudioElement }).audio;
       const durationSec = msToSeconds(this.manifest.duration);
       navigator.mediaSession.setPositionState({
