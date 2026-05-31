@@ -299,8 +299,9 @@ type ManifestChapter = { id: string; title: string; startTime: number; endTime: 
 type Manifest = { audio?: string; duration?: number; chapters?: ManifestChapter[] };
 
 // Pull the site title + description out of the blog's own landing index.html,
-// so the engine never hardcodes a blog name.
-async function readSiteMeta(): Promise<{ title: string; description: string }> {
+// so the engine never hardcodes a blog name. Exported so sibling generators
+// (site-discovery.ts) reuse one extractor; they all join the same convention.
+export async function readSiteMeta(): Promise<{ title: string; description: string }> {
   const indexPath = join(paths.contentRoot, "index.html");
   if (!existsSync(indexPath)) return { title: "", description: "" };
   const html = await Bun.file(indexPath).text();
@@ -308,6 +309,7 @@ async function readSiteMeta(): Promise<{ title: string; description: string }> {
   let description = "";
   let inTitle = false;
   let inP = false;
+  let captured = false; // landed-on flag — only the FIRST <main> <p> contributes
   new HTMLRewriter()
     .on("title", {
       element() {
@@ -319,12 +321,20 @@ async function readSiteMeta(): Promise<{ title: string; description: string }> {
       },
     })
     .on("main p", {
-      element() {
-        if (!description && !inP) inP = true;
+      element(el) {
+        // Use onEndTag to close — a `<p>` with descendant elements (e.g.
+        // `<strong>`) splits its text across multiple text nodes, and closing
+        // on `lastInTextNode` would truncate at the first descendant.
+        if (!captured && !inP) {
+          inP = true;
+          captured = true;
+          el.onEndTag(() => {
+            inP = false;
+          });
+        }
       },
       text(t) {
         if (inP) description += t.text;
-        if (t.lastInTextNode) inP = false;
       },
     })
     .transform(html);
@@ -340,8 +350,10 @@ function extractArticle(html: string): string {
   return m ? m[1]!.trim() : "";
 }
 
-// Title + lede from a source post.
-function extractPostMeta(html: string): { title: string; summary: string } {
+// Title + lede from a source post. Exported so site-discovery.ts reuses the
+// same extractor (sitemap/llms.txt want exactly the title + description the
+// feed uses; one source of truth keeps them in lockstep).
+export function extractPostMeta(html: string): { title: string; summary: string } {
   let title = "";
   let summary = "";
   let metaDesc = "";
@@ -363,12 +375,17 @@ function extractPostMeta(html: string): { title: string; summary: string } {
       },
     })
     .on("#lede", {
-      element() {
+      element(el) {
+        // onEndTag (not `lastInTextNode`) — descendant elements inside the
+        // lede split its text across multiple text nodes; closing on the
+        // first would truncate at the first <strong>/<em>/etc.
         inLede = true;
+        el.onEndTag(() => {
+          inLede = false;
+        });
       },
       text(t) {
         if (inLede) summary += t.text;
-        if (t.lastInTextNode) inLede = false;
       },
     })
     .transform(html);

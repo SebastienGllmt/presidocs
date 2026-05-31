@@ -192,6 +192,28 @@ html { scroll-behavior: smooth; }
   display: block;
 }
 
+/* Engine attribution (client/byline.ts → buildEngineAttribution). A subtle
+   "Built with presidocs" line, appended after the follow-CTA. Deliberately
+   muted so it never competes visually with the CTA: small font, page-fg-muted
+   color, no border or card framing. A downstream blog that wants it gone can
+   hide it with `display: none` on this selector. */
+.engine-attribution {
+  margin: 1.5rem 0 0;
+  text-align: center;
+  font-size: .8rem;
+  color: var(--page-fg-muted);
+}
+.engine-attribution-link {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: rgba(0, 0, 0, 0.2);
+  text-underline-offset: 2px;
+}
+.engine-attribution-link:hover {
+  color: var(--page-fg);
+  text-decoration-color: currentColor;
+}
+
 /* Heading deep-link affordance (client/headerLinks.ts). A small link icon
    sits to the right of every <h2>/<h3>/<h4> in the article, hidden until the
    user hovers (or keyboard-focuses) the heading or the icon itself. Click

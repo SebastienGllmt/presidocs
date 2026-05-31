@@ -100,12 +100,17 @@ function extract(html: string): Extracted {
       },
     })
     .on("#lede", {
-      element() {
+      element(el) {
+        // onEndTag rather than `lastInTextNode` — a lede with descendant
+        // elements (`<strong>`, etc.) splits its text across multiple nodes;
+        // closing on the first chunk would truncate at the first child.
         inLede = true;
+        el.onEndTag(() => {
+          inLede = false;
+        });
       },
       text(t) {
         if (inLede) out.lede += t.text;
-        if (t.lastInTextNode) inLede = false;
       },
     })
     .on("[data-narration-artist]", {
@@ -124,6 +129,22 @@ function extract(html: string): Extracted {
 
 function collapseWs(s: string): string {
   return s.replace(/\s+/g, " ").trim();
+}
+
+// Count words inside the post's <article>. Content-agnostic: strip scripts /
+// styles / comments / remaining tags, split on whitespace. Approximate but
+// stable across re-builds and well-defined for "minor SEO + LLM length signal"
+// (Schema.org wordCount is a number, no precision spec). 0 when no <article>
+// is present — the caller then omits the field.
+export function countArticleWords(html: string): number {
+  const m = html.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i);
+  if (!m) return 0;
+  const text = m[1]!
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<[^>]+>/g, " ");
+  return text.split(/\s+/).filter(Boolean).length;
 }
 
 // Escape for use inside a double-quoted HTML attribute.
@@ -199,12 +220,26 @@ export function injectStructuredData(
   const usingCard = !ex.ogImageOverride && !!ctx.cardUrl;
 
   // ---- JSON-LD (BlogPosting) ----
+  // `name` is emitted alongside `headline` (the Schema.org canonical
+  // BlogPosting example does this) because some consumers — generic LLM
+  // indexers and tooling that walks Thing.name — key on `name` rather than
+  // Article-specific fields.
+  // `url` mirrors the canonical example (Article rich-result examples emit
+  // a top-level `url` alongside `mainEntityOfPage`).
+  // `isPartOf` ties this post to the Blog @graph node minted on the landing
+  // page (`injectSiteStructuredData`), so a crawler that fetches both pages
+  // sees one connected graph (one Blog, N BlogPostings) instead of two
+  // unrelated documents. A bare `@id` reference is sufficient — the consumer
+  // dereferences to the landing page's full Blog node.
   const ld: Record<string, unknown> = {
     "@context": "https://schema.org",
     "@type": "BlogPosting",
     "@id": `${url}#article`,
+    url,
     mainEntityOfPage: { "@type": "WebPage", "@id": url },
+    isPartOf: { "@type": "Blog", "@id": `${siteUrl}/#blog` },
     headline: title,
+    name: title,
     inLanguage: lang,
   };
   if (description) ld.description = description;
@@ -242,6 +277,18 @@ export function injectStructuredData(
       inLanguage: lang,
     };
   }
+  // wordCount: free length signal for SEO + LLM context — counted from the
+  // article body the injector already parses. Omitted when no <article>
+  // (the count would be 0 and misleading).
+  const wordCount = countArticleWords(html);
+  if (wordCount > 0) ld.wordCount = wordCount;
+  // speakable: marks the read-aloud-worthy sections for voice surfaces (Google
+  // Assistant et al.). Especially apt for an audio-first blog. Conservative
+  // selectors: the `<h1>` and the `#lede` paragraph — never the full article.
+  ld.speakable = {
+    "@type": "SpeakableSpecification",
+    cssSelector: ["#lede", "h1"],
+  };
   // Escape `<` so the JSON can never break out of the <script> element.
   const ldJson = JSON.stringify(ld).replace(/</g, "\\u003c");
 
@@ -299,6 +346,223 @@ export function injectStructuredData(
 
   const block = `<script type="application/ld+json">${ldJson}</script>` + tags.join("");
 
+  return new HTMLRewriter()
+    .on("head", {
+      element(el) {
+        el.append(block, { html: true });
+      },
+    })
+    .transform(html);
+}
+
+// ============================================================================
+// Landing-page (the "blog in general") structured data.
+//
+// The per-post injector above short-circuits any HTML without a versions.json
+// record, so the landing page would otherwise carry NO JSON-LD, OG, or
+// description — to a structured-data consumer the homepage is semantically
+// empty. This is the parallel injector for that case: WebSite + Blog @graph
+// JSON-LD, OG (og:type=website), a meta description, and the same emailless
+// Person/Organization a post uses. Same SITE_URL gate; same idempotent skip.
+//
+// Search action: NOT emitted — the engine has no site-search endpoint to
+// advertise (a SearchAction pointing nowhere is worse than omitting it). Add
+// it only if a search route is ever introduced.
+// ============================================================================
+
+export type SiteStructuredDataContext = {
+  /** Canonical site origin, no trailing slash. */
+  siteUrl: string;
+  /** Same public Person used in post bylines / JSON-LD; emailless. */
+  author: StructuredDataAuthor | null;
+  /**
+   * Publisher/`og:site_name` label. The single source is the same one posts
+   * use (the `data-narration-artist` value), passed in by the build so this
+   * injector stays content-agnostic. Empty string omits the field.
+   */
+  publisher: string;
+  /**
+   * Optional dedicated landing-page share card path (`/assets/og/_site.png`).
+   * No site card today, so this is null in practice — wired so the future
+   * "site card" entry point doesn't require touching this signature again.
+   */
+  cardUrl: string | null;
+};
+
+type SiteExtracted = {
+  title: string;
+  metaDescription: string;
+  firstParagraph: string;
+  lang: string;
+  ogImageOverride: string | null;
+  hasJsonLd: boolean;
+  hasDescription: boolean;
+};
+
+function extractSite(html: string): SiteExtracted {
+  const out: SiteExtracted = {
+    title: "",
+    metaDescription: "",
+    firstParagraph: "",
+    lang: "",
+    ogImageOverride: null,
+    hasJsonLd: html.includes("application/ld+json"),
+    hasDescription: false,
+  };
+  let inTitle = false;
+  let inP = false;
+  new HTMLRewriter()
+    .on("html", {
+      element(el) {
+        out.lang = el.getAttribute("lang") ?? "";
+      },
+    })
+    .on("title", {
+      element() {
+        inTitle = true;
+      },
+      text(t) {
+        if (inTitle) out.title += t.text;
+        if (t.lastInTextNode) inTitle = false;
+      },
+    })
+    .on('meta[name="description"]', {
+      element(el) {
+        out.hasDescription = true;
+        out.metaDescription = el.getAttribute("content") ?? "";
+      },
+    })
+    .on("main p", {
+      element(el) {
+        // First <main> <p> only. onEndTag (not `lastInTextNode`) so a <p> with
+        // descendant elements doesn't get truncated at the first child — see
+        // readSiteMeta() in generate/feeds.ts for the same fix.
+        if (!out.firstParagraph && !inP) {
+          inP = true;
+          el.onEndTag(() => {
+            inP = false;
+          });
+        }
+      },
+      text(t) {
+        if (inP) out.firstParagraph += t.text;
+      },
+    })
+    .on('meta[property="og:image"]', {
+      element(el) {
+        out.ogImageOverride = el.getAttribute("content");
+      },
+    })
+    .transform(html);
+  return out;
+}
+
+export function injectSiteStructuredData(
+  html: string,
+  ctx: SiteStructuredDataContext,
+): string {
+  const ex = extractSite(html);
+  if (ex.hasJsonLd) return html;
+
+  const siteUrl = ctx.siteUrl.replace(/\/+$/, "");
+  const title = decodeHtmlEntities(collapseWs(ex.title));
+  const description = decodeHtmlEntities(
+    collapseWs(ex.metaDescription || ex.firstParagraph),
+  );
+  const lang = ex.lang || "en";
+  const publisher = decodeHtmlEntities(collapseWs(ctx.publisher));
+  const shareImage = ex.ogImageOverride
+    ? abs(siteUrl, ex.ogImageOverride)
+    : ctx.cardUrl
+      ? abs(siteUrl, ctx.cardUrl)
+      : null;
+  const usingCard = !ex.ogImageOverride && !!ctx.cardUrl;
+
+  // ---- JSON-LD: WebSite + Blog @graph ----
+  // The two are linked: the WebSite's `mainEntity` is the Blog node (the
+  // inverse of `mainEntityOfPage`, per Schema.org's mainEntity background
+  // notes — makes the @graph genuinely connected instead of two parallel
+  // nodes), and both share the same author Person / publisher Organization
+  // the posts already use.
+  const webSite: Record<string, unknown> = {
+    "@type": "WebSite",
+    "@id": `${siteUrl}/#website`,
+    url: `${siteUrl}/`,
+    name: title || publisher || "Blog",
+    inLanguage: lang,
+    mainEntity: { "@id": `${siteUrl}/#blog` },
+  };
+  if (description) webSite.description = description;
+  if (publisher) {
+    webSite.publisher = { "@type": "Organization", name: publisher };
+  }
+
+  const blog: Record<string, unknown> = {
+    "@type": "Blog",
+    "@id": `${siteUrl}/#blog`,
+    url: `${siteUrl}/`,
+    name: title || publisher || "Blog",
+    inLanguage: lang,
+  };
+  if (description) blog.description = description;
+  if (ctx.author) {
+    const person: Record<string, unknown> = {
+      "@type": "Person",
+      name: ctx.author.name,
+    };
+    const sameAs = Object.values(ctx.author.links).filter(Boolean);
+    if (sameAs.length) person.sameAs = sameAs;
+    if (ctx.author.avatarUrl) person.image = abs(siteUrl, ctx.author.avatarUrl);
+    blog.author = person;
+  }
+  if (publisher) {
+    blog.publisher = { "@type": "Organization", name: publisher };
+  }
+  if (shareImage) {
+    blog.image = usingCard
+      ? { "@type": "ImageObject", url: shareImage, width: CARD_WIDTH, height: CARD_HEIGHT }
+      : shareImage;
+  }
+
+  const graph: Record<string, unknown> = {
+    "@context": "https://schema.org",
+    "@graph": [webSite, blog],
+  };
+  const ldJson = JSON.stringify(graph).replace(/</g, "\\u003c");
+
+  // ---- OG + a fallback meta description ----
+  const tags: string[] = [];
+  const meta = (prop: string, content: string, kind: "property" | "name" = "property") =>
+    tags.push(`<meta ${kind}="${prop}" content="${attr(content)}" />`);
+
+  // Only add a meta description if the source doesn't already have one — never
+  // duplicate (some crawlers downrank conflicting descriptions).
+  if (description && !ex.hasDescription) {
+    meta("description", description, "name");
+  }
+  meta("og:type", "website");
+  if (title) meta("og:title", title);
+  if (description) meta("og:description", description);
+  meta("og:url", `${siteUrl}/`);
+  if (publisher) meta("og:site_name", publisher);
+  const locale = toOgLocale(lang);
+  if (locale) meta("og:locale", locale);
+  if (shareImage && !ex.ogImageOverride) {
+    meta("og:image", shareImage);
+    if (title) meta("og:image:alt", title);
+    if (usingCard) {
+      meta("og:image:width", String(CARD_WIDTH));
+      meta("og:image:height", String(CARD_HEIGHT));
+    }
+  }
+  meta("twitter:card", shareImage ? "summary_large_image" : "summary", "name");
+  if (title) meta("twitter:title", title, "name");
+  if (description) meta("twitter:description", description, "name");
+  if (shareImage) meta("twitter:image", shareImage, "name");
+  const creator = xCreator(ctx.author?.links.x);
+  if (creator) meta("twitter:creator", creator, "name");
+
+  const block = `<script type="application/ld+json">${ldJson}</script>` + tags.join("");
   return new HTMLRewriter()
     .on("head", {
       element(el) {

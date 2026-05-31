@@ -257,6 +257,32 @@ function buildFollowCta(profile: PublicAuthorProfile): HTMLElement | null {
   return wrap;
 }
 
+// "Built with presidocs" engine attribution, appended after the follow-CTA.
+// Always present (no per-blog data), so the markup is stable and the styling
+// is owned by base.css — a downstream blog that wants it gone can hide it with
+// a single CSS override. Subtle by design: muted-text-color, small font, no
+// border or card framing. Kept dependency-free (no SVG icon) so the attribution
+// is a single text-and-anchor row that survives any stylesheet stripping.
+function buildEngineAttribution(): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "engine-attribution";
+  wrap.setAttribute("role", "contentinfo");
+  wrap.setAttribute("aria-label", "Built with presidocs");
+  const prefix = document.createElement("span");
+  prefix.textContent = "Built with ";
+  const link = document.createElement("a");
+  link.className = "engine-attribution-link";
+  link.href = "https://github.com/SebastienGllmt/presidocs";
+  link.target = "_blank";
+  // `noopener` for the new-tab anchor; no `nofollow` — the attribution is a
+  // genuine "powered by" credit, not user-generated content.
+  link.rel = "noopener";
+  link.textContent = "presidocs";
+  wrap.appendChild(prefix);
+  wrap.appendChild(link);
+  return wrap;
+}
+
 async function boot(): Promise<void> {
   // Same article-root selector the comments layer uses; present on every post
   // (kept even on narration opt-out posts).
@@ -323,6 +349,12 @@ async function boot(): Promise<void> {
   // top-of-boot byline-existence check (boot itself only runs once).
   const cta = buildFollowCta(profile);
   if (cta) article.appendChild(cta);
+
+  // Engine attribution after the CTA — subtle "Built with presidocs" line.
+  // Independent of the author profile (no data dependency), so it always
+  // renders. Boot only runs once and the byline-existence check at the top
+  // of boot already guards against double-render.
+  article.appendChild(buildEngineAttribution());
 }
 
 if (document.readyState === "loading") {

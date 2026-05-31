@@ -1,10 +1,11 @@
-// Build step: render a per-post social share card (the Open Graph / Twitter /
-// Schema.org `image`) — 1200x630 PNG showing the blog name, the article title,
-// and the author (avatar + name). One per post, written to
-// `dist/assets/og/<slug>.png`, used as the default share image by the
-// structured-data inject unless the post declares its own `<meta property=
-// "og:image">`. This makes `og:image` (a REQUIRED Open Graph property) always
-// present, and gives a real 1200x630 card instead of a tiny avatar thumbnail.
+// Build step: render social share cards (the Open Graph / Twitter /
+// Schema.org `image`) — 1200x630 PNGs showing the blog name, a title, and an
+// author (avatar + name). One per post (written to `dist/assets/og/<slug>.png`)
+// PLUS one landing-page site card (`dist/assets/og/_site.png`), used as the
+// default share images by the structured-data inject unless a page declares
+// its own `<meta property="og:image">`. This makes `og:image` (a REQUIRED
+// Open Graph property) always present on both posts AND the landing page,
+// and gives a real 1200x630 card instead of a tiny avatar thumbnail.
 //
 // Pipeline: satori lays the card out from a plain element tree (no JSX/React —
 // the engine is React-free) into an SVG with text already converted to vector
@@ -26,6 +27,7 @@ import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { resolveAuthorProfile } from "../shared/authorProfile.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 import { decodeHtmlEntities } from "../shared/htmlEntities.ts";
+import { readSiteMeta } from "./feeds.ts";
 
 const paths = resolveBlogPaths();
 
@@ -245,14 +247,35 @@ async function main(): Promise<void> {
   const outDir = join(paths.distDir, "assets", "og");
   await mkdir(outDir, { recursive: true });
 
+  // versions.json lets us pick the newest-post author for the SITE card (same
+  // convention strip-served-html.ts:pickSiteAuthor and feeds.ts's channel
+  // author derivation use — one rule across all three call sites). Missing
+  // file just means no site-author block on the site card.
+  type VersionEntry = { builtAt: string };
+  let versions: Record<string, VersionEntry[]> = {};
+  try {
+    versions = (await Bun.file(paths.versionsJson).json()) as Record<string, VersionEntry[]>;
+  } catch {
+    versions = {};
+  }
+
   const postFiles = (await readdir(paths.postsDir)).filter((f) => f.endsWith(".html"));
   let made = 0;
   let skipped = 0;
+  let newestPostBuiltAt = "";
+  let siteAuthorEmail: string | null = null;
   for (const file of postFiles) {
     const slug = file.replace(/\.html$/, "");
     const html = await Bun.file(join(paths.postsDir, file)).text();
     const email = parseAuthorEmailFromHtml(html);
     if (!email) continue; // not a real post
+    // Track newest-post author for the site card, regardless of per-post
+    // og:image override (the override only suppresses THIS post's card).
+    const builtAt = versions[`/posts/${slug}`]?.[0]?.builtAt;
+    if (builtAt && builtAt > newestPostBuiltAt) {
+      newestPostBuiltAt = builtAt;
+      siteAuthorEmail = email;
+    }
     if (hasOwnOgImage(html)) {
       skipped++;
       continue; // post supplies its own image — no generated card needed
@@ -267,8 +290,46 @@ async function main(): Promise<void> {
     made++;
     console.log(`  card → assets/og/${slug}.png`);
   }
+
+  // Landing-page card (`_site.png`): the leading `_` keeps it out of the post
+  // slug space (post filenames are alphanumeric/hyphen, never leading `_`).
+  // Skipped when the landing declares its own og:image — same convention as
+  // per-post cards. Skipped when the landing has no description for the middle
+  // band (the brand-only card would be visually empty).
+  const landingPath = join(paths.contentRoot, "index.html");
+  const landingHtml = existsSync(landingPath) ? await Bun.file(landingPath).text() : "";
+  let siteCardMade = false;
+  if (landingHtml && !hasOwnOgImage(landingHtml)) {
+    const meta = await readSiteMeta();
+    if (meta.description) {
+      const siteAuthorRes = siteAuthorEmail
+        ? await resolveAuthorProfile(paths.contentRoot, siteAuthorEmail)
+        : null;
+      const siteAuthorName =
+        siteAuthorRes && siteAuthorRes.ok ? siteAuthorRes.author.profile.name : null;
+      const siteAvatar = await avatarDataUri(
+        siteAuthorRes && siteAuthorRes.ok ? siteAuthorRes.author.avatarSrcPath : null,
+      );
+      // The middle band gets the site DESCRIPTION (tagline), not the site
+      // name — the brand position (top) already carries the name, so putting
+      // the same text in both would just duplicate. The tagline is the
+      // discriminating content for a "this is the blog" card.
+      const png = await renderShareCard({
+        siteName: meta.title || siteName,
+        title: meta.description,
+        authorName: siteAuthorName,
+        avatarDataUri: siteAvatar,
+      });
+      await writeFile(join(outDir, "_site.png"), png);
+      siteCardMade = true;
+      console.log(`  card → assets/og/_site.png (landing card)`);
+    }
+  }
+
   console.log(
-    `Share cards: ${made} generated${skipped ? `, ${skipped} skipped (own og:image)` : ""}.`,
+    `Share cards: ${made} post card${made === 1 ? "" : "s"} generated` +
+      (skipped ? `, ${skipped} skipped (own og:image)` : "") +
+      (siteCardMade ? "; landing card generated" : "; no landing card"),
   );
 }
 

@@ -20,9 +20,11 @@ import { stripServedHtml } from "../shared/stripServedHtml.ts";
 import { injectCloudflareAnalytics } from "../shared/injectAnalytics.ts";
 import {
   injectStructuredData,
+  injectSiteStructuredData,
   type StructuredDataContext,
+  type SiteStructuredDataContext,
 } from "../shared/injectStructuredData.ts";
-import { buildAuthorMap } from "../shared/authorProfile.ts";
+import { buildAuthorMap, type PublicAuthorProfile } from "../shared/authorProfile.ts";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 
 const paths = resolveBlogPaths();
@@ -72,6 +74,59 @@ async function readAudio(
   }
 }
 
+// Sample any source post's `data-narration-artist` — used as the WebSite/Blog
+// publisher on the landing page so it matches each post's BlogPosting.publisher
+// (one source, not a separate landing-only knob). Empty when no post declares
+// one; the landing injector degrades the publisher field rather than failing.
+//
+// Uses HTMLRewriter (the right HTML parser, matching the per-post extractor in
+// injectStructuredData.ts) rather than a regex over attribute syntax — a regex
+// like /data-narration-artist=["']([^"']+)["']/ silently truncates values
+// containing an apostrophe (e.g. "Author's blog" → "Author"), because the
+// negated character class `[^"']+` stops at the first quote of EITHER kind.
+async function readSitePublisher(postsDir: string): Promise<string> {
+  let entries;
+  try {
+    entries = await readdir(postsDir);
+  } catch {
+    return "";
+  }
+  // readdir order is filesystem-dependent; sort for a deterministic pick when
+  // posts disagree (which they shouldn't — `data-narration-artist` is the
+  // publisher label and should be consistent across posts of the same blog).
+  entries.sort();
+  for (const f of entries) {
+    if (!f.endsWith(".html")) continue;
+    const html = await Bun.file(join(postsDir, f)).text();
+    let found = "";
+    new HTMLRewriter()
+      .on("[data-narration-artist]", {
+        element(el) {
+          if (!found) found = el.getAttribute("data-narration-artist") ?? "";
+        },
+      })
+      .transform(html);
+    if (found) return found;
+  }
+  return "";
+}
+
+// Pick a site-level author for the landing JSON-LD. For a single-author blog
+// the map has one entry; for multi-author we pick the author of the newest
+// post (mirrors feeds.ts:475 — `posts.find((p) => p.author)`). With no posts,
+// returns null and the landing degrades cleanly.
+function pickSiteAuthor(
+  authorMap: Record<string, PublicAuthorProfile>,
+  versions: VersionsFile,
+): PublicAuthorProfile | null {
+  const newest = Object.entries(versions)
+    .filter(([, h]) => h && h.length > 0)
+    .sort((a, b) => (a[1]![0]!.builtAt < b[1]![0]!.builtAt ? 1 : -1))[0];
+  if (newest && authorMap[newest[0]]) return authorMap[newest[0]]!;
+  const first = Object.values(authorMap)[0];
+  return first ?? null;
+}
+
 async function walkHtml(dir: string): Promise<string[]> {
   const out: string[] = [];
   let entries;
@@ -116,11 +171,15 @@ async function main(): Promise<void> {
   }
 
   // Gathered once for the structured-data inject: per-post dates (versions.json,
-  // newest-first) and the public author profiles (post path → name/links/avatar,
-  // never the email — same source as the byline). Both empty/absent → the
-  // inject degrades field-by-field.
+  // newest-first), the public author profiles (post path → name/links/avatar,
+  // never the email — same source as the byline), and the site-level publisher
+  // label (sampled from a post's `data-narration-artist`, so the landing's
+  // Blog.publisher matches each post's BlogPosting.publisher). All empty/absent
+  // → the inject degrades field-by-field.
   let versions: VersionsFile = {};
-  let authorMap: Record<string, { name: string; links: Record<string, string>; avatar: string | null }> = {};
+  let authorMap: Record<string, PublicAuthorProfile> = {};
+  let sitePublisher = "";
+  let siteAuthor: PublicAuthorProfile | null = null;
   if (siteUrl) {
     try {
       versions = (await Bun.file(paths.versionsJson).json()) as VersionsFile;
@@ -128,7 +187,11 @@ async function main(): Promise<void> {
       versions = {};
     }
     authorMap = (await buildAuthorMap(paths.postsDir, ROOT)).map;
+    sitePublisher = await readSitePublisher(paths.postsDir);
+    siteAuthor = pickSiteAuthor(authorMap, versions);
   }
+
+  const landingPath = join(DIST, "index.html");
 
   let totalSaved = 0;
   let touched = 0;
@@ -136,8 +199,8 @@ async function main(): Promise<void> {
     const before = await readFile(file, "utf8");
     let after = stripServedHtml(before);
 
-    // Structured data only for real posts (those with a version record);
-    // landing/other HTML short-circuit.
+    // Structured data: real posts get BlogPosting; the landing page gets a
+    // WebSite/Blog @graph; everything else short-circuits.
     if (siteUrl) {
       const postPath = distFileToPostPath(file);
       const history = versions[postPath];
@@ -162,6 +225,22 @@ async function main(): Promise<void> {
           cardUrl,
         };
         after = injectStructuredData(after, ctx);
+      } else if (file === landingPath) {
+        // The landing-page share card (generate/share-card.ts:_site.png). Gated
+        // on the file actually existing so a deploy without share cards (no
+        // SITE_URL when share-card.ts ran, or no site description) degrades
+        // cleanly to "no og:image" rather than a broken link.
+        const siteCardFsPath = join(DIST, "assets", "og", "_site.png");
+        const siteCardUrl = existsSync(siteCardFsPath) ? "/assets/og/_site.png" : null;
+        const siteCtx: SiteStructuredDataContext = {
+          siteUrl,
+          author: siteAuthor
+            ? { name: siteAuthor.name, links: siteAuthor.links, avatarUrl: siteAuthor.avatar }
+            : null,
+          publisher: sitePublisher,
+          cardUrl: siteCardUrl,
+        };
+        after = injectSiteStructuredData(after, siteCtx);
       }
       // Feed autodiscovery on every page (landing included), not just posts.
       after = injectFeedLinks(after);
@@ -184,7 +263,14 @@ async function main(): Promise<void> {
   );
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Only run as a CLI; importing the helpers (e.g. from tests) must not trigger
+// the build pass. Matches the posture of feeds.ts / site-discovery.ts.
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
+
+// Exported for tests.
+export { readSitePublisher };
