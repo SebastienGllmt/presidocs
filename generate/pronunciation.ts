@@ -116,6 +116,38 @@ export type ApplyOptions = {
   ipaSupported: boolean;
 };
 
+// One PLS substitution that happened during applyLexiconWithMap. Spans are
+// half-open ranges into the original / substituted strings respectively. Used
+// by the forced-aligner integration (proposals/17 §8) to project alignment
+// timings — which are produced against the substituted text MOSS actually
+// spoke — back to character offsets in the displayed (original) text, so the
+// drawer can highlight the term the reader sees, not the respelling MOSS
+// pronounced. Identity-mapped stretches between substitutions are implicit
+// (they have the same length in both strings); only the substitutions
+// themselves are recorded.
+export type Substitution = {
+  originalStart: number;
+  originalEnd: number;
+  substitutedStart: number;
+  substitutedEnd: number;
+  // The matched grapheme verbatim (== text.slice(originalStart, originalEnd)).
+  // Carried so consumers don't have to slice the original text just to label a
+  // substitution in logs / debug output.
+  grapheme: string;
+  // What it was substituted with (== substituted.slice(substitutedStart,
+  // substitutedEnd)). For an IPA-capable engine this is the `/.../`-wrapped
+  // phoneme string; otherwise it's the alias verbatim.
+  replacement: string;
+};
+
+export type ApplyResult = {
+  // The substituted text — what we hand to the TTS engine (and what the
+  // aligner sees).
+  substituted: string;
+  // The list of substitutions in document order. Empty when nothing matched.
+  substitutions: Substitution[];
+};
+
 // Choose the pronunciation an entry contributes for this engine: IPA (wrapped)
 // when supported and present, otherwise the alias. Returns null if the entry
 // has nothing usable for this engine (e.g. IPA-only entry on a non-IPA engine).
@@ -125,13 +157,12 @@ function replacementFor(entry: LexEntry, opts: ApplyOptions): string | null {
   return null;
 }
 
-// Rewrite every matched grapheme in `text` to its pronunciation. Pure and
-// deterministic: same (text, entries, opts) always yields the same string, so
-// the result is safely captured by the TTS cache key (which already hashes the
-// lexicon XML). Returns `text` unchanged when there's nothing to apply.
-export function applyLexicon(text: string, entries: LexEntry[], opts: ApplyOptions): string {
-  if (!text || entries.length === 0) return text;
-
+// Build the matcher (regex + grapheme→replacement map) shared by
+// applyLexicon{,WithMap}. Returns null when there's nothing to match.
+function compileMatcher(
+  entries: LexEntry[],
+  opts: ApplyOptions,
+): { re: RegExp; map: Map<string, string> } | null {
   // Flatten to (grapheme → replacement), longest grapheme first so that at any
   // position the most specific spelling wins (regex alternation is left-biased,
   // so order is what enforces longest-match). First writer wins on duplicates.
@@ -141,7 +172,7 @@ export function applyLexicon(text: string, entries: LexEntry[], opts: ApplyOptio
     if (replacement === null) continue;
     for (const grapheme of entry.graphemes) pairs.push({ grapheme, replacement });
   }
-  if (pairs.length === 0) return text;
+  if (pairs.length === 0) return null;
   pairs.sort((a, b) => b.grapheme.length - a.grapheme.length);
 
   const map = new Map<string, string>();
@@ -154,5 +185,118 @@ export function applyLexicon(text: string, entries: LexEntry[], opts: ApplyOptio
   // valid only when neither neighbor is [A-Za-z0-9].
   const alternation = [...map.keys()].map(escapeRegExp).join("|");
   const re = new RegExp(`(?<![A-Za-z0-9])(?:${alternation})(?![A-Za-z0-9])`, "g");
-  return text.replace(re, (m) => map.get(m) ?? m);
+  return { re, map };
+}
+
+// Rewrite every matched grapheme in `text` to its pronunciation, also
+// returning the index map from original→substituted spans. Pure and
+// deterministic. This is the primitive; `applyLexicon` is a convenience
+// wrapper that discards the map for callers (MOSS synth) that don't need it.
+export function applyLexiconWithMap(
+  text: string,
+  entries: LexEntry[],
+  opts: ApplyOptions,
+): ApplyResult {
+  if (!text || entries.length === 0) return { substituted: text, substitutions: [] };
+  const matcher = compileMatcher(entries, opts);
+  if (!matcher) return { substituted: text, substitutions: [] };
+  const { re, map } = matcher;
+
+  // Walk matches in order, copying the unchanged stretches verbatim (identity
+  // mapping; not recorded) and recording each substitution span in both
+  // coordinate systems. Re-create the regex's lastIndex walk by reading
+  // .exec() in a loop rather than .replace()'ing, because the replacement
+  // callback in .replace() doesn't expose the *output* position we need for
+  // substitutedStart.
+  re.lastIndex = 0;
+  const subs: Substitution[] = [];
+  let originalCursor = 0;
+  let outParts: string[] = [];
+  let substitutedCursor = 0;
+  for (;;) {
+    const m = re.exec(text);
+    if (!m) break;
+    const grapheme = m[0];
+    const originalStart = m.index;
+    const originalEnd = originalStart + grapheme.length;
+    const replacement = map.get(grapheme);
+    if (replacement === undefined) continue; // can't happen — matcher built from map
+    // Copy the identity-mapped stretch up to this match.
+    const unchanged = text.slice(originalCursor, originalStart);
+    outParts.push(unchanged);
+    substitutedCursor += unchanged.length;
+    // Record the substitution span and emit the replacement.
+    const substitutedStart = substitutedCursor;
+    outParts.push(replacement);
+    substitutedCursor += replacement.length;
+    subs.push({
+      originalStart,
+      originalEnd,
+      substitutedStart,
+      substitutedEnd: substitutedCursor,
+      grapheme,
+      replacement,
+    });
+    originalCursor = originalEnd;
+  }
+  // Trailing identity-mapped stretch.
+  outParts.push(text.slice(originalCursor));
+  return { substituted: outParts.join(""), substitutions: subs };
+}
+
+// Rewrite every matched grapheme in `text` to its pronunciation. Pure and
+// deterministic: same (text, entries, opts) always yields the same string, so
+// the result is safely captured by the TTS cache key (which already hashes the
+// lexicon XML). Returns `text` unchanged when there's nothing to apply.
+export function applyLexicon(text: string, entries: LexEntry[], opts: ApplyOptions): string {
+  return applyLexiconWithMap(text, entries, opts).substituted;
+}
+
+// Given a position in the substituted text (e.g. an aligned token's character
+// offset), return the corresponding span in the original text. Three cases:
+//
+//   - Identity-mapped stretch (before / between / after substitutions):
+//     returns a zero-width span at the shifted offset. The caller combines a
+//     token's start + end queries to form its highlight range.
+//
+//   - Strictly inside a substitution: returns the WHOLE original grapheme's
+//     span (the §8 collapse rule). A sub-token of "shah" inside the
+//     substitution for "SHA-256" maps to the whole "SHA-256" range, so the
+//     drawer highlights the displayed term continuously.
+//
+//   - Exactly at a substitution boundary (substitutedStart or
+//     substitutedEnd): treated as the *adjacent identity-mapped* position
+//     (originalStart or originalEnd respectively). This is what makes a
+//     two-query "find this token's range" call correct: a token whose start
+//     offset lands exactly on substitutedStart maps to originalStart, not to
+//     the whole substitution; only a non-boundary position inside the
+//     substitution triggers the collapse.
+//
+// `substitutedPos` follows the half-open cursor convention: 0 is "before the
+// first character"; substituted.length is "after the last character".
+export function projectSubstitutedPosToOriginal(
+  substitutedPos: number,
+  substitutions: readonly Substitution[],
+  originalLength: number,
+): { start: number; end: number } {
+  // Walk substitutions in order tracking the offset between coordinate
+  // systems. The shift is (substitutedStart - originalStart) on an identity
+  // stretch; it changes by (substitution.replacement.length - grapheme.length)
+  // at each substitution.
+  let shift = 0;
+  for (const sub of substitutions) {
+    if (substitutedPos <= sub.substitutedStart) {
+      // Identity stretch up to and including the leading boundary.
+      const orig = substitutedPos - shift;
+      return { start: orig, end: orig };
+    }
+    if (substitutedPos < sub.substitutedEnd) {
+      // STRICTLY inside this substitution — collapse to the whole original span.
+      return { start: sub.originalStart, end: sub.originalEnd };
+    }
+    shift += sub.substitutedEnd - sub.substitutedStart - (sub.originalEnd - sub.originalStart);
+  }
+  // After every substitution — final identity stretch.
+  const orig = substitutedPos - shift;
+  return { start: Math.min(orig, originalLength), end: Math.min(orig, originalLength) };
 }

@@ -15,6 +15,17 @@ import "shikwasa/dist/style.css";
 import { Player, Chapter } from "shikwasa";
 import { asMs, msToSeconds, secondsToMs, asSeconds, type Milliseconds } from "../shared/time.ts";
 
+// Per-word timing entry inside a mark. `s`/`e` are character offsets into the
+// mark's `text` (the ORIGINAL/displayed text — for terms substituted via PLS,
+// the §8 collapse rule projects the timing of every spoken-word piece onto
+// the single displayed span). `t`/`d` are master-track absolute ms.
+// See proposals/17 §6.
+type ManifestWord = {
+  s: number;
+  e: number;
+  t: Milliseconds;
+  d: Milliseconds;
+};
 type ManifestMark = {
   name: string;
   time: Milliseconds;
@@ -23,6 +34,11 @@ type ManifestMark = {
   // populate the script drawer; segment elements get id="spoken-<name>"
   // so they can be deep-linked and (eventually) commented on.
   text?: string;
+  // Optional per-word timing for the drawer's karaoke-style highlight.
+  // Absent when the post was generated without forced alignment
+  // (`--align=NAME`); the drawer renders the segment text as one flat string
+  // in that case, identical to the pre-feature behavior.
+  words?: ManifestWord[];
 };
 // `parentId`: present only on level-2 (sub-)chapters; names the
 // level-1 chapter they group under. Absent → a top-level chapter. The manifest
@@ -100,6 +116,16 @@ class Narrator {
   private drawerEl: HTMLElement | null = null;
   private drawerTabBtn: HTMLButtonElement | null = null;
   private segmentEls = new Map<string, HTMLElement>();
+  // Per-mark word `<span>`s for the karaoke-style active-word highlight.
+  // Populated by `renderSegment` only when the mark carries `words` — marks
+  // without alignment data render text flat and have no entry here. Same key
+  // (mark name) as `segmentEls`; the inner array is in `words[]` order so the
+  // rAF tick can binary-search by time and toggle .narration-active-word on
+  // the corresponding span without re-querying the DOM.
+  private wordEls = new Map<string, HTMLSpanElement[]>();
+  // Last (markName, wordIndex) we lit, so the per-frame tick can short-
+  // circuit when nothing changed.
+  private activeWord: { markName: string; index: number } | null = null;
   private drawerOpen = false;
   // The post's URL path (e.g. `/posts/hash-functions`) — the key both
   // `/post-version` and `/dev/regenerate` expect (the server indexes posts by
@@ -1118,6 +1144,7 @@ class Narrator {
       else break;
     }
     this.setActive(active ? active.name : null);
+    this.updateActiveWord(active?.name ?? null, tMs);
 
     // Drive the lock-screen / Now-Playing scrubber off the same canonical
     // clock. Coalesced internally by the UA, so rAF-rate calls are fine. The
@@ -1327,12 +1354,98 @@ class Narrator {
 
     const text = document.createElement("p");
     text.className = "spoken-text";
-    text.textContent = mark.text ?? "";
+    const fullText = mark.text ?? "";
+    if (mark.words && mark.words.length > 0) {
+      // Word-level alignment is available: render the spoken text as a
+      // sequence of (gap text, <span.spoken-word>word</span>) pairs so the
+      // rAF tick can toggle .narration-active-word on the active span. The
+      // unchanged stretches between words (whitespace, punctuation that
+      // sits outside [s,e)) are emitted as bare text nodes — no per-glyph
+      // span — so the DOM stays light on long segments.
+      const spans: HTMLSpanElement[] = [];
+      let cursor = 0;
+      for (const [wIdx, w] of mark.words.entries()) {
+        if (w.s > cursor) text.appendChild(document.createTextNode(fullText.slice(cursor, w.s)));
+        const span = document.createElement("span");
+        span.className = "spoken-word";
+        span.dataset.wordIndex = String(wIdx);
+        span.textContent = fullText.slice(w.s, w.e);
+        // Click-to-seek on a word — drop-in extension of the segment's
+        // click-to-seek (the play button above), at finer granularity. Same
+        // small offset for the same reason (chapter plugin range check).
+        span.addEventListener("click", () => {
+          this.seekToMs(asMs(w.t + 10));
+          this.player?.play();
+        });
+        text.appendChild(span);
+        spans.push(span);
+        cursor = w.e;
+      }
+      if (cursor < fullText.length) text.appendChild(document.createTextNode(fullText.slice(cursor)));
+      this.wordEls.set(mark.name, spans);
+    } else {
+      text.textContent = fullText;
+    }
     seg.appendChild(text);
 
     li.appendChild(seg);
     this.segmentEls.set(mark.name, seg);
     return li;
+  }
+
+  // Per-frame active-word update. Called from updateActive() after the active
+  // MARK is resolved, so the binary search is over a single segment's words[]
+  // (typically 30-80 entries) rather than every word in the post. Cheap.
+  private updateActiveWord(activeMarkName: string | null, tMs: Milliseconds) {
+    if (!activeMarkName) {
+      this.clearActiveWord();
+      return;
+    }
+    const spans = this.wordEls.get(activeMarkName);
+    if (!spans || spans.length === 0) {
+      this.clearActiveWord();
+      return;
+    }
+    const mark = this.manifest?.marks.find((m) => m.name === activeMarkName);
+    const words = mark?.words;
+    if (!words || words.length === 0) {
+      this.clearActiveWord();
+      return;
+    }
+    // Latest word with t <= tMs. Linear scan is fine — segments are short.
+    // A binary search would shave microseconds and complicate the code.
+    let idx = -1;
+    for (let i = 0; i < words.length; i++) {
+      if (words[i]!.t <= tMs) idx = i;
+      else break;
+    }
+    if (idx < 0) {
+      this.clearActiveWord();
+      return;
+    }
+    // The last matched word might have already finished (currentTime past
+    // its [t, t+d)). When that happens AND it's the trailing word of the
+    // mark, the active highlight visually "lingers" on the last spoken
+    // word — which is what a karaoke reader expects (the eye doesn't snap
+    // back to nothing mid-pause). For interior words, the next iteration
+    // will overwrite anyway.
+    if (
+      this.activeWord &&
+      this.activeWord.markName === activeMarkName &&
+      this.activeWord.index === idx
+    ) {
+      return; // unchanged
+    }
+    this.clearActiveWord();
+    spans[idx]?.classList.add("narration-active-word");
+    this.activeWord = { markName: activeMarkName, index: idx };
+  }
+
+  private clearActiveWord() {
+    if (!this.activeWord) return;
+    const prev = this.wordEls.get(this.activeWord.markName);
+    prev?.[this.activeWord.index]?.classList.remove("narration-active-word");
+    this.activeWord = null;
   }
 
   private setDrawerOpen(open: boolean) {

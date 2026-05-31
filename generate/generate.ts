@@ -51,7 +51,11 @@ import {
 } from "./audio-pipeline.ts";
 import { ttsProviders, type PlsLexicon, type SegmentContext } from "./tts-providers.ts";
 import { splitChapter } from "./narration.ts";
-import { wrapWithCache, type CachedTtsProvider } from "./tts-cache.ts";
+import { wrapWithCache, computeTextHash, computeCacheKey, type CachedTtsProvider } from "./tts-cache.ts";
+import { forcedAligners, type ForcedAlignerName } from "./aligner.ts";
+import { wrapWithAlignmentCache, type CachedAligner, type CachedWord } from "./aligner-cache.ts";
+import { buildVtt, hasAlignment } from "./webvtt.ts";
+import { parseLexicon } from "./pronunciation.ts";
 import { asMs, msToSeconds, type Milliseconds } from "../shared/time.ts";
 import { resolveAuthorVoice } from "../shared/voiceResolution.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
@@ -71,7 +75,7 @@ for (const arg of argv) {
 
 const htmlPath = positional[0];
 if (!htmlPath) {
-  console.error("usage: bun run generate/generate.ts <post.html> [--tts=say] [--voice=Samantha] [--segment-gap=200] [--force-mark=NAME] [--mock]");
+  console.error("usage: bun run generate/generate.ts <post.html> [--tts=say] [--voice=Samantha] [--segment-gap=200] [--force-mark=NAME] [--mock] [--align=qwen3] [--chapters=intro,problem]");
   process.exit(1);
 }
 
@@ -116,6 +120,33 @@ const forceMarks = new Set(
     .map((s) => s.trim())
     .filter(Boolean),
 );
+
+// `--align=NAME` opts in to per-segment forced alignment for the drawer's
+// word-highlight feature + the WebVTT subtitle sidecar (proposals/17). Default
+// off, so existing builds are unchanged. Today the only backend is `qwen3`,
+// gated by QWEN3_ALIGNER_DIR (see generate/aligner.ts). `--align-language`
+// picks the language fed to the aligner (default English).
+const alignName = flags.get("align") as ForcedAlignerName | undefined;
+const alignLanguage = flags.get("align-language") ?? "English";
+
+// `--chapters=ID[,ID,...]` keeps only the listed chapters (matched by
+// data-chapter-id), in document order. Mostly a quick-iteration knob — the
+// first end-to-end run with `--tts=moss --align=qwen3` on an unbuilt 30-
+// chapter post takes hours because every segment loads the multi-GB MOSS
+// AND Qwen3 models in fresh subprocesses; this lets the author try the
+// pipeline on one or two chapters first to confirm it works before
+// committing to the full render. The resulting manifest, audio, and
+// captions.vtt only contain those chapters — re-run without the flag to
+// produce the full set.
+const chapterFilter = flags.get("chapters");
+const chapterAllowlist = chapterFilter
+  ? new Set(
+      chapterFilter
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    )
+  : null;
 
 const html = await Bun.file(htmlPath).text();
 const slug = basename(htmlPath).replace(/\.html?$/i, "");
@@ -272,6 +303,25 @@ function normalizeChapterParents(list: NarrationChapter[]): void {
 }
 normalizeChapterParents(chapters);
 
+// Apply --chapters=ID[,ID,...] truncation AFTER normalization so a sub-chapter
+// kept while its parent is dropped doesn't carry a now-dangling parentId.
+// A kept sub-chapter whose parent was filtered out is reparented to top level
+// (we drop the parentId pointer rather than refuse) — keeps the truncated
+// build well-formed without needing the author to also list the parent.
+if (chapterAllowlist) {
+  const before = chapters.length;
+  const kept = chapters.filter((c) => chapterAllowlist.has(c.id));
+  const keptIds = new Set(kept.map((c) => c.id));
+  for (const c of kept) if (c.parentId && !keptIds.has(c.parentId)) c.parentId = undefined;
+  const missing = [...chapterAllowlist].filter((id) => !chapters.some((c) => c.id === id));
+  if (missing.length > 0) {
+    console.warn(`  · --chapters: no chapter id matched: ${missing.join(", ")}`);
+  }
+  chapters.length = 0;
+  chapters.push(...kept);
+  console.log(`Chapter filter --chapters=${chapterFilter}: kept ${kept.length}/${before}`);
+}
+
 console.log(`Found ${chapters.length} narration chapter(s) in ${htmlPath}`);
 if (inlinePlsBlocks.length > 0) {
   console.log(`Found ${inlinePlsBlocks.length} inline PLS block(s) in ${htmlPath}`);
@@ -421,24 +471,59 @@ if (forceMarks.size > 0) {
   }
 }
 
+const ttsIdentity = {
+  providerName: rawTts.name,
+  // Use the provider's machine-independent voice id when it has one
+  // (MOSS hashes its reference clip's contents); fall back to the raw
+  // voice name otherwise (`say`). Keeps an absolute, per-machine clip
+  // path out of the cache key so a shared cache hits across machines.
+  voice: rawTts.cacheVoiceId ?? voice,
+  rate,
+  format: workingFormat,
+  localLexiconXml: localLexicon?.xml ?? null,
+};
 const cachedTts: CachedTtsProvider | null = mock
   ? null
   : wrapWithCache(rawTts, {
       cacheDir,
-      identity: {
-        providerName: rawTts.name,
-        // Use the provider's machine-independent voice id when it has one
-        // (MOSS hashes its reference clip's contents); fall back to the raw
-        // voice name otherwise (`say`). Keeps an absolute, per-machine clip
-        // path out of the cache key so a shared cache hits across machines.
-        voice: rawTts.cacheVoiceId ?? voice,
-        rate,
-        format: workingFormat,
-        localLexiconXml: localLexicon?.xml ?? null,
-      },
+      identity: ttsIdentity,
       forceResynthesize: forcedTexts.size > 0 ? (text) => forcedTexts.has(text) : undefined,
     });
 const tts = cachedTts ?? rawTts;
+
+// Optional: per-segment forced alignment for word-level drawer highlighting +
+// the WebVTT subtitle sidecar (proposals/17). The alignment cache shares the
+// TTS cache directory: words.json files live next to their .wav under the
+// same `<text-hash>/<full-hash>` bucket, so a segment re-roll (which
+// overwrites the .wav at the same path) MUST also force a fresh alignment —
+// otherwise the stale words.json would describe the old audio.
+let cachedAligner: CachedAligner | null = null;
+if (alignName && !mock) {
+  const factory = forcedAligners[alignName];
+  if (!factory) {
+    console.error(
+      `--align=${alignName} is not a known aligner. Known: ${Object.keys(forcedAligners).join(", ")}.`,
+    );
+    process.exit(1);
+  }
+  const rawAligner = factory({ defaultLanguage: alignLanguage });
+  // Alignment runs on the MERGED lexicon (the same text the TTS engine
+  // received, including cross-post `common-terms.pls` substitutions),
+  // because the AUDIO contains the substituted speech regardless of which
+  // file the lexeme came from. The cache key for words.json reuses the TTS
+  // cache key, which intentionally excludes `common-terms.pls` — same
+  // tradeoff as the WAV cache: a shared-lexicon edit doesn't invalidate
+  // every post until the per-segment audio is itself re-rolled.
+  const lexEntries = lexicon ? parseLexicon(lexicon.xml) : [];
+  cachedAligner = wrapWithAlignmentCache({
+    cacheDir,
+    aligner: rawAligner,
+    language: alignLanguage,
+    lexicon: { entries: lexEntries, ipaSupported: false }, // MOSS's ipaSupported stays false; see tts-providers.ts
+    forceRealign: forcedTexts.size > 0 ? (text) => forcedTexts.has(text) : undefined,
+  });
+  console.log(`Alignment: ${alignName} (language=${alignLanguage})`);
+}
 
 // Sanity-check that the provider's output format actually matches what the
 // pipeline expects. Catching this here is much friendlier than a downstream
@@ -498,7 +583,20 @@ type ChapterArtifact = {
   // `text` carries the spoken text that follows each mark (up to the next
   // mark, or end of chapter). The drawer in the client renders this directly;
   // it's already plain text because the in-chapter format is plain text.
-  localMarks: { name: string; time: Milliseconds; text: string }[];
+  // `segmentStartInChapter` is the segment's pre-trim start time (ms) within
+  // the chapter; combined with the chapter-level `trimMs` it lets the
+  // manifest serializer project per-word segment-WAV-relative times into
+  // master-track absolute times (proposals/17 §7.2 — words live in segment
+  // WAV coords inside the cache so the same cached segment can be reused
+  // across posts at different positions).
+  localMarks: {
+    name: string;
+    time: Milliseconds;
+    text: string;
+    segmentStartInChapter: Milliseconds;
+    words?: CachedWord[];
+  }[];
+  trimMs: Milliseconds;
 };
 
 const artifacts: ChapterArtifact[] = [];
@@ -526,6 +624,10 @@ for (const chapter of chapters) {
 
   const segmentBufs: Uint8Array[] = [];
   const segmentDurations: Milliseconds[] = [];
+  // Per-segment aligned words, in segment-WAV coords. Sparse: index i is
+  // populated only when alignment is enabled AND the segment carries a mark
+  // name (we only emit `words[]` on entries that show up in the manifest).
+  const segmentWords: (CachedWord[] | null)[] = [];
 
   for (const [i, seg] of segments.entries()) {
     let buf: Uint8Array;
@@ -550,6 +652,19 @@ for (const chapter of chapters) {
     }
     segmentBufs.push(buf);
     segmentDurations.push(await pipeline.duration(buf));
+    // Run alignment on the just-synthesized (or just-cached) audio. We align
+    // every segment regardless of whether it carries a mark name, because
+    // the cache is keyed on text + identity and re-aligning a no-mark segment
+    // costs the same as a mark-bearing one — but only store words[] for
+    // mark-bearing segments (those are what the manifest renders).
+    if (!mock && cachedAligner && seg.markName) {
+      const textHash = computeTextHash(seg.text);
+      const fullHash = computeCacheKey(ttsIdentity, seg.text);
+      const words = await cachedAligner.align(textHash, fullHash, seg.text, buf);
+      segmentWords.push(words);
+    } else {
+      segmentWords.push(null);
+    }
   }
 
   const combined = pipeline.concat(interleave(segmentBufs, segmentGap));
@@ -577,7 +692,7 @@ for (const chapter of chapters) {
   // Compute mark times relative to the trimmed chapter's start. The same gap
   // we spliced into `combined` precedes every segment after the first, so it
   // must advance `t` here too or marks would drift later than their audio.
-  const localMarks: { name: string; time: Milliseconds; text: string }[] = [];
+  const localMarks: ChapterArtifact["localMarks"] = [];
   let t = asMs(0);
   for (const [i, seg] of segments.entries()) {
     if (i > 0) t = asMs(t + segmentGapMs);
@@ -586,6 +701,8 @@ for (const chapter of chapters) {
         name: seg.markName,
         time: asMs(Math.max(0, t - trimMs)),
         text: seg.text,
+        segmentStartInChapter: t,
+        words: segmentWords[i] ?? undefined,
       });
     }
     t = asMs(t + segmentDurations[i]!);
@@ -597,6 +714,7 @@ for (const chapter of chapters) {
     buffer: trimmed,
     duration: asMs(t - trimMs),
     localMarks,
+    trimMs,
   });
 }
 
@@ -614,7 +732,8 @@ const fullBuf = pipeline.concat(interleave(artifacts.map((a) => a.buffer), segme
 // `manifestChapters`. Computed BEFORE the encode so the same chapter
 // times can be embedded as ID3 CHAP frames inside the MP3.
 const manifestChapters: { id: string; title: string; startTime: Milliseconds; endTime: Milliseconds; parentId?: string }[] = [];
-const manifestMarks: { name: string; time: Milliseconds; chapter: string; text: string }[] = [];
+type ManifestWord = { s: number; e: number; t: Milliseconds; d: Milliseconds };
+const manifestMarks: { name: string; time: Milliseconds; chapter: string; text: string; words?: ManifestWord[] }[] = [];
 // carry each chapter's (normalized) parent pointer into the
 // manifest. Absent on flat posts, so their manifest stays byte-identical.
 const parentById = new Map(chapters.map((c) => [c.id, c.parentId]));
@@ -626,11 +745,34 @@ for (const [i, a] of artifacts.entries()) {
   const end = asMs(offset + a.duration);
   manifestChapters.push({ id: a.id, title: a.title, startTime: start, endTime: end, parentId: parentById.get(a.id) });
   for (const m of a.localMarks) {
+    // Project each word's segment-WAV-relative time to master-track absolute
+    // time. The shift mirrors how the mark itself is positioned:
+    //   chapter offset
+    //   + max(0, segmentStartInChapter + word.t - chapter.trimMs)
+    // — so a word whose start would land in the trimmed-off region of seg 0
+    // clamps to chapter start (it shouldn't exist in practice because the
+    // trim removes silence, not speech, but the clamp is the defensive
+    // contract). Words whose end falls entirely below trimMs are dropped.
+    let manifestWords: ManifestWord[] | undefined;
+    if (m.words && m.words.length > 0) {
+      manifestWords = [];
+      for (const w of m.words) {
+        const rawStart = m.segmentStartInChapter + w.t - a.trimMs;
+        const rawEnd = rawStart + w.d;
+        if (rawEnd <= 0) continue; // word lies entirely in trimmed region
+        const clampedStart = Math.max(0, rawStart);
+        const masterStart = asMs(start + clampedStart);
+        const adjustedDur = asMs(Math.max(0, rawEnd - clampedStart));
+        manifestWords.push({ s: w.s, e: w.e, t: masterStart, d: adjustedDur });
+      }
+      if (manifestWords.length === 0) manifestWords = undefined;
+    }
     manifestMarks.push({
       name: m.name,
       time: asMs(start + m.time),
       chapter: a.id,
       text: m.text,
+      words: manifestWords,
     });
   }
   offset = end;
@@ -686,6 +828,18 @@ const manifest = {
 };
 await Bun.write(join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2));
 
+// WebVTT sidecar — emit ONLY when alignment data is present, so pre-alignment
+// builds (no `--align=...`) keep their previous file set byte-for-byte. The
+// runtime drawer doesn't consume this file; it exists for the future
+// social-media video subtitle pipeline (proposals/17 §5, §10) and for general
+// interop with caption tooling. Same alignment table feeds both manifest and
+// sidecar, so they can't drift.
+if (hasAlignment(manifestMarks)) {
+  const vtt = buildVtt({ marks: manifestMarks, duration: manifest.duration });
+  await Bun.write(join(outDir, "captions.vtt"), vtt);
+  console.log(`  · wrote captions.vtt (${manifestMarks.filter((m) => m.words?.length).length} aligned cue(s))`);
+}
+
 console.log(`\nWrote ${manifestChapters.length} chapter(s), ${manifestMarks.length} mark(s) to ${outDir}`);
 console.log(`  full duration: ${msToSeconds(manifest.duration).toFixed(2)}s`);
 for (const c of manifestChapters) {
@@ -694,6 +848,18 @@ for (const c of manifestChapters) {
   console.log(`  ${c.id.padEnd(14)} ${lenSec.toFixed(2)}s   ${count} mark(s)   "${c.title}"`);
 }
 
+if (cachedAligner) {
+  const { hits, misses, totalTokens, unlocatedTokens } = cachedAligner.stats;
+  let line = `  Alignment cache: ${hits} hit(s), ${misses} miss(es)`;
+  if (totalTokens > 0) {
+    line += `, ${totalTokens} token(s) aligned`;
+    if (unlocatedTokens > 0) {
+      const pct = ((unlocatedTokens / totalTokens) * 100).toFixed(1);
+      line += ` (${unlocatedTokens} unlocated = ${pct}%)`;
+    }
+  }
+  console.log(line);
+}
 if (cachedTts) {
   const { hits, misses } = cachedTts.stats;
   console.log(`  TTS cache: ${hits} hit(s), ${misses} miss(es) (${cacheDir})`);
@@ -716,3 +882,4 @@ if (cachedTts) {
 // after this point instead of exiting — which also leaves the regenerate
 // endpoint's `proc.exited` unresolved, so its job never reports done.
 await tts.close?.();
+await cachedAligner?.close?.();

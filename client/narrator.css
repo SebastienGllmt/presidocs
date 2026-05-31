@@ -1067,6 +1067,29 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   box-shadow: 0 4px 12px var(--narration-shadow);
 }
 
+/* Karaoke-style word highlight inside a drawer segment. Each word is a
+   <span class="spoken-word">; the rAF tick adds .narration-active-word to
+   exactly one of them at a time (proposals/17). Click-to-seek on a span
+   jumps the audio to that word's start time — the cursor change tells
+   readers the spans are interactive. */
+.spoken-word {
+  border-radius: 3px;
+  padding: 0 1px;
+  margin: 0 -1px; /* offset the padding so non-active text reflows identically */
+  cursor: pointer;
+  transition: background-color 0.18s ease, color 0.18s ease;
+}
+.spoken-word:hover {
+  background: var(--narration-bg, rgba(88, 166, 255, 0.10));
+}
+.spoken-word.narration-active-word {
+  background: var(--narration-border, rgba(88, 166, 255, 0.35));
+  color: var(--page-fg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .spoken-word { transition: none; }
+}
+
 /* Brief flash when a segment is arrived at via URL fragment, since the
    open-drawer scroll lands silently — without this, an inbound deep link
    gives no signal that "the thing you came for is right here". */
