@@ -260,6 +260,25 @@ export function buildRssFeed(site: FeedSite, posts: FeedPost[]): string {
   );
 }
 
+// flatten the optional two-level chapter hierarchy for the podcast
+// chapters sidecar, which has no nesting primitive. A leaf with a `parentId`
+// gets its title prefixed with its part's title ("<part> — <chapter>") so the
+// grouping survives in a podcast app's flat chapter menu; parts (and flat
+// chapters) keep their bare title. A `parentId` whose part can't be resolved
+// just falls back to the bare title.
+function prefixChildChapterTitles(
+  chapters: ManifestChapter[],
+): { title: string; startTime: number }[] {
+  const titleById = new Map(chapters.map((c) => [c.id, c.title]));
+  return chapters.map((c) => {
+    const parentTitle = c.parentId ? titleById.get(c.parentId) : undefined;
+    return {
+      startTime: c.startTime,
+      title: parentTitle ? `${parentTitle} — ${c.title}` : c.title,
+    };
+  });
+}
+
 export function buildChaptersJson(
   chapters: { title: string; startTime: number }[],
 ): string {
@@ -276,7 +295,7 @@ export function buildChaptersJson(
 // ---- disk gathering ---------------------------------------------------------
 
 type VersionEntry = { hash: string; builtAt: string };
-type ManifestChapter = { id: string; title: string; startTime: number; endTime: number };
+type ManifestChapter = { id: string; title: string; startTime: number; endTime: number; parentId?: string };
 type Manifest = { audio?: string; duration?: number; chapters?: ManifestChapter[] };
 
 // Pull the site title + description out of the blog's own landing index.html,
@@ -421,8 +440,11 @@ async function main(): Promise<void> {
           const distAudio = join(distDir, m.audio.replace(/^\//, ""));
           if (existsSync(distAudio)) {
             const byteLength = (await stat(distAudio)).size;
-            // Emit the Podlove chapters sidecar next to the audio.
-            const chaptersJson = buildChaptersJson(m.chapters ?? []);
+            // Emit the Podlove chapters sidecar next to the audio. The sidecar
+            // format is flat (no nesting primitive), so the two-level hierarchy
+            // degrades to a flat list with part-prefixed child
+            // titles ("<part> — <chapter>"); parts keep their bare title.
+            const chaptersJson = buildChaptersJson(prefixChildChapterTitles(m.chapters ?? []));
             const chaptersFsPath = join(distDir, "generated", slug, "chapters.json");
             await writeFile(chaptersFsPath, chaptersJson, "utf8");
             audio = {

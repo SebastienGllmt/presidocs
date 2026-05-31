@@ -23,6 +23,78 @@ article h3 { margin: 1.5em 0 0.4em; }
 article .lede { font-size: 1.15rem; color: var(--page-fg-muted); }
 article code { background: #f3f4f6; padding: 1px 5px; border-radius: 4px; }
 
+/* Section dividers. The plain `<hr class="section-divider" />` is the older
+   unadorned form; the labeled variant (a `<div>` so it can hold text) draws
+   the same hairline with a centered label inside the line and is what we
+   reach for between two-level chapter groups, so the parent section keeps
+   its descriptive `<h2>` while the divider names the group separately
+   (matching the pill label in the chapter strip). UA `<hr>` defaults are
+   too thick for the article rhythm; both forms render as the same hairline. */
+article hr.section-divider {
+  border: 0;
+  border-top: 1px solid currentColor;
+  color: var(--page-fg-muted);
+  opacity: 0.35;
+  margin: 3em 0;
+}
+article .section-divider-labeled {
+  display: flex;
+  align-items: center;
+  gap: 1em;
+  margin: 3em 0 1em;
+  color: var(--page-fg-muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+article .section-divider-labeled::before,
+article .section-divider-labeled::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid currentColor;
+  opacity: 0.5;
+}
+/* A part's section-intro anchors its first mark on the divider, so the divider
+   highlights while that spoken transition plays. It's a hairline, not a text
+   block, so skip the box + shadow the generic `.narration-active` draws and
+   instead light the label and its rules in the accent colour (currentColor
+   drives the ::before/::after rules too). The surrounding content is already
+   dimmed by `.narrating`, so this reads clearly as "you are here". */
+article .section-divider-labeled.narration-active {
+  background: none;
+  box-shadow: none;
+  color: var(--accent);
+}
+/* Speaker button injected by narrator.ts onto each labeled divider: jumps the
+   narration to the first spoken segment below the divider. A flex child, so it
+   sits just after the label text and before the trailing hairline. Only present
+   when narration is available (the player never boots on an opted-out post). */
+article .section-divider-labeled .divider-speaker {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  opacity: 0.5;
+  line-height: 0;
+  border-radius: 4px;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+article .section-divider-labeled .divider-speaker:hover,
+article .section-divider-labeled .divider-speaker:focus-visible {
+  opacity: 1;
+  color: #0969da;
+}
+article .section-divider-labeled .divider-speaker svg { display: block; }
+
 figure {
   margin: 1.5em 0;
   padding: 16px;
@@ -364,6 +436,89 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   max-width: 38vw;
 }
 
+/* Two-level chapters. A top-level chapter with sub-chapters
+   renders as a SINGLE pill whose children are slash-separated segments inside.
+   The wrapper carries the pill chrome; each segment is a button that lights up
+   on its own when active, so the strip says "you're in part 2, sub B" at a
+   glance without a second row or a side-label. A flat post (no parents) emits
+   no segmented pills, so its strip is unchanged. */
+.chapter-pill.segmented {
+  /* The whole pill is the click target; segments inside are just spans. */
+  padding: 3px 6px 3px 6px;
+  gap: 2px;
+}
+.chapter-pill.segmented .ch-num { margin-right: 2px; }
+
+/* Segments are inert text spans — the wrapper button handles clicks (it
+   reads `event.target.closest('.ch-seg')` to figure out which one was hit).
+   No button chrome, just text + a rounded background that lights up on
+   hover and active. `inline-block` is load-bearing: a default `inline`
+   span has hit testing that extends past the painted area on the line
+   box, so clicks near a segment's edge can land on the wrong span even
+   though hover (which uses the painted area) looks correct. */
+.chapter-pill .ch-seg {
+  display: inline-block;
+  vertical-align: middle;
+  font-size: 0.78rem;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+  transition: background-color 160ms ease;
+}
+
+
+/* Sub-chapter segments read as subordinate to the parent: same color, lower
+   weight + opacity. Hover and active restore full opacity so a faded segment
+   doesn't muddy the highlight when you reach for it. */
+.chapter-pill .ch-seg[data-sub] {
+  font-weight: 400;
+  opacity: 0.7;
+}
+.chapter-pill .ch-seg[data-sub]:hover,
+.chapter-pill .ch-seg[data-active] { opacity: 1; }
+
+.chapter-pill .ch-seg[data-active] {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Group label = the part name, taken from its labeled divider. Bolder than the
+   segments it anchors, with the same pill-shaped hover so it reads as the
+   clickable "jump to the start of this part" target (it routes to the opener,
+   like the divider speaker). */
+.chapter-pill .ch-group {
+  display: inline-block;
+  vertical-align: middle;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 3px 10px;
+  margin-right: 2px;
+  border-radius: 999px;
+  white-space: nowrap;
+  transition: background-color 160ms ease;
+}
+/* The group label is the part's section-intro chapter, so it carries the active
+   highlight while that intro (the spoken transition) plays — same treatment as
+   an active member segment. */
+.chapter-pill .ch-group[data-active] {
+  background: var(--accent);
+  color: #fff;
+}
+
+.chapter-pill .ch-sep {
+  display: inline-block;
+  font-size: 0.78rem;
+  padding: 0 1px;
+  opacity: 0.4;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* Segmented wrappers shouldn't bob on hover — too much motion when the
+   meaningful affordance is segment-level. */
+.chapter-pill.segmented:hover { transform: none; }
+
 /* --- Shikwasa player restyle ----------------------------------------------- */
 
 .narrate-player-error {
@@ -580,6 +735,9 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 }
 .chapter-pill:hover { color: #fff; border-color: rgba(255, 255, 255, 0.2); }
 .chapter-pill .ch-num { background: rgba(255, 255, 255, 0.10); color: #fff; }
+.chapter-pill .ch-seg:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+.chapter-pill .ch-group:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+.chapter-pill .ch-sep { color: rgba(255, 255, 255, 0.28); }
 
 #narrate-player .shk-player {
   background: rgba(22, 27, 34, 0.85);

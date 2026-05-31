@@ -48,14 +48,20 @@ function blankLineBeforeMark(before: string): boolean {
 // lexeme — can do so without re-implementing the parse. Uses HTMLRewriter (Bun
 // built-in) for the same reason generate.ts does: regex on HTML is unsound, and
 // `<script>` content is RAWTEXT so its inner `<` doesn't confuse the walker.
-export type NarrationChapter = { id: string; title: string; content: string };
+// `parentId` is the OPTIONAL second level of chapter hierarchy:
+// a block carrying `data-chapter-parent="<id>"` is a sub-chapter of the chapter
+// with that id. Absent → a flat, top-level chapter (no hierarchy annotation at
+// all). The pointer is read raw here; validation + the two-level cap live
+// in generate.ts's `normalizeChapterParents` (a build-time warn, never a hard
+// fail), so a typo degrades to flat rather than erroring a batch generate.
+export type NarrationChapter = { id: string; title: string; content: string; parentId?: string };
 export type NarrationExtract = { disabled: boolean; chapters: NarrationChapter[] };
 
 export function extractNarration(html: string): NarrationExtract {
   let disabled = false;
   let anonCount = 0;
   const chapters: NarrationChapter[] = [];
-  let pending: { id: string; title: string; buf: string[] } | null = null;
+  let pending: { id: string; title: string; parentId?: string; buf: string[] } | null = null;
 
   new HTMLRewriter()
     .on('script[type="text/narration"]', {
@@ -65,10 +71,16 @@ export function extractNarration(html: string): NarrationExtract {
           el.getAttribute("id") ??
           `chapter-${anonCount++}`;
         const title = el.getAttribute("data-chapter-title") ?? id;
-        pending = { id, title, buf: [] };
+        const parentId = el.getAttribute("data-chapter-parent") ?? undefined;
+        pending = { id, title, parentId, buf: [] };
         el.onEndTag(() => {
           if (pending) {
-            chapters.push({ id: pending.id, title: pending.title, content: pending.buf.join("") });
+            chapters.push({
+              id: pending.id,
+              title: pending.title,
+              content: pending.buf.join(""),
+              parentId: pending.parentId,
+            });
             pending = null;
           }
         });

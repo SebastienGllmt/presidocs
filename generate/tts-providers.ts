@@ -156,6 +156,80 @@ export function createSayProvider(config: TtsProviderConfig): TtsProvider {
   };
 }
 
+// espeak-ng adapter (Linux / cross-platform). The cheap, fast iteration engine
+// on machines without macOS `say` — it fills the exact role `say` plays on a
+// Mac. Like `say` it's a stateless CLI synth with no pronunciation-dictionary
+// support, so it warns-and-ignores any PLS lexicon (the cache keys on the
+// provider name, so an espeak-ng draft and a MOSS render never collide). Unlike
+// `say`, espeak-ng is NOT preinstalled, so the preflight points at the install
+// command when the binary is missing (see generate.ts `installHint`).
+//
+// espeak-ng's native output is mono 16-bit PCM at a fixed 22050 Hz (the rate of
+// its voices), which already equals the default working format — so the common
+// path is a lossless pass-through with no ffmpeg in the loop. Only a non-22050
+// working rate triggers a resample (the same "sample-rate matching is the
+// provider's problem" rule MOSS follows); ffmpeg is guaranteed on PATH there
+// because the MP3 pipeline already requires it. `--rate` maps straight onto
+// espeak-ng's `-s` words/min knob, so unlike MOSS there's nothing to warn about.
+const ESPEAK_NG_NATIVE_RATE = 22050;
+
+export function createEspeakNgProvider(config: TtsProviderConfig): TtsProvider {
+  const { format, voice, rate, lexicon } = config;
+  if (lexicon) {
+    console.warn(
+      `  · espeak-ng: ignoring PLS lexicon from ${lexicon.sources.join(", ")} (\`espeak-ng\` has no PLS support)`,
+    );
+  }
+  if (format.bitsPerSample !== 16 || format.channels !== 1) {
+    throw new Error(
+      `createEspeakNgProvider: only mono 16-bit PCM is supported (got ${format.channels}ch ${format.bitsPerSample}-bit)`,
+    );
+  }
+
+  const tmpWav = () =>
+    join(
+      process.env.TMPDIR ?? "/tmp",
+      `presidocs-espeak-${process.pid}-${Math.random().toString(36).slice(2)}.wav`,
+    );
+
+  // Bring espeak-ng's fixed 22050 Hz output to the working rate. Only invoked on
+  // a mismatch (matching rates pass through untouched); temp-file round-trip so
+  // the WAV header carries correct RIFF / data-chunk sizes for the byte-splice
+  // concat downstream (the same reason MOSS's resample avoids a pipe).
+  async function resampleToWorkingFormat(srcPath: string): Promise<Uint8Array> {
+    const outPath = tmpWav();
+    try {
+      await $`ffmpeg -hide_banner -loglevel error -i ${srcPath} -ac ${format.channels} -ar ${format.sampleRate} -c:a pcm_s16le -y ${outPath}`.quiet();
+      return new Uint8Array(await Bun.file(outPath).arrayBuffer());
+    } finally {
+      await rm(outPath, { force: true });
+    }
+  }
+
+  return {
+    name: "espeak-ng",
+    outputFormat: format,
+    requiredBinaries: ["espeak-ng"],
+    async synthesize(text) {
+      // espeak-ng can't synthesize empty input; mirror `say`'s minimal-utterance
+      // fallback so blank segments still yield a valid (tiny) WAV.
+      const spoken = text.trim().length === 0 ? "..." : text;
+      const rawPath = tmpWav();
+      try {
+        // `-w` writes a seekable WAV (correct RIFF/data sizes, unlike `--stdout`);
+        // `--` ends flag parsing so narration text beginning with `-` is read as
+        // text, not mistaken for an option.
+        await $`espeak-ng -v ${voice} -s ${rate} -w ${rawPath} -- ${spoken}`.quiet();
+        return format.sampleRate === ESPEAK_NG_NATIVE_RATE
+          ? new Uint8Array(await Bun.file(rawPath).arrayBuffer())
+          : await resampleToWorkingFormat(rawPath);
+      } finally {
+        await rm(rawPath, { force: true });
+      }
+    },
+  };
+}
+
 // --- MOSS-TTS adapter --------------------------------------------------------
 //
 // Production voice via the OpenMOSS MOSS-TTS model (voice cloning from a
@@ -557,5 +631,6 @@ export function createMossProvider(config: TtsProviderConfig): TtsProvider {
 // `TtsProviderConfig`.
 export const ttsProviders: Record<string, TtsProviderFactory> = {
   say: createSayProvider,
+  "espeak-ng": createEspeakNgProvider,
   moss: createMossProvider,
 };

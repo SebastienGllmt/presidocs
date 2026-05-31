@@ -5,7 +5,7 @@
 // {
 //   audio: "/audio/<slug>/full.wav",
 //   duration: 84300,
-//   chapters: [{ id, title, startTime, endTime }, ...],
+//   chapters: [{ id, title, startTime, endTime, parentId? }, ...],
 //   marks: [{ name: "elementId", time: <absolute ms>, chapter }, ...]
 // }
 // Every time field is integer milliseconds; we convert to seconds only at
@@ -24,7 +24,12 @@ type ManifestMark = {
   // so they can be deep-linked and (eventually) commented on.
   text?: string;
 };
-type ManifestChapter = { id: string; title: string; startTime: Milliseconds; endTime: Milliseconds };
+// `parentId`: present only on level-2 (sub-)chapters; names the
+// level-1 chapter they group under. Absent → a top-level chapter. The manifest
+// stays a FLAT, leaf-only array — `parentId` is pure annotation that our own
+// chapter strip + keyboard map read to render the two-level grouping (Shikwasa
+// is still fed the leaves untouched).
+type ManifestChapter = { id: string; title: string; startTime: Milliseconds; endTime: Milliseconds; parentId?: string };
 type Manifest = {
   audio: string;
   duration: Milliseconds;
@@ -54,7 +59,11 @@ class Narrator {
   private activeId: string | null = null;
   private rafHandle = 0;
   private playing = false;
-  private pillEls = new Map<string, HTMLButtonElement>();
+  // Active-highlight target per chapter id. For a top-level chapter this is the
+  // pill (or its parent-segment inside a segmented pill); for a sub-chapter
+  // either its own segment or — in the 1-child collapsed case — the parent's
+  // flat pill, so the strip still lights up as audio crosses into the sub.
+  private pillEls = new Map<string, HTMLElement>();
   // Last chapter we auto-scrolled the strip to. `updateActiveChapter` runs
   // every rAF tick, so we only scroll the active pill into view when the
   // active chapter actually changes — not on every frame.
@@ -142,6 +151,7 @@ class Narrator {
     this.setupSmoothBar();
     this.setupKeyboardShortcuts();
     this.buildDrawer(manifest);
+    this.setupDividerSpeakers();
     void this.maybeEnableAuthorTools();
     this.applyHashIfMatching();
     window.addEventListener("hashchange", () => this.applyHashIfMatching());
@@ -200,8 +210,10 @@ class Narrator {
       if (d.seekTime == null) return;
       this.seekToMs(asMs(d.seekTime * 1000));
     });
-    // On a chaptered talk the user's "track" IS the chapter — mirrors the 1-9
-    // keyboard shortcuts (no wraparound at the ends).
+    // On a chaptered talk the user's "track" is the LEAF chapter: one skip
+    // gesture advances one spoken section. Deliberately FINER than the keyboard
+    // 1-9 map (which jumps between top-level parts) — each input surface matched
+    // to its idiom. No wraparound at the ends.
     safeSet("previoustrack", () => this.jumpToChapterDelta(-1));
     safeSet("nexttrack", () => this.jumpToChapterDelta(1));
   }
@@ -299,7 +311,7 @@ class Narrator {
   //                   focus; matches Apple Podcasts / Spotify / YouTube)
   //   ←  /  →      → rewind / fast-forward by 10s (matches the dock's
   //                   own backward/forward buttons)
-  //   1..9         → jump to chapter N (1-indexed)
+  //   1..9         → jump to top-level chapter (part) N (1-indexed)
   // Skipped while typing in a form field or with a modifier held.
   private setupKeyboardShortcuts() {
     document.addEventListener("keydown", (e) => {
@@ -331,8 +343,13 @@ class Narrator {
       }
 
       if (e.key >= "1" && e.key <= "9") {
-        const idx = Number(e.key) - 1;
-        const chapter = this.manifest.chapters[idx];
+        // 1-9 index the TOP-LEVEL chapters (parts + flat chapters),
+        // matching the number shown on the level-1 pills. Sub-chapters are
+        // reached by click or MediaSession next-track, not by number. (Posts
+        // with >9 top-level chapters still truncate at 9 — coarser but strictly
+        // more complete than indexing the flat leaf list as before.)
+        const topLevel = this.manifest.chapters.filter((c) => c.parentId === undefined);
+        const chapter = topLevel[Number(e.key) - 1];
         if (!chapter) return;
         e.preventDefault();
         this.jumpToChapter(chapter);
@@ -452,25 +469,164 @@ class Narrator {
     this.seekToMs(target);
   }
 
+  // Renders the single-row chapter strip. With the two-level hierarchy we
+  // render ONE pill per top-level chapter; its sub-chapters
+  // become slash-separated SEGMENTS inside that pill, so the grouping travels
+  // with the pill instead of relying on a separate side-label that gets lost
+  // on scroll. The pill NUMBER (1-9 keyboard shortcut) labels the top-level
+  // index, in lockstep with the keyboard map. Two collapse cases keep the
+  // strip clean: a leaf top-level chapter renders as a flat numbered pill (the
+  // single-level shape, byte-for-byte for a flat post); a part with exactly
+  // one sub also renders as a flat pill — the sub is still reachable by
+  // scrubbing, and its active-state highlight is routed to the parent pill so
+  // the strip keeps showing "where am I" correctly.
   private renderChapters(manifest: Manifest) {
     if (!this.chapterContainer) return;
     this.chapterContainer.innerHTML = "";
     this.pillEls.clear();
-    manifest.chapters.forEach((chapter, i) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "chapter-pill";
-      btn.dataset.chapterId = chapter.id;
-      btn.setAttribute("aria-label", `Jump to chapter ${i + 1}: ${chapter.title}`);
-      btn.innerHTML = `<span class="ch-num">${i + 1}</span><span class="ch-title"></span>`;
-      btn.querySelector(".ch-title")!.textContent = chapter.title;
-      btn.addEventListener("click", () => this.jumpToChapter(chapter));
-      this.pillEls.set(chapter.id, btn);
-      this.chapterContainer!.appendChild(btn);
+
+    // Walk the manifest once and group children under their top-level parent.
+    // Manifest order is document order and the build enforces parent-before-
+    // child, so a single forward pass suffices.
+    type Group = { parent: ManifestChapter; children: ManifestChapter[] };
+    const groups: Group[] = [];
+    const groupById = new Map<string, Group>();
+    for (const c of manifest.chapters) {
+      if (c.parentId === undefined) {
+        const g: Group = { parent: c, children: [] };
+        groups.push(g);
+        groupById.set(c.id, g);
+        continue;
+      }
+      const g = groupById.get(c.parentId);
+      if (g) g.children.push(c);
+      else {
+        // Defensive: a child whose parent we never saw. The build-time
+        // normalizer should have already promoted this to top-level — render
+        // it as its own pill rather than dropping it on the floor.
+        const g2: Group = { parent: c, children: [] };
+        groups.push(g2);
+        groupById.set(c.id, g2);
+      }
+    }
+
+    groups.forEach((group, i) => {
+      const partIndex = i + 1; // top-level index — drives the 1-9 keyboard map
+      const pill =
+        group.children.length >= 2
+          ? this.makeSegmentedPill(group, partIndex)
+          : this.makeFlatPill(group, partIndex);
+      this.chapterContainer!.appendChild(pill);
     });
+
     this.lastActiveChapterId = null;
     this.updateChapterFades();
     this.updateActiveChapter();
+  }
+
+  // Numbered flat pill — used both for leaf top-level chapters and for the
+  // 1-sub collapse case. The sub (if any) registers against the same DOM
+  // element so its active-state highlight rides the parent pill.
+  private makeFlatPill(
+    group: { parent: ManifestChapter; children: ManifestChapter[] },
+    partIndex: number,
+  ): HTMLButtonElement {
+    const { parent, children } = group;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chapter-pill";
+    btn.dataset.chapterId = parent.id;
+    btn.setAttribute("aria-label", `Jump to chapter ${partIndex}: ${parent.title}`);
+    btn.innerHTML = `<span class="ch-num">${partIndex}</span><span class="ch-title"></span>`;
+    btn.querySelector(".ch-title")!.textContent = parent.title;
+    btn.addEventListener("click", () => this.jumpToChapter(parent));
+    this.pillEls.set(parent.id, btn);
+    for (const child of children) this.pillEls.set(child.id, btn);
+    return btn;
+  }
+
+  // Segmented pill — `[ N  «Part» Member A / Member B / … ]`. The part is opened
+  // by its section-intro chapter (the parent): the spoken transition whose first
+  // mark anchors the divider. Its title is the part name, rendered as the
+  // emphasized `«Part»` group label; the member chapters render as the inert
+  // segments. The pill is one `<button>` (a single keyboard Tab stop), and click
+  // routing is strict containment: a jump fires only when the click lands on a
+  // member segment or the group label — the slashes, the number badge, and the
+  // padding around it are predictable no-ops. Strict containment beats routing a
+  // dead-zone click to the nearest segment by distance, which would let a click
+  // on a segment's tail jump to its neighbor.
+  private makeSegmentedPill(
+    group: { parent: ManifestChapter; children: ManifestChapter[] },
+    partIndex: number,
+  ): HTMLButtonElement {
+    const { parent, children } = group;
+    const pill = document.createElement("button");
+    pill.type = "button";
+    pill.className = "chapter-pill segmented";
+    pill.setAttribute(
+      "aria-label",
+      `Chapter ${partIndex}: ${[parent, ...children]
+        .map((c) => c.title)
+        .join(", ")}`,
+    );
+
+    const num = document.createElement("span");
+    num.className = "ch-num";
+    num.textContent = String(partIndex);
+    pill.appendChild(num);
+
+    // The group label IS the section-intro chapter (the parent): clicking it
+    // plays that intro — the first thing in the part — and its active highlight
+    // rides the label, so the strip lights up while the transition plays.
+    const gl = document.createElement("span");
+    gl.className = "ch-group";
+    gl.textContent = parent.title;
+    this.pillEls.set(parent.id, gl);
+    pill.appendChild(gl);
+
+    // Segment span → chapter, so the click handler can resolve which span was
+    // hit without round-tripping through dataset attributes. Slash separators
+    // sit *between* members only — the first member follows the group label
+    // directly (the label's own spacing sets it apart).
+    const byEl = new Map<HTMLSpanElement, ManifestChapter>();
+    children.forEach((child, i) => {
+      if (i > 0) {
+        const sep = document.createElement("span");
+        sep.className = "ch-sep";
+        sep.setAttribute("aria-hidden", "true");
+        sep.textContent = "/";
+        pill.appendChild(sep);
+      }
+      const seg = document.createElement("span");
+      seg.className = "ch-seg";
+      seg.dataset.sub = "";
+      seg.dataset.chapterId = child.id;
+      seg.textContent = child.title;
+      this.pillEls.set(child.id, seg);
+      byEl.set(seg, child);
+      pill.appendChild(seg);
+    });
+
+    pill.addEventListener("click", (e) => {
+      // Keyboard activation (Enter/Space) has no pointer target — jump to the
+      // part's intro, the sensible default for the one-Tab-stop pill.
+      if (e.detail === 0) {
+        this.jumpToChapter(parent);
+        return;
+      }
+      const target = e.target as HTMLElement | null;
+      // The group label plays the section intro (the first thing in the part).
+      if (target?.closest(".ch-group")) {
+        this.jumpToChapter(parent);
+        return;
+      }
+      const segEl = target?.closest(".ch-seg") as HTMLSpanElement | null;
+      const hit = segEl ? byEl.get(segEl) : null;
+      if (hit) this.jumpToChapter(hit);
+      // No-op when the click missed every segment (slash, padding, badge).
+    });
+
+    return pill;
   }
 
   // Wraps the chapter strip in a flex row flanked by hold-to-scroll ‹ / ›
@@ -648,6 +804,77 @@ class Narrator {
     } else {
       this.player?.seek(seconds);
     }
+  }
+
+  // A labeled section divider (`.section-divider-labeled`) acts as a prose
+  // chapter boundary that, by convention, mirrors a narration part — its text
+  // is the same string as the part's chapter-strip pill. Progressively enhance
+  // each one with a speaker button that jumps the narration to the first spoken
+  // segment about content *below* the divider. Because narration is non-linear
+  // (a segment can reference an earlier or later section than where it sits),
+  // "first" is defined off the highlighted element's DOM position, not the
+  // chapter the segment belongs to: the earliest mark, in narration time, whose
+  // highlighted element follows the divider in document order. A divider with no
+  // following narration (e.g. a trailing one) gets no button.
+  private setupDividerSpeakers() {
+    if (!this.manifest) return;
+    const dividers = this.narrationRoot.querySelectorAll<HTMLElement>(
+      ".section-divider-labeled",
+    );
+    for (const divider of dividers) {
+      if (divider.querySelector(".divider-speaker")) continue; // idempotent
+      if (!this.firstMarkAfter(divider)) continue; // no narration below → no button
+      const label = (divider.textContent ?? "").trim();
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "divider-speaker";
+      btn.title = "Play narration from here";
+      btn.setAttribute(
+        "aria-label",
+        label ? `Play narration from "${label}"` : "Play narration from here",
+      );
+      // Speaker-with-waves glyph in currentColor so it inherits the divider's
+      // muted tone and the hover rule can brighten it.
+      btn.innerHTML =
+        '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">' +
+        '<path d="M8 2.2 4.3 5.3H1.6v5.4h2.7L8 13.8z" fill="currentColor"/>' +
+        '<path d="M10.6 5.4a3.3 3.3 0 0 1 0 5.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>' +
+        '<path d="M12.4 3.4a5.8 5.8 0 0 1 0 9.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>' +
+        "</svg>";
+      btn.addEventListener("click", () => {
+        // Recompute on click — the article DOM can change after setup (e.g.
+        // figures enhance asynchronously). Cheap: one pass over the marks.
+        const m = this.firstMarkAfter(divider);
+        if (!m) return;
+        // Nudge past the mark time, matching the chapter-jump offset, so a mark
+        // sitting exactly on a chapter boundary still lands inside the new
+        // chapter for the chapter plugin's `t >= startTime` range check.
+        this.seekToMs(asMs(m.time + 10));
+        this.player?.play();
+      });
+      divider.appendChild(btn);
+    }
+  }
+
+  // The earliest mark (manifest order is ascending time) whose highlighted
+  // element is the divider itself or follows it in document order. A part's
+  // section-intro anchors its first mark ON the divider, so this returns that
+  // intro — playing it starts the part from the top; for a silent divider with
+  // no intro it falls through to the first mark below. Null when nothing is
+  // narrated at or below the divider.
+  private firstMarkAfter(divider: Element): ManifestMark | null {
+    if (!this.manifest) return null;
+    for (const m of this.manifest.marks) {
+      const el = this.narrationRoot.querySelector(`#${CSS.escape(m.name)}`);
+      if (!el) continue;
+      if (
+        el === divider ||
+        divider.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING
+      ) {
+        return m;
+      }
+    }
+    return null;
   }
 
   private updateActiveChapter() {

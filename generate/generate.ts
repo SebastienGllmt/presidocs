@@ -8,6 +8,7 @@
 //   bun run generate/generate.ts posts/hash-functions.html --voice="Samantha"
 //   bun run generate/generate.ts posts/hash-functions.html --bitrate=96k
 //   bun run generate/generate.ts posts/hash-functions.html --tts=say
+//   bun run generate/generate.ts posts/hash-functions.html --tts=espeak-ng  # Linux dev
 //   bun run generate:prod posts/hash-functions.html     # production voice clone
 //   bun run generate/generate.ts posts/hash-functions.html --mock     # silent audio
 //
@@ -16,7 +17,9 @@
 // a clear message if any are missing).
 //
 // TTS provider is selected by `--tts=NAME` (default: `say`, macOS-only,
-// fast/cheap for iteration). `--tts=moss` is the production voice — a local
+// fast/cheap for iteration; `--tts=espeak-ng` is the Linux equivalent — same
+// rough-draft role, but install it first: `sudo apt install espeak-ng`).
+// `--tts=moss` is the production voice — a local
 // MOSS-TTS voice clone. The `generate:prod` npm script is `--tts=moss`; with
 // `MOSS_TTS_DIR` (your checkout) set in `.env`, production is just
 // `bun run generate:prod <post.html>`. The voice clip is resolved per-post
@@ -73,16 +76,22 @@ if (!htmlPath) {
 }
 
 const mock = flags.has("mock");
-// `--tts=NAME` picks the provider factory (default `say`, macOS). Read here so
-// the `voice` default below can be provider-aware.
-const ttsName = flags.get("tts") ?? "say";
+// `--tts=NAME` picks the provider factory. Default is platform-aware: `say` on
+// macOS (preinstalled), `espeak-ng` everywhere else — the Linux equivalent in
+// the same rough-draft role. Read here so the `voice` default below can be
+// provider-aware.
+const ttsName = flags.get("tts") ?? (process.platform === "darwin" ? "say" : "espeak-ng");
 // `--voice` is the `say` voice name OR, for `moss`, the path to the clone
 // reference clip. When --voice isn't passed and tts=moss, we auto-resolve from
 // the post's `<meta name="author-email">` via `authors/<email>.wav` — see the
 // per-author voice resolution in methodology.md. That happens after the HTML
 // is loaded; this `voice` is initialized lazily below.
-let voice = flags.get("voice") ?? (ttsName === "say" ? "Samantha" : "");
-const rate = Number(flags.get("rate") ?? "180"); // words/min for `say`
+// Per-provider default voice when --voice isn't passed: `say` → a macOS voice
+// name; `espeak-ng` → a language voice id; `moss` → "" (resolved per-author from
+// authors/<email>.wav after the HTML loads, below).
+const DEFAULT_VOICE: Record<string, string> = { say: "Samantha", "espeak-ng": "en-us" };
+let voice = flags.get("voice") ?? (DEFAULT_VOICE[ttsName] ?? "");
+const rate = Number(flags.get("rate") ?? "180"); // words/min for `say` / `espeak-ng`
 const sampleRate = 22050;
 const channels = 1;
 const bitsPerSample = 16;
@@ -151,7 +160,11 @@ if (ttsName === "moss" && !voice) {
 //     or more blocks; concatenated and merged with `common-terms.pls` at
 //     bootstrap)
 
-type NarrationChapter = { id: string; title: string; content: string };
+// `parentId` (optional) is the second hierarchy level: a block with
+// `data-chapter-parent` is a sub-chapter of the referenced chapter. Read raw
+// here; `normalizeChapterParents` below validates it and enforces the two-level
+// cap with a warn (never a hard fail).
+type NarrationChapter = { id: string; title: string; content: string; parentId?: string };
 
 const chapters: NarrationChapter[] = [];
 const inlinePlsBlocks: string[] = [];
@@ -161,7 +174,7 @@ const inlinePlsBlocks: string[] = [];
 // chapters (so a batch generate over all posts doesn't choke on it).
 let narrationDisabled = false;
 let anonCount = 0;
-let pendingChapter: { id: string; title: string; buf: string[] } | null = null;
+let pendingChapter: { id: string; title: string; parentId?: string; buf: string[] } | null = null;
 let pendingPlsBuf: string[] | null = null;
 
 new HTMLRewriter()
@@ -172,15 +185,17 @@ new HTMLRewriter()
         el.getAttribute("id") ??
         `chapter-${anonCount++}`;
       const title = el.getAttribute("data-chapter-title") ?? id;
+      const parentId = el.getAttribute("data-chapter-parent") ?? undefined;
       // HTMLRewriter walks the tree in document order and serializes script
       // elements one at a time, so a single shared `pending` is safe.
-      pendingChapter = { id, title, buf: [] };
+      pendingChapter = { id, title, parentId, buf: [] };
       el.onEndTag(() => {
         if (pendingChapter) {
           chapters.push({
             id: pendingChapter.id,
             title: pendingChapter.title,
             content: pendingChapter.buf.join(""),
+            parentId: pendingChapter.parentId,
           });
           pendingChapter = null;
         }
@@ -222,6 +237,40 @@ if (chapters.length === 0) {
   console.error(`No <script type="text/narration"> blocks found in ${htmlPath}`);
   process.exit(1);
 }
+
+// Validate the optional `data-chapter-parent` pointers and enforce
+// the two-level cap. This degrades to a flat chapter rather than hard-failing —
+// matching the opt-out philosophy of never erroring a whole batch generate over
+// one bad post. Mutates `chapters[i].parentId` in place. Document order is array
+// order, so a valid parent always sits at a LOWER index than its child.
+function normalizeChapterParents(list: NarrationChapter[]): void {
+  const indexById = new Map<string, number>();
+  list.forEach((c, i) => indexById.set(c.id, i));
+  list.forEach((c, i) => {
+    if (c.parentId === undefined) return;
+    const pIdx = indexById.get(c.parentId);
+    if (pIdx === undefined || pIdx >= i) {
+      console.warn(
+        `Chapter "${c.id}": data-chapter-parent="${c.parentId}" does not name an ` +
+          `earlier chapter; treating "${c.id}" as a top-level chapter.`,
+      );
+      c.parentId = undefined;
+      return;
+    }
+    // The parent was already normalized (it sits at a lower index, processed
+    // first). If it still has a parent, it's a level-2 chapter and `c` would be
+    // a third level — collapse `c` up to its grandparent to keep the cap at two.
+    const parent = list[pIdx]!;
+    if (parent.parentId !== undefined) {
+      console.warn(
+        `Chapter "${c.id}": parent "${c.parentId}" is itself a sub-chapter; ` +
+          `flattening to grandparent "${parent.parentId}" (two-level cap).`,
+      );
+      c.parentId = parent.parentId;
+    }
+  });
+}
+normalizeChapterParents(chapters);
 
 console.log(`Found ${chapters.length} narration chapter(s) in ${htmlPath}`);
 if (inlinePlsBlocks.length > 0) {
@@ -413,7 +462,9 @@ if (
 // into a synthesis run.
 const installHint = (bin: string): string => {
   if (bin === "ffmpeg") return `Install ffmpeg (\`brew install ffmpeg\`).`;
-  if (bin === "say") return `\`say\` is macOS-only; pick a different --tts on other platforms.`;
+  if (bin === "say") return `\`say\` is macOS-only; on Linux use \`--tts=espeak-ng\` instead.`;
+  if (bin === "espeak-ng")
+    return `Install espeak-ng (Debian/Ubuntu: \`sudo apt install espeak-ng\`; Fedora: \`sudo dnf install espeak-ng\`; macOS: \`brew install espeak-ng\`).`;
   return `Install it and try again.`;
 };
 for (const bin of new Set([...tts.requiredBinaries, ...pipeline.requiredBinaries])) {
@@ -587,15 +638,18 @@ for (const f of await readdir(outDir)) {
 // (which holds the script text). The same chapter shows up in both, but
 // with different shapes: text content in `chapters`, timing in
 // `manifestChapters`.
-const manifestChapters: { id: string; title: string; startTime: Milliseconds; endTime: Milliseconds }[] = [];
+const manifestChapters: { id: string; title: string; startTime: Milliseconds; endTime: Milliseconds; parentId?: string }[] = [];
 const manifestMarks: { name: string; time: Milliseconds; chapter: string; text: string }[] = [];
+// carry each chapter's (normalized) parent pointer into the
+// manifest. Absent on flat posts, so their manifest stays byte-identical.
+const parentById = new Map(chapters.map((c) => [c.id, c.parentId]));
 let offset = asMs(0);
 for (const [i, a] of artifacts.entries()) {
   // Same gap is spliced before every chapter after the first (see fullBuf).
   if (i > 0) offset = asMs(offset + segmentGapMs);
   const start = offset;
   const end = asMs(offset + a.duration);
-  manifestChapters.push({ id: a.id, title: a.title, startTime: start, endTime: end });
+  manifestChapters.push({ id: a.id, title: a.title, startTime: start, endTime: end, parentId: parentById.get(a.id) });
   for (const m of a.localMarks) {
     manifestMarks.push({
       name: m.name,

@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createSayProvider,
+  createEspeakNgProvider,
   createMossProvider,
   ttsProviders,
   type PlsLexicon,
@@ -25,9 +26,11 @@ const baseConfig = (overrides: Partial<TtsProviderConfig> = {}): TtsProviderConf
   ...overrides,
 });
 
-test("ttsProviders registry contains say and moss", () => {
+test("ttsProviders registry contains say, espeak-ng and moss", () => {
   expect(Object.keys(ttsProviders)).toContain("say");
   expect(ttsProviders.say).toBe(createSayProvider);
+  expect(Object.keys(ttsProviders)).toContain("espeak-ng");
+  expect(ttsProviders["espeak-ng"]).toBe(createEspeakNgProvider);
   expect(Object.keys(ttsProviders)).toContain("moss");
   expect(ttsProviders.moss).toBe(createMossProvider);
 });
@@ -103,6 +106,85 @@ test.skipIf(!hasSay)(
     const buf = await provider.synthesize("   ");
     expect(String.fromCharCode(buf[0]!, buf[1]!, buf[2]!, buf[3]!)).toBe("RIFF");
     expect(buf.byteLength).toBeGreaterThan(44); // header + at least some samples
+  },
+);
+
+// --- espeak-ng adapter -------------------------------------------------------
+//
+// Mirrors the `say` adapter: a stateless CLI synth that warns-and-ignores PLS.
+// Construction/validation runs anywhere; the synth integration tests are gated
+// on espeak-ng being on PATH (it isn't preinstalled), so they no-op elsewhere.
+
+test("createEspeakNgProvider accepts the supported format and reports its identity", () => {
+  const provider = createEspeakNgProvider(baseConfig({ voice: "en-us" }));
+  expect(provider.name).toBe("espeak-ng");
+  expect(provider.outputFormat).toEqual(monoFmt);
+  expect(provider.requiredBinaries).toEqual(["espeak-ng"]);
+});
+
+test("createEspeakNgProvider rejects stereo input", () => {
+  expect(() =>
+    createEspeakNgProvider(baseConfig({ format: { ...monoFmt, channels: 2 } })),
+  ).toThrow(/only mono 16-bit PCM is supported/);
+});
+
+test("createEspeakNgProvider rejects non-16-bit depth", () => {
+  expect(() =>
+    createEspeakNgProvider(baseConfig({ format: { ...monoFmt, bitsPerSample: 24 } })),
+  ).toThrow(/only mono 16-bit PCM is supported/);
+});
+
+test("createEspeakNgProvider warns when a PLS lexicon is passed (`espeak-ng` has no PLS support)", () => {
+  const lexicon: PlsLexicon = {
+    sources: ["posts/common-terms.pls"],
+    xml: "<?xml version=\"1.0\"?><lexicon/>",
+  };
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    createEspeakNgProvider(baseConfig({ lexicon }));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toMatch(/ignoring PLS lexicon from posts\/common-terms\.pls/);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+test("createEspeakNgProvider stays quiet when no lexicon is passed", () => {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    createEspeakNgProvider(baseConfig());
+    expect(warn).not.toHaveBeenCalled();
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+test("createEspeakNgProvider: no cacheVoiceId (cache falls back to the voice name)", () => {
+  expect(createEspeakNgProvider(baseConfig()).cacheVoiceId).toBeUndefined();
+});
+
+const hasEspeakNg = Bun.which("espeak-ng") !== null;
+test.skipIf(!hasEspeakNg)(
+  "espeak-ng.synthesize: returns a WAV in the declared format",
+  async () => {
+    const provider = createEspeakNgProvider(baseConfig({ voice: "en-us" }));
+    const buf = await provider.synthesize("hello");
+    expect(String.fromCharCode(buf[0]!, buf[1]!, buf[2]!, buf[3]!)).toBe("RIFF");
+    expect(String.fromCharCode(buf[8]!, buf[9]!, buf[10]!, buf[11]!)).toBe("WAVE");
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    expect(view.getUint16(22, true)).toBe(monoFmt.channels);
+    expect(view.getUint32(24, true)).toBe(monoFmt.sampleRate);
+    expect(view.getUint16(34, true)).toBe(monoFmt.bitsPerSample);
+  },
+);
+
+test.skipIf(!hasEspeakNg)(
+  "espeak-ng.synthesize: empty / whitespace input still returns a valid WAV",
+  async () => {
+    const provider = createEspeakNgProvider(baseConfig({ voice: "en-us" }));
+    const buf = await provider.synthesize("   ");
+    expect(String.fromCharCode(buf[0]!, buf[1]!, buf[2]!, buf[3]!)).toBe("RIFF");
+    expect(buf.byteLength).toBeGreaterThan(44);
   },
 );
 

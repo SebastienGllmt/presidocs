@@ -120,3 +120,16 @@ test("extractNarration returns no chapters when none are present", () => {
   expect(disabled).toBe(false);
   expect(chapters).toEqual([]);
 });
+
+test("extractNarration reads data-chapter-parent into parentId", () => {
+  const html = `
+    <article>
+      <script type="text/narration" data-chapter-id="part" data-chapter-title="Part">P</script>
+      <script type="text/narration" data-chapter-id="kid" data-chapter-title="Kid" data-chapter-parent="part">K</script>
+    </article>`;
+  const { chapters } = extractNarration(html);
+  expect(chapters.map((c) => [c.id, c.parentId])).toEqual([
+    ["part", undefined],
+    ["kid", "part"],
+  ]);
+});
