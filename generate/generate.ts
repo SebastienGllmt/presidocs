@@ -600,12 +600,55 @@ for (const chapter of chapters) {
   });
 }
 
-// Concatenate every chapter in the working (lossless) format, then encode
-// the result for delivery. Doing the encode at the end (rather than per
-// chapter and concatenating MP3s) avoids the brittleness of MP3 concatenation
-// and keeps cumulative encoder padding to a single occurrence per file.
+// Concatenate every chapter in the working (lossless) format. The encode
+// happens further below (after we've computed chapter offsets) so the MP3
+// can carry in-file CHAP/CTOC frames; doing the encode at the end rather
+// than per chapter avoids the brittleness of MP3 concatenation and keeps
+// cumulative encoder padding to a single occurrence per file.
 const fullBuf = pipeline.concat(interleave(artifacts.map((a) => a.buffer), segmentGap));
-const fullDelivered = await pipeline.encode(fullBuf);
+
+// `manifestChapters` / `manifestMarks` are the flattened entries that ship
+// in the manifest JSON — distinct from the parsed-input `chapters` array
+// (which holds the script text). The same chapter shows up in both, but
+// with different shapes: text content in `chapters`, timing in
+// `manifestChapters`. Computed BEFORE the encode so the same chapter
+// times can be embedded as ID3 CHAP frames inside the MP3.
+const manifestChapters: { id: string; title: string; startTime: Milliseconds; endTime: Milliseconds; parentId?: string }[] = [];
+const manifestMarks: { name: string; time: Milliseconds; chapter: string; text: string }[] = [];
+// carry each chapter's (normalized) parent pointer into the
+// manifest. Absent on flat posts, so their manifest stays byte-identical.
+const parentById = new Map(chapters.map((c) => [c.id, c.parentId]));
+let offset = asMs(0);
+for (const [i, a] of artifacts.entries()) {
+  // Same gap is spliced before every chapter after the first (see fullBuf).
+  if (i > 0) offset = asMs(offset + segmentGapMs);
+  const start = offset;
+  const end = asMs(offset + a.duration);
+  manifestChapters.push({ id: a.id, title: a.title, startTime: start, endTime: end, parentId: parentById.get(a.id) });
+  for (const m of a.localMarks) {
+    manifestMarks.push({
+      name: m.name,
+      time: asMs(start + m.time),
+      chapter: a.id,
+      text: m.text,
+    });
+  }
+  offset = end;
+}
+
+// Encode with chapters baked in. The `<podcast:chapters>` JSON sidecar
+// (chapters.json) is still the rich surface every modern podcast client
+// reads; CHAP/CTOC in the file is redundant coverage for clients that
+// look in the MP3 itself. Hierarchy degrades to a flat list here, same
+// shape as the sidecar — the in-page player is where true nesting lives.
+const fullDelivered = await pipeline.encode(fullBuf, {
+  chapters: manifestChapters.map((c) => ({
+    id: c.id,
+    title: c.parentId ? `${chapters.find((p) => p.id === c.parentId)?.title ?? c.parentId} — ${c.title}` : c.title,
+    startMs: c.startTime,
+    endMs: c.endTime,
+  })),
+});
 
 // Content-hash the final track into its filename (`full.<hash>.mp3`). This is
 // the cache-busting contract for BOTH dev and prod: the URL changes whenever
@@ -631,34 +674,6 @@ for (const f of await readdir(outDir)) {
   if (f === `full${ext}` || staleFullRe.test(f)) {
     await unlink(join(outDir, f)).catch(() => {});
   }
-}
-
-// `manifestChapters` / `manifestMarks` are the flattened entries that ship
-// in the manifest JSON — distinct from the parsed-input `chapters` array
-// (which holds the script text). The same chapter shows up in both, but
-// with different shapes: text content in `chapters`, timing in
-// `manifestChapters`.
-const manifestChapters: { id: string; title: string; startTime: Milliseconds; endTime: Milliseconds; parentId?: string }[] = [];
-const manifestMarks: { name: string; time: Milliseconds; chapter: string; text: string }[] = [];
-// carry each chapter's (normalized) parent pointer into the
-// manifest. Absent on flat posts, so their manifest stays byte-identical.
-const parentById = new Map(chapters.map((c) => [c.id, c.parentId]));
-let offset = asMs(0);
-for (const [i, a] of artifacts.entries()) {
-  // Same gap is spliced before every chapter after the first (see fullBuf).
-  if (i > 0) offset = asMs(offset + segmentGapMs);
-  const start = offset;
-  const end = asMs(offset + a.duration);
-  manifestChapters.push({ id: a.id, title: a.title, startTime: start, endTime: end, parentId: parentById.get(a.id) });
-  for (const m of a.localMarks) {
-    manifestMarks.push({
-      name: m.name,
-      time: asMs(start + m.time),
-      chapter: a.id,
-      text: m.text,
-    });
-  }
-  offset = end;
 }
 
 const manifest = {

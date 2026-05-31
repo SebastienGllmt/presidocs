@@ -48,8 +48,26 @@ export interface AudioPipeline {
   // Drop the given duration of leading audio and return the result.
   trim(buf: Uint8Array, ms: Milliseconds): Promise<Uint8Array>;
   // Final-mile encode for delivery (e.g. WAV → MP3). A future lossless-
-  // delivery backend could make this the identity function.
-  encode(workingBuf: Uint8Array): Promise<Uint8Array>;
+  // delivery backend could make this the identity function. When `chapters`
+  // is non-empty the encoder embeds them as in-container chapter markers
+  // (ID3v2 CHAP+CTOC frames for MP3) — redundant with the `<podcast:chapters>`
+  // JSON sidecar, but read by podcast clients that look in the file.
+  encode(workingBuf: Uint8Array, opts?: EncodeOptions): Promise<Uint8Array>;
+}
+
+// In-file chapter marker to embed at encode time. Times are absolute ms in
+// the master track (same coordinate system the manifest uses). `id` becomes
+// the CHAP frame's Element ID — must be unique within the file but is not
+// shown to the user; the user-facing label is `title`.
+export interface EncodeChapter {
+  id: string;
+  title: string;
+  startMs: Milliseconds;
+  endMs: Milliseconds;
+}
+
+export interface EncodeOptions {
+  chapters?: readonly EncodeChapter[];
 }
 
 // --- WAV helpers (concat-only) -----------------------------------------------
@@ -389,27 +407,48 @@ export async function truncateToMs(buf: Uint8Array, ms: Milliseconds): Promise<U
 // the tail) per the format spec. Modern decoders honor the LAME tag we
 // emit and play gaplessly; the residual sub-30ms offset is well below
 // perception thresholds at podcast-scale durations.
+//
+// When `chapters` is non-empty the encoder embeds them as ID3v2 CHAP+CTOC
+// frames in the output MP3. We do this via an ffmetadata sidecar file
+// (a second `-i`, `-map_metadata 1`) rather than building the ID3 tag
+// ourselves — it's the same path ffmpeg uses when remuxing chapter-bearing
+// containers, so we get the canonical CHAP/CTOC layout with TIT2 sub-frame
+// titles for free. `-id3v2_version 3` pins the tag version: v2.3 is what
+// every podcast client we care about parses cleanly (v2.4's UTF-8 text-
+// encoding byte still trips Apple's older parsers).
+//
+// CHAP frame times must be absolute ms from the start of the master track,
+// which is exactly what the caller already has (post-trim, post-gap). They
+// match the manifest's `chapter.startTime`/`endTime` byte-for-byte.
 export async function wavToMp3(
   wavBuf: Uint8Array,
   format: AudioFormat,
   mp3Bitrate: string,
+  opts: EncodeOptions = {},
 ): Promise<Uint8Array> {
   const outPath = tmpName("mp3", ".mp3");
+  const metaPath = opts.chapters?.length ? tmpName("mp3-meta", ".txt") : null;
   try {
+    if (metaPath) {
+      await Bun.write(metaPath, ffmetadataChapters(opts.chapters!));
+    }
+    const cmd = [
+      "ffmpeg",
+      "-hide_banner",
+      "-loglevel", "error",
+      "-f", "wav",
+      "-i", "pipe:0",
+      ...(metaPath ? ["-i", metaPath, "-map_metadata", "1", "-map", "0:a"] : []),
+      "-codec:a", "libmp3lame",
+      "-b:a", mp3Bitrate,
+      "-ac", String(format.channels),
+      "-ar", String(format.sampleRate),
+      "-id3v2_version", "3",
+      "-f", "mp3",
+      "-y", outPath,
+    ];
     const proc = Bun.spawn({
-      cmd: [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel", "error",
-        "-f", "wav",
-        "-i", "pipe:0",
-        "-codec:a", "libmp3lame",
-        "-b:a", mp3Bitrate,
-        "-ac", String(format.channels),
-        "-ar", String(format.sampleRate),
-        "-f", "mp3",
-        "-y", outPath,
-      ],
+      cmd,
       stdin: new Blob([wavBuf as BlobPart]),
       stdout: "pipe",
       stderr: "pipe",
@@ -421,8 +460,33 @@ export async function wavToMp3(
     if (code !== 0) throw new Error(`ffmpeg (mp3) exited ${code}:\n${errText}`);
     return new Uint8Array(await Bun.file(outPath).arrayBuffer());
   } finally {
-    await rm(outPath, { force: true });
+    await Promise.all([
+      rm(outPath, { force: true }),
+      metaPath ? rm(metaPath, { force: true }) : Promise.resolve(),
+    ]);
   }
+}
+
+// Build an ffmetadata file (the `[CHAPTER]` block format ffmpeg reads via
+// `-map_metadata`). Spec lives in ffmpeg-formats(1) "Metadata".
+// Special chars (=, ;, #, \, newline) inside values are backslash-escaped
+// per the spec — `title=` is the only field a chapter title flows into,
+// but any of those characters in a title would otherwise terminate the
+// value or be read as a comment marker.
+function ffmetadataChapters(chapters: readonly EncodeChapter[]): string {
+  const esc = (s: string) => s.replace(/[=;#\\\n]/g, (c) => `\\${c}`);
+  const lines: string[] = [";FFMETADATA1"];
+  for (const c of chapters) {
+    lines.push(
+      "",
+      "[CHAPTER]",
+      "TIMEBASE=1/1000",
+      `START=${c.startMs}`,
+      `END=${c.endMs}`,
+      `title=${esc(c.title)}`,
+    );
+  }
+  return lines.join("\n") + "\n";
 }
 
 // --- Factory -----------------------------------------------------------------
@@ -448,6 +512,6 @@ export function createMp3AudioPipeline(
     leadingSilenceMs,
     leadingSilenceTrimMs,
     trim: trimLeadingMs,
-    encode: (buf) => wavToMp3(buf, format, mp3Bitrate),
+    encode: (buf, opts) => wavToMp3(buf, format, mp3Bitrate, opts),
   };
 }

@@ -246,6 +246,65 @@ test("trailingArtifactTrimMs leaves a long mid-clip pause alone (not an artifact
   expect(await trailingArtifactTrimMs(combined, fmt)).toBeNull();
 });
 
+test("wavToMp3 with chapters embeds CHAP+CTOC frames carrying titles", async () => {
+  // Three contiguous chapters spanning the full 3s track — same shape the
+  // pipeline produces. Title includes a `;` to exercise the escape path
+  // (unescaped, ffmetadata reads it as a comment marker).
+  const wav = await buildSilence(asMs(3000), fmt);
+  const mp3 = await wavToMp3(wav, fmt, "64k", {
+    chapters: [
+      { id: "intro", title: "Intro; opening", startMs: asMs(0), endMs: asMs(1000) },
+      { id: "middle", title: "Middle", startMs: asMs(1000), endMs: asMs(2000) },
+      { id: "end", title: "End", startMs: asMs(2000), endMs: asMs(3000) },
+    ],
+  });
+  // ID3v2 header at byte 0, version 2.3.0 (we pin -id3v2_version 3).
+  expect(mp3[0]).toBe(0x49); // "I"
+  expect(mp3[1]).toBe(0x44); // "D"
+  expect(mp3[2]).toBe(0x33); // "3"
+  expect(mp3[3]).toBe(0x03); // v2.3
+  // Scan the start of the file (where the tag lives) for CHAP/CTOC frame
+  // IDs and TIT2 sub-frame titles. UTF-16-with-BOM is ID3v2.3's standard
+  // multibyte text encoding, so check for both latin1 and UTF-16 forms.
+  const head = new TextDecoder("latin1").decode(mp3.subarray(0, 4096));
+  expect(head).toContain("CHAP");
+  expect(head).toContain("CTOC");
+  expect(head).toContain("TIT2");
+  const utf16 = new TextDecoder("utf-16le").decode(mp3.subarray(0, 4096));
+  const hasTitle = (t: string) => head.includes(t) || utf16.includes(t);
+  expect(hasTitle("Intro; opening")).toBe(true);
+  expect(hasTitle("Middle")).toBe(true);
+  expect(hasTitle("End")).toBe(true);
+  // ffprobe is the canonical reader; round-trip through it to confirm CHAP
+  // times match what we asked for (TIMEBASE=1/1000 in the metadata file).
+  const probePath = join(
+    process.env.TMPDIR ?? "/tmp",
+    `audio-pipeline-test-mp3-${process.pid}-${Math.random().toString(36).slice(2)}.mp3`,
+  );
+  try {
+    await Bun.write(probePath, mp3);
+    const probed = await $`ffprobe -hide_banner -loglevel error -show_chapters -of json ${probePath}`.json() as {
+      chapters?: { start_time: string; end_time: string; tags?: { title?: string } }[];
+    };
+    expect(probed.chapters?.length).toBe(3);
+    expect(probed.chapters![0]!.tags?.title).toBe("Intro; opening");
+    expect(parseFloat(probed.chapters![1]!.start_time)).toBeCloseTo(1.0, 2);
+    expect(parseFloat(probed.chapters![2]!.end_time)).toBeCloseTo(3.0, 2);
+  } finally {
+    await rm(probePath, { force: true });
+  }
+});
+
+test("wavToMp3 without chapters omits CHAP/CTOC frames", async () => {
+  // Pin the no-op path: a chapter-less encode stays byte-compatible with
+  // the pre-chapter behavior — no ID3 chapter machinery sneaks in.
+  const wav = await buildSilence(asMs(500), fmt);
+  const mp3 = await wavToMp3(wav, fmt, "64k");
+  const head = new TextDecoder("latin1").decode(mp3.subarray(0, 4096));
+  expect(head).not.toContain("CHAP");
+  expect(head).not.toContain("CTOC");
+});
+
 test("createMp3AudioPipeline wires the factory to the same ops", async () => {
   const p = createMp3AudioPipeline(fmt, "64k");
   expect(p.requiredBinaries).toEqual(["ffmpeg"]);
