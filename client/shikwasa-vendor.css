@@ -1,5 +1,5 @@
 /* Shikwasa vendor stylesheet, wrapped in the `vendor` cascade layer so
-   our overrides in narrator.css (`@layer engine.components`, declared after
+   our overrides in narrator.css (`@layer engine-components`, declared after
    `vendor` in base.css) win by layer ordering — see base.css header for the
    layer contract.
 

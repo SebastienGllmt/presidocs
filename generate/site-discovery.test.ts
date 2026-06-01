@@ -64,6 +64,7 @@ const LLMS_SITE: LlmsSite = {
     atom: "https://blog.example.com/feed.xml",
     podcast: "https://blog.example.com/podcast.xml",
   },
+  helpUrl: "https://blog.example.com/help",
 };
 
 const LLMS_POSTS: LlmsPost[] = [
@@ -93,6 +94,9 @@ test("llms.txt: title, blockquote summary, post list with summaries, ## Optional
   expect(txt).not.toContain("## Feeds");
   expect(txt).toContain("- [Atom feed](https://blog.example.com/feed.xml)");
   expect(txt).toContain("- [Podcast feed](https://blog.example.com/podcast.xml)");
+  // The help page is listed in ## Optional so an LLM can fetch one curated
+  // "how do I subscribe / listen" page instead of inferring from the posts.
+  expect(txt).toContain("- [How this blog works](https://blog.example.com/help)");
 });
 
 test("llms.txt: podcast feed omitted when null (audio-less blog)", () => {
@@ -102,6 +106,11 @@ test("llms.txt: podcast feed omitted when null (audio-less blog)", () => {
   );
   expect(txt).toContain("- [Atom feed]");
   expect(txt).not.toContain("Podcast feed");
+});
+
+test("llms.txt: help link omitted when helpUrl is null", () => {
+  const txt = buildLlmsTxt({ ...LLMS_SITE, helpUrl: null }, LLMS_POSTS);
+  expect(txt).not.toContain("How this blog works");
 });
 
 test("llms.txt: empty posts list collapses cleanly (header + Optional only)", () => {

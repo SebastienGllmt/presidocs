@@ -9,9 +9,9 @@
 //
 // The shell still expands the glob, so callers pass entry paths verbatim.
 // We do the indirection only to register `siteFooterPlugin()` — `bun build`'s
-// CLI form doesn't expose a plugin hook short of bunfig preload, and the
-// proposal that introduced this script (Proposal 13 §8) chose the programmatic
-// route for explicitness.
+// CLI form doesn't expose a plugin hook short of bunfig preload, so this script
+// uses the programmatic route for explicitness (see methodology → Build-time
+// HTML strip for the build-only-vs-content-bearing rationale).
 //
 // Anything entirely orthogonal to the inject (target/outdir/sourcemap) stays
 // hardcoded to match the pre-refactor CLI invocation, so per-blog package.json

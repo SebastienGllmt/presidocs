@@ -57,7 +57,7 @@ Per-post stylesheets (CSS authoring contract):
   won't reach engine-injected components — the author byline at the
   top, the "Last updated" strip, the follow-CTA at the bottom, the
   "Built with presidocs" attribution, or the per-heading copy-link
-  icon. Engine components live in `@layer engine.components`, declared
+  icon. Engine components live in `@layer engine-components`, declared
   after `post` in `client/base.css`, so they win by ordering regardless
   of selector specificity.
 

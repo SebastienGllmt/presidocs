@@ -181,11 +181,19 @@ async function main(): Promise<void> {
     }
   }
 
+  // The footer's "How this blog works" link points at /help, which
+  // generate/help-page.ts emits when SITE_URL is set (same gate). Linking it
+  // before that step runs is fine — it exists by serve time, exactly like the
+  // feed autodiscovery links advertise /feed.xml before generate/feeds.ts runs.
+  const helpHref = siteUrl ? "/help" : "";
+
   const stages = ["author-email + narration + PLS strip"];
   if (siteUrl) stages.push("structured data + OG + Twitter Card");
   else stages.push("(no SITE_URL — skipping structured-data inject)");
-  if (privacyHref) stages.push("privacy-policy footer");
-  else stages.push("(no PRIVACY_POLICY_URL — skipping footer inject)");
+  if (privacyHref || helpHref) {
+    const parts = [helpHref ? "help" : null, privacyHref ? "privacy" : null].filter(Boolean);
+    stages.push(`site footer (${parts.join(" + ")})`);
+  } else stages.push("(no PRIVACY_POLICY_URL or SITE_URL — skipping footer inject)");
   if (pwaOpts) stages.push("PWA <head> (manifest + theme-color + apple-touch-icon)");
   else stages.push("(no manifest.webmanifest — skipping PWA <head> inject)");
   console.log(`Post-build HTML rewrite: ${stages.join(", ")}…`);
@@ -274,8 +282,8 @@ async function main(): Promise<void> {
       after = injectFeedLinks(after);
     }
 
-    if (privacyHref) {
-      after = injectSiteFooter(after, { privacyHref });
+    if (privacyHref || helpHref) {
+      after = injectSiteFooter(after, { privacyHref, helpHref });
     }
     if (pwaOpts) {
       after = injectPwaHead(after, pwaOpts);

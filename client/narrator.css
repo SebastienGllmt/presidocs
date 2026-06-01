@@ -3,30 +3,29 @@
    default heading typography) lives in base.css so every post — narration or
    opt-out — shares those defaults. This file owns the things only a narration
    post needs: the player dock, the chapter strip, and the .narration-active
-   highlight. Wrapped in `@layer engine.components` so it participates in the
+   highlight. Wrapped in `@layer engine-components` so it participates in the
    engine's cascade-layer ordering — see base.css header for the layer
    contract. */
 
 /* Narration-only body padding override. Replaces base.css's 3rem
-   padding-block-end with a value that clears the floating player's 138px
-   bottom footprint (18px gap + 120px player) so the site-footer sits
-   comfortably above the dock instead of being hidden under it. Opt-out
-   posts (no narrator.css) keep base.css's smaller value — the player
-   isn't there to clear, so the extra whitespace would just look empty.
+   padding-block-end with a larger value so the site-footer clears the
+   floating player dock instead of sitting behind it. Opt-out posts (no
+   narrator.css) keep base.css's smaller value — there's no dock to clear,
+   so the extra whitespace would just look empty.
 
    Written as an unlayered rule (no `@layer` wrapper, see the escape-hatch
    note in base.css's header) so it beats base.css's layered declaration
-   regardless of cascade-layer order. We can't rely on engine.components
-   beating engine.layout here: the dev bundler can route Shikwasa's
+   regardless of cascade-layer order. We can't rely on engine-components
+   beating engine-layout here: the dev bundler can route Shikwasa's
    stylesheet — pulled in via JS module import from narrator.ts — into the
    document head ahead of base.css, pre-creating the `vendor` and
-   `engine.components` layers before base.css's named-list `@layer`
+   `engine-components` layers before base.css's named-list `@layer`
    statement runs. Named-list statements can't reorder layers that have
-   already been declared, so engine.layout ends up appended after
-   engine.components and beats it. Unlayered sidesteps that entirely. */
+   already been declared, so engine-layout ends up appended after
+   engine-components and beats it. Unlayered sidesteps that entirely. */
 body { padding-block-end: 8rem; }
 
-@layer engine.components {
+@layer engine-components {
 :root {
   --narration-bg: rgba(255, 213, 79, 0.18);
   --narration-border: rgba(241, 145, 21, 0.55);
@@ -175,7 +174,7 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   bottom: 18px;
   left: 50%;
   transform: translateX(-50%);
-  /* Matches the engine.layout article max-width so the dock visually aligns
+  /* Matches the engine-layout article max-width so the dock visually aligns
      with the article column. */
   width: min(768px, calc(100% - 24px));
   display: flex;
@@ -1134,4 +1133,4 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   .spoken-segment.anchor-flash { animation: none; }
 }
 
-} /* @layer engine.components */
+} /* @layer engine-components */

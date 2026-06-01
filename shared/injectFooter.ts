@@ -1,10 +1,27 @@
-// Build-time injection of the site footer (privacy-policy link).
+// Build-time injection of the site footer — a small, every-page set of links:
+// "Home", the engine's "How this blog works" help page, and the operator's
+// privacy policy.
 //
 // Sits in the same family as injectAnalytics / injectStructuredData /
-// injectFeedLinks — runs in the post-build rewrite step, idempotent
-// (a re-run that sees the marker class skips the inject), env-gated
-// (no PRIVACY_POLICY_URL → no footer, same fail-silent posture as the
-// other injectors).
+// injectFeedLinks / injectPwaHead — runs in the post-build rewrite step,
+// idempotent (a re-run that sees the marker class skips the inject), env-gated
+// (no links available → no footer, same fail-silent posture as the other
+// injectors).
+//
+// The link SET is conditional, each piece independently gated by its caller:
+//   - Privacy   — present when PRIVACY_POLICY_URL is set (the GDPR / CalOPPA /
+//                 APPI every-page-link requirement; this is why the footer
+//                 originally existed).
+//   - Help      — present when SITE_URL is set, i.e. when generate/help-page.ts
+//                 actually emits /help. Linking it before that step runs in the
+//                 build is fine: the target exists by serve time, exactly like
+//                 injectFeedLinks advertising /feed.xml before generate/feeds.ts
+//                 emits it.
+//   - Home      — present whenever the footer is shown at all.
+// Feeds are deliberately NOT linked here: a visible "Podcast" link would 404 on
+// an audio-less blog, and raw feed XML is unfriendly to a human anyway — the
+// /help#subscribe walkthrough is the human entry point, and the <head>
+// autodiscovery <link>s (injectFeedLinks) are the machine one.
 //
 // Why build-time, not static HTML or a client-side script:
 //   - Static HTML would duplicate the markup across every post + the
@@ -16,19 +33,19 @@
 //   - Build-time injection treats the footer as a deploy-time
 //     decoration, exactly like the Cloudflare Analytics beacon, and
 //     keeps the source HTML clean.
-//
-// Why a privacy footer at all: GDPR Art. 12 requires privacy
-// information to be "concise, transparent, intelligible, easily
-// accessible"; CalOPPA requires it to be "conspicuously posted"; the
-// industry-standard satisfaction of both is a footer link on every
-// page that uses the word "Privacy". See the post for the long form.
 
 export interface FooterOptions {
   /**
    * URL the "Privacy Policy" link points at. Relative or absolute.
-   * No value → no footer is injected (the whole call is a no-op).
+   * Empty/omitted → the privacy link is left out.
    */
-  privacyHref: string;
+  privacyHref?: string;
+  /**
+   * URL the "How this blog works" link points at (typically "/help").
+   * Empty/omitted → the help link is left out (e.g. no SITE_URL, so no
+   * help page was emitted).
+   */
+  helpHref?: string;
 }
 
 // Sentinel class on the injected <footer> so a second pass over the
@@ -39,13 +56,23 @@ const FOOTER_CLASS = "site-footer";
 const MARKER = `class="${FOOTER_CLASS}"`;
 
 export function injectSiteFooter(html: string, opts: FooterOptions): string {
-  const href = opts.privacyHref.trim();
-  if (!href) return html;
+  const privacyHref = opts.privacyHref?.trim() ?? "";
+  const helpHref = opts.helpHref?.trim() ?? "";
+
+  // Build the link list in a stable order. Home first (orientation), then the
+  // engine's help page, then the operator's privacy policy. Anything unset is
+  // simply skipped.
+  const links: string[] = [`<a href="/">Home</a>`];
+  if (helpHref) links.push(`<a href="${escapeAttr(helpHref)}">How this blog works</a>`);
+  if (privacyHref) links.push(`<a href="${escapeAttr(privacyHref)}">Privacy Policy</a>`);
+
+  // With no help and no privacy link there's nothing worth a footer (a lone
+  // "Home" link on every page is noise), so no-op — same fail-silent posture as
+  // the other injectors when their gate is unset.
+  if (!helpHref && !privacyHref) return html;
   if (html.includes(MARKER)) return html;
-  const footer =
-    `<footer class="${FOOTER_CLASS}">`
-    + `<a href="${escapeAttr(href)}">Privacy Policy</a>`
-    + `</footer>`;
+
+  const footer = `<footer class="${FOOTER_CLASS}">${links.join("")}</footer>`;
   // Append inside <body> so the footer lives in the document flow.
   // HTMLRewriter only fires the element handler on the FIRST <body>
   // it encounters, which keeps this idempotent even on HTML with

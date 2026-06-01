@@ -143,6 +143,92 @@ export function saveCaptureControls(
   }
 }
 
+// ---- Keyboard shortcuts (single source of truth) ---------------------------
+//
+// The narrator binds a handful of page-global shortcuts (narrator.ts
+// `setupKeyboardShortcuts`). This table is the ONE place they're declared: the
+// player's keydown handler dispatches off it, and the build-time help page
+// (generate/help-page.ts) renders the same `label`/`description` pairs into its
+// shortcuts table. Adding a binding here updates both the behavior and its
+// documentation, so the two can't drift. Importable from a Bun build step —
+// nothing in this file touches the DOM at module load.
+
+export type KeyMatch =
+  // matches `KeyboardEvent.code` (used for Space, which has a non-printing key)
+  | { readonly kind: "code"; readonly code: string }
+  // matches `KeyboardEvent.key` (ArrowLeft / ArrowRight)
+  | { readonly kind: "key"; readonly key: string }
+  // any of "1".."9" — the handler still resolves the actual chapter via
+  // topLevelChapterByNumber, which may decline if there's no Nth chapter
+  | { readonly kind: "digit" };
+
+export type KeyBindingId =
+  | "play-pause"
+  | "skip-back"
+  | "skip-forward"
+  | "jump-chapter";
+
+export type KeyBinding = {
+  /** Stable id the handler switches on to run the side-effect. */
+  readonly id: KeyBindingId;
+  /** Key chip(s) for the help table (display form). */
+  readonly label: string;
+  /** One-line description for the help table. */
+  readonly description: string;
+  /** How the keydown handler recognizes this binding. */
+  readonly match: KeyMatch;
+};
+
+// Order matters: the handler runs the FIRST binding that matches and stops.
+// Space / arrows / digits don't overlap, so order is for readability — but
+// keeping it stable also keeps the rendered help table stable.
+export const KEY_BINDINGS: readonly KeyBinding[] = [
+  {
+    id: "play-pause",
+    label: "Space",
+    description: "Play or pause the narration",
+    match: { kind: "code", code: "Space" },
+  },
+  {
+    id: "skip-back",
+    label: "←",
+    description: "Skip back 10 seconds",
+    match: { kind: "key", key: "ArrowLeft" },
+  },
+  {
+    id: "skip-forward",
+    label: "→",
+    description: "Skip forward 10 seconds",
+    match: { kind: "key", key: "ArrowRight" },
+  },
+  {
+    id: "jump-chapter",
+    label: "1–9",
+    description: "Jump to the 1st through 9th chapter",
+    match: { kind: "digit" },
+  },
+];
+
+/**
+ * Does this keydown event match a binding's key rule? Pure — takes only the two
+ * fields it reads, so both the production `KeyboardEvent` and a test stub work.
+ * The `digit` rule checks only the 1-9 SHAPE; whether an Nth chapter exists is
+ * the handler's call (via {@link topLevelChapterByNumber}).
+ */
+export function matchesKeyBinding(
+  b: KeyBinding,
+  e: { readonly code: string; readonly key: string },
+): boolean {
+  switch (b.match.kind) {
+    case "code":
+      return e.code === b.match.code;
+    case "key":
+      return e.key === b.match.key;
+    case "digit":
+      return e.key.length === 1 && e.key >= "1" && e.key <= "9";
+  }
+}
+
 /**
  * Resolve a "1"-"9" keypress to the top-level chapter at that 1-based
  * index, or `null` if there isn't one. Top-level = no `parentId`.

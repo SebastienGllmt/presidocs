@@ -128,6 +128,13 @@ export type LlmsSite = {
   description: string;
   /** Absolute feed URLs; podcast may be null when no audio posts exist. */
   feeds: { atom: string; podcast: string | null };
+  /**
+   * Absolute URL of the engine's "How this blog works" page, or null. Listed in
+   * `## Optional` so an LLM answering "how do I subscribe / listen / comment"
+   * can fetch one curated page instead of inferring from the posts. Always set
+   * when SITE_URL is (generate/help-page.ts emits /help under the same gate).
+   */
+  helpUrl: string | null;
 };
 
 // llmstxt.org convention: a curated Markdown index an LLM indexer can read
@@ -158,6 +165,7 @@ export function buildLlmsTxt(site: LlmsSite, posts: LlmsPost[]): string {
   lines.push("");
   lines.push(`- [Atom feed](${site.feeds.atom})`);
   if (site.feeds.podcast) lines.push(`- [Podcast feed](${site.feeds.podcast})`);
+  if (site.helpUrl) lines.push(`- [How this blog works](${site.helpUrl})`);
   lines.push("");
   return lines.join("\n");
 }
@@ -245,6 +253,9 @@ async function main(): Promise<void> {
         title: meta.title,
         description: meta.description,
         feeds: { atom: `${baseUrl}/feed.xml`, podcast: podcastUrl },
+        // /help is emitted by generate/help-page.ts under the same SITE_URL
+        // gate this step runs under, so it's always reachable here.
+        helpUrl: `${baseUrl}/help`,
       },
       llmsPosts,
     ),

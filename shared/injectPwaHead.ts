@@ -12,8 +12,8 @@
 // Why not also emit these from the Bun bundler plugin (bunFooterPlugin.ts)?
 // Same answer as the privacy footer + structured-data injects — these tags are
 // *inert-at-render* metadata (browsers/PWA installers consume them without
-// visible rendering), so per Proposal 13 §8 they belong in the post-build sweep,
-// not in the bundler step.
+// visible rendering), so they belong in the post-build sweep, not in the bundler
+// step (the build-only-vs-content-bearing split; see methodology → Build-time HTML strip).
 
 export interface PwaHeadOptions {
   /** = manifest.theme_color. Omitted → no <meta name="theme-color"> emitted. */

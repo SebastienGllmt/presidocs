@@ -23,6 +23,9 @@ import {
   SPOKEN_ID_PREFIX,
   spokenSegmentId,
   topLevelChapterByNumber,
+  KEY_BINDINGS,
+  matchesKeyBinding,
+  type KeyBinding,
 } from "./narratorDom.ts";
 
 beforeEach(() => {
@@ -373,4 +376,61 @@ test("shouldIgnoreKeyboardShortcut — null/non-Element target is not in a typin
       altKey: false,
     }),
   ).toBe(false);
+});
+
+// ---- KEY_BINDINGS / matchesKeyBinding --------------------------------
+//
+// These guard the single-source-of-truth contract: the narrator's keydown
+// handler dispatches off KEY_BINDINGS, and generate/help-page.ts renders the
+// same table. A binding that the handler can't dispatch (or a stale duplicate)
+// would silently break either the shortcut or its documentation.
+
+const bindingById = (id: KeyBinding["id"]): KeyBinding => {
+  const b = KEY_BINDINGS.find((x) => x.id === id);
+  if (!b) throw new Error(`no binding ${id}`);
+  return b;
+};
+
+test("KEY_BINDINGS — every binding has a unique id and a non-empty label/description", () => {
+  const ids = KEY_BINDINGS.map((b) => b.id);
+  expect(new Set(ids).size).toBe(ids.length); // no duplicate ids
+  for (const b of KEY_BINDINGS) {
+    expect(b.label.length).toBeGreaterThan(0);
+    expect(b.description.length).toBeGreaterThan(0);
+  }
+});
+
+test("KEY_BINDINGS — the narrator's four shortcuts are all present", () => {
+  // The handler's switch has an arm per id; if a binding is dropped here the
+  // shortcut silently stops working AND drops off the help page. Pin the set.
+  expect(KEY_BINDINGS.map((b) => b.id).sort()).toEqual([
+    "jump-chapter",
+    "play-pause",
+    "skip-back",
+    "skip-forward",
+  ]);
+});
+
+test("matchesKeyBinding — Space matches by code, not key (Space's key is ' ')", () => {
+  const play = bindingById("play-pause");
+  expect(matchesKeyBinding(play, { code: "Space", key: " " })).toBe(true);
+  // A literal "Space" string in `key` must NOT match — the binding keys off code.
+  expect(matchesKeyBinding(play, { code: "", key: "Space" })).toBe(false);
+});
+
+test("matchesKeyBinding — arrows match by key", () => {
+  expect(matchesKeyBinding(bindingById("skip-back"), { code: "ArrowLeft", key: "ArrowLeft" })).toBe(true);
+  expect(matchesKeyBinding(bindingById("skip-forward"), { code: "ArrowRight", key: "ArrowRight" })).toBe(true);
+  // Cross-match guard: left binding must not fire on a right arrow.
+  expect(matchesKeyBinding(bindingById("skip-back"), { code: "ArrowRight", key: "ArrowRight" })).toBe(false);
+});
+
+test("matchesKeyBinding — jump-chapter matches 1-9 only, never 0 or multi-char", () => {
+  const jump = bindingById("jump-chapter");
+  for (const d of ["1", "5", "9"]) {
+    expect(matchesKeyBinding(jump, { code: `Digit${d}`, key: d })).toBe(true);
+  }
+  expect(matchesKeyBinding(jump, { code: "Digit0", key: "0" })).toBe(false);
+  expect(matchesKeyBinding(jump, { code: "", key: "12" })).toBe(false);
+  expect(matchesKeyBinding(jump, { code: "KeyA", key: "a" })).toBe(false);
 });

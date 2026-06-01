@@ -28,6 +28,8 @@ import {
   saveCaptureControls,
   topLevelChapterByNumber,
   shouldIgnoreKeyboardShortcut,
+  KEY_BINDINGS,
+  matchesKeyBinding,
 } from "./narratorDom.ts";
 
 // Per-word timing entry inside a mark. `s`/`e` are character offsets into the
@@ -456,35 +458,44 @@ class Narrator {
       // the narrator.
       if (shouldIgnoreKeyboardShortcut(e.target, e)) return;
 
-      if (e.code === "Space") {
-        // Override the default Space-activates-focused-button behavior so a
-        // focused chapter pill or the visibility toggle doesn't intercept
-        // playback control. Buttons remain activatable via Enter.
-        e.preventDefault();
-        this.lastPlayTrigger = "space";
-        this.player.toggle();
-        return;
-      }
-
-      if (e.key === "ArrowLeft") {
-        e.preventDefault();
-        this.skipBy(asMs(-10_000));
-        return;
-      }
-      if (e.key === "ArrowRight") {
-        e.preventDefault();
-        this.skipBy(asMs(10_000));
-        return;
-      }
-
-      // 1-9 index the TOP-LEVEL chapters (parts + flat chapters), matching
-      // the number shown on the level-1 pills. Sub-chapters are reached by
-      // click or MediaSession next-track, not by number. Resolution
-      // (including the >9 truncation rule) lives in topLevelChapterByNumber.
-      const chapter = topLevelChapterByNumber(this.manifest.chapters, e.key);
-      if (chapter) {
-        e.preventDefault();
-        this.jumpToChapter(chapter);
+      // Dispatch off the shared KEY_BINDINGS table (narratorDom.ts) — the same
+      // declaration the build-time help page renders, so the bindings and their
+      // documentation can't drift. Run the first matching binding and stop.
+      for (const binding of KEY_BINDINGS) {
+        if (!matchesKeyBinding(binding, e)) continue;
+        switch (binding.id) {
+          case "play-pause":
+            // Override the default Space-activates-focused-button behavior so a
+            // focused chapter pill or the visibility toggle doesn't intercept
+            // playback control. Buttons remain activatable via Enter.
+            e.preventDefault();
+            this.lastPlayTrigger = "space";
+            this.player.toggle();
+            return;
+          case "skip-back":
+            e.preventDefault();
+            this.skipBy(asMs(-10_000));
+            return;
+          case "skip-forward":
+            e.preventDefault();
+            this.skipBy(asMs(10_000));
+            return;
+          case "jump-chapter": {
+            // 1-9 index the TOP-LEVEL chapters (parts + flat chapters),
+            // matching the number shown on the level-1 pills. Sub-chapters are
+            // reached by click or MediaSession next-track, not by number.
+            // Resolution (including the >9 truncation rule, and declining when
+            // there's no Nth chapter) lives in topLevelChapterByNumber — so a
+            // digit with no matching chapter falls through doing nothing, as
+            // before.
+            const chapter = topLevelChapterByNumber(this.manifest.chapters, e.key);
+            if (chapter) {
+              e.preventDefault();
+              this.jumpToChapter(chapter);
+            }
+            return;
+          }
+        }
       }
     });
   }

@@ -10,24 +10,35 @@
 
    Cascade-layer order (declared once, here, because base.css is the first
    stylesheet every post links — see post HTML head). Later layers win over
-   earlier layers, and unlayered rules win over every layer:
+   earlier layers, and unlayered rules win over every layer.
 
-     engine.tokens      → :root design tokens + box-sizing reset. Lowest
+   These are FLAT, distinct top-level layer names (`engine-tokens`,
+   `engine-layout`, `engine-components`) — deliberately NOT dotted sublayers
+   (`engine.tokens`, …). Dotted names nest all `engine.*` under one `engine`
+   layer whose position is pinned at its FIRST mention; with `engine-tokens`
+   appearing before `vendor` in the list, that would trap `engine-components`
+   *below* `vendor`, so the player/comments overrides would lose to Shikwasa's
+   defaults in the bundled prod CSS (dev's per-file HMR hides it by resolving
+   on specificity instead). The interleaving below — `vendor` between tokens
+   and layout, `post` between layout and components — is only expressible with
+   flat names. Do not "tidy" these back into a dotted `engine.*` namespace.
+
+     engine-tokens      → :root design tokens + box-sizing reset. Lowest
                           precedence so a post can override a token in its
                           own layer without `!important`.
      vendor             → third-party stylesheets (Shikwasa, …) routed
                           through this layer via `@import "…" layer(vendor)`
                           (see client/shikwasa-vendor.css). Lower than
-                          `engine.components` so our overrides win without
+                          `engine-components` so our overrides win without
                           having to chase the vendor's selector specificity.
-     engine.layout      → page-global html/body typography, scroll-behavior,
+     engine-layout      → page-global html/body typography, scroll-behavior,
                           .site-footer. Lower than `post` so a post that
                           wants a different body font wins.
      post               → every per-post stylesheet (figures/*.css) opts in
                           via `@layer post { … }`. Article-body styling
                           (titles, paragraphs, prose links, figures) lives
                           here.
-     engine.components  → engine-injected UI that sits *inside* <article>:
+     engine-components  → engine-injected UI that sits *inside* <article>:
                           .post-meta, .byline*, .author-cta*, .engine-
                           attribution*, .heading-link*; plus the player
                           dock (narrator.css) and comments UI (comments.css)
@@ -45,9 +56,9 @@
    attribution { display: none }` opt-out still works either way (collapsing
    the element wins over color/margin no matter the cascade resolution). */
 
-@layer engine.tokens, vendor, engine.layout, post, engine.components;
+@layer engine-tokens, vendor, engine-layout, post, engine-components;
 
-@layer engine.tokens {
+@layer engine-tokens {
   :root {
     --page-fg: #1f2328;
     --page-fg-muted: #57606a;
@@ -57,7 +68,7 @@
   * { box-sizing: border-box; }
 }
 
-@layer engine.layout {
+@layer engine-layout {
   html, body {
     margin: 0;
     padding: 0;
@@ -99,21 +110,21 @@
      same below-article rhythm that way.
 
      A post can rebrand any of this from `@layer post` (post is declared
-     after engine.layout, so a post sheet that wraps `.<slug> h1 { … }` in
+     after engine-layout, so a post sheet that wraps `.<slug> h1 { … }` in
      `@layer post` wins). The :has() collapse for the post-meta sits in
-     engine.components and beats both.
+     engine-components and beats both.
 
      Padding uses `padding-inline` (not the four-value `padding` shorthand)
-     to avoid emitting a `padding-bottom: 0` in engine.layout. The dev
+     to avoid emitting a `padding-bottom: 0` in engine-layout. The dev
      bundler can route Shikwasa's stylesheet — pulled in via JS module
      import from narrator.ts — into the document head ahead of base.css,
-     which pre-creates the `vendor` and `engine.components` layers before
+     which pre-creates the `vendor` and `engine-components` layers before
      base.css's named-list `@layer` statement runs. Named-list statements
      only append new layer names to the end of the existing order; they
-     can't reorder layers that have already been declared, so engine.layout
-     ends up appended after engine.components and beats it. A four-value
-     `padding` here would emit `padding-bottom: 0` in engine.layout, and
-     under that flipped order it would override any future engine.components
+     can't reorder layers that have already been declared, so engine-layout
+     ends up appended after engine-components and beats it. A four-value
+     `padding` here would emit `padding-bottom: 0` in engine-layout, and
+     under that flipped order it would override any future engine-components
      article rule that wanted to set padding-bottom. Inline-only padding
      keeps the rule cascade-order-agnostic. */
   article {
@@ -152,7 +163,7 @@
   }
 }
 
-@layer engine.components {
+@layer engine-components {
   /* Article meta strip (client/byline.ts → buildPostMeta). Sits directly under
      the <h1> title — the standard "date / reading time / mode toggle" slot on
      blogs. Currently shows "Last updated <date>"; later it'll be the home for
@@ -161,7 +172,7 @@
 
      The -24px top margin pulls the strip up against the title so it reads as
      a subtitle line rather than a separate paragraph block. The constant
-     works because engine.layout owns the default h1 margin (`0 0 12px`), so
+     works because engine-layout owns the default h1 margin (`0 0 12px`), so
      the calibration holds across every post — no per-post h1 sizing can
      shift this out of alignment without the post also opting into a
      custom-margin override. */

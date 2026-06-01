@@ -95,9 +95,8 @@ export async function createDevServer(opts: DevServerOptions) {
   // content repo's wrangler.toml. The same prod handlers (r2Adapter,
   // handleCommentsRequest) then run in dev against real local R2 + the real
   // Rate Limiting binding — closing the "two stores can silently disagree on
-  // semantics" gap (Proposal 13 §1 divergence 2) and the "dev never exercised
-  // the 429 path" gap (divergence 3). `dispose()` is wired below to shut the
-  // Miniflare subprocess down on signal.
+  // semantics" gap and the "dev never exercised the 429 path" gap. `dispose()`
+  // is wired below to shut the Miniflare subprocess down on signal.
   //
   // Failure to construct the proxy (malformed wrangler.toml, missing bindings)
   // is loud at startup, not a silent fallback to a divergent in-memory shape.
@@ -207,7 +206,7 @@ export async function createDevServer(opts: DevServerOptions) {
           "Cache-Control": "public, max-age=2592000, immutable",
         },
       })),
-    // PWA surface (proposal 06 §7). The Bun inner loop does NOT register the
+    // PWA surface (see methodology → Offline / PWA). The Bun inner loop does NOT register the
     // SW (swRegister.ts gates on `typeof __BUN_DEV__ === "undefined"`), so
     // these routes are dormant on `bun run dev` — they exist for parity with
     // `dev:edge` (wrangler dev) and for anyone exercising the URLs manually.

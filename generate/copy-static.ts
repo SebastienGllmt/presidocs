@@ -16,7 +16,7 @@
 //   - `generated/.comments-dev/` — dev-only fs-adapter comment blobs
 //   - `generated/<slug>/cache-keys.json` — GC index for the TTS cache
 //
-// PWA files (proposal 06 §7 "Prod: bundle into dist/"):
+// PWA files (prod: bundle into dist/ — see methodology → Offline / PWA):
 //   - engine/client/sw.js         → dist/sw.js (with __SW_VERSION__ replaced)
 //   - <content>/manifest.webmanifest → dist/manifest.webmanifest
 //   - <content>/icons/*           → dist/icons/*
@@ -150,7 +150,7 @@ async function copyPublicPostVersions(): Promise<number> {
 
 // PWA bundle: SW source (engine), manifest + icons (content), and the engine
 // policy header for /sw.js (Cache-Control: no-cache so a deploy rolls out).
-// See proposal 06 §7 for the engine/content split rationale.
+// See methodology → Offline / PWA for the engine/content split rationale.
 async function copyPwaFiles(): Promise<{ sw: boolean; manifest: boolean; icons: number }> {
   const out = { sw: false, manifest: false, icons: 0 };
 

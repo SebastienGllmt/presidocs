@@ -6,7 +6,7 @@
 //   - Bun inner loop (no bundle step): the identifier stays undeclared at
 //     runtime, the typeof check yields "undefined", isBunDev resolves true,
 //     and the SW never registers — keeping HMR clean and avoiding a wedged-SW
-//     localhost (see proposal 06 §7).
+//     localhost (see methodology → Offline / PWA).
 //   - dev:edge + prod: `define: { __BUN_DEV__: "false" }` substitutes the
 //     identifier to the literal `false` at parse time, the gate folds, and
 //     the SW registers as designed.

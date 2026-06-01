@@ -95,3 +95,79 @@ main.legal a { color: #0969da; }
   color: #0969da;
   text-decoration: underline;
 }
+
+/* Feature chips — the engine-injected row on the landing (generate/help-page.ts)
+   that signposts the blog's capabilities (Listen, Subscribe, Comments, Install)
+   and links each to its /help anchor. Sits between the tagline and the post
+   list; kept light so it reads as navigation, not a call to action. */
+.presidocs-features {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 24px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  background: #fff;
+  border: 1px solid #e1e4e8;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #57606a;
+  text-decoration: none;
+}
+.chip:hover {
+  border-color: #0969da;
+  color: #0969da;
+}
+
+/* "How this blog works" page (generate/help-page.ts). Reuses main.legal's
+   typography (it carries both classes); these rules add the per-section
+   rhythm, the deep-link target highlight, and the keyboard-shortcut table. */
+main.help section {
+  margin-top: 1.5rem;
+}
+main.help section > p:first-of-type {
+  margin-top: 0.4rem;
+}
+/* When a reader (or an LLM citation) deep-links a section, flash a subtle
+   highlight so the answer they came for is unmistakable. */
+main.help section:target {
+  scroll-margin-top: 1rem;
+}
+main.help section:target > h2 {
+  color: #0969da;
+}
+main.help h3 {
+  margin-top: 1.1rem;
+}
+table.shortcuts {
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-size: 0.95rem;
+}
+table.shortcuts th,
+table.shortcuts td {
+  text-align: left;
+  padding: 4px 16px 4px 0;
+  border-bottom: 1px solid #eaecef;
+}
+table.shortcuts th {
+  color: #6e7781;
+  font-weight: 600;
+}
+kbd {
+  display: inline-block;
+  min-width: 1.4em;
+  padding: 2px 7px;
+  background: #f3f4f6;
+  border: 1px solid #d0d7de;
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  font: 0.85em/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-align: center;
+  color: #1f2328;
+}
