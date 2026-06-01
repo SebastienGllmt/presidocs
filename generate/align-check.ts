@@ -59,12 +59,20 @@ console.log(`align-check: this may take a while on first run (model load).`);
 
 const t0 = performance.now();
 let tokens;
+let failed = false;
 try {
   tokens = await aligner.align(audioPath, transcript, language ? { language } : undefined);
 } catch (err) {
   console.error(`align-check: FAILED — ${(err as Error).message}`);
-  process.exit(1);
+  failed = true;
+} finally {
+  // align() spins up a long-lived worker child; close it so this script can
+  // exit instead of hanging on the never-ending stdout read (mirrors how
+  // generate.ts tears the worker down). In `finally` so it runs on both the
+  // success and failure paths before we exit.
+  await aligner.close?.();
 }
+if (failed || !tokens) process.exit(1);
 const elapsedMs = Math.round(performance.now() - t0);
 
 console.log("");

@@ -345,6 +345,22 @@ function jsonLineReader(stream: ReadableStream<Uint8Array>) {
 // Homebrew/most-unix layout) and overridable via MOSS_TTS_FFMPEG_LIB for
 // nonstandard installs.
 function mossWorkerEnv(): Record<string, string | undefined> {
+  // DO NOT set PYTORCH_ALLOC_CONF=expandable_segments here. It looks like the
+  // obvious fix for the fragmentation OOM (a long-lived worker running many
+  // `model.generate()` calls of varying KV-cache size eventually can't find a
+  // contiguous block), but `expandable_segments` uses CUDA's virtual-memory
+  // API (cuMemCreate/cuMemMap) which is INCOMPATIBLE with WSL2's system-memory
+  // fallback — the spill-to-host-RAM mechanism MOSS depends on to fit its
+  // ~13.4 GB onto an 11 GB card (see methodology.md "Memory requirements").
+  // With expandable_segments on, MOSS fails at model *load* with a misleading
+  // `CUDA driver error: device not ready`; with the default allocator it loads
+  // and spills normally. Confirmed empirically on an RTX 2080 Ti / WSL2: same
+  // 10 GB free, the env var is the only difference between load-fail and
+  // load-ok. The fragmentation it was meant to fix is instead handled by the
+  // worker's per-segment `torch.cuda.empty_cache()` (moss_worker.py), and is
+  // far less likely now that the aligner runs on CPU and leaves MOSS the whole
+  // card. If a future non-WSL setup wants expandable_segments, set
+  // PYTORCH_ALLOC_CONF in the environment yourself — we no longer force it.
   const explicit = process.env.MOSS_TTS_FFMPEG_LIB;
   const ffmpegBin = Bun.which("ffmpeg");
   const libDir = explicit ?? (ffmpegBin ? join(dirname(dirname(ffmpegBin)), "lib") : null);

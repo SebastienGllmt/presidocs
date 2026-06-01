@@ -30,7 +30,9 @@
 # terminal, so model-load progress is still visible).
 
 import argparse
+import gc
 import json
+import os
 import sys
 
 # Capture the genuine stdout for the protocol, then redirect Python-level
@@ -71,14 +73,36 @@ def main():
         device = "cuda"
     else:
         device = "cpu"
-    # bf16 on CUDA so the ~1.7B model + ~1.6B audio tokenizer fit in modest
-    # VRAM (e.g. an 11 GB card); float32 would need ~13 GB and OOM. MPS/CPU
-    # keep float32, which is what those backends prefer.
+    # bf16 for the LM on CUDA (~6 GB vs ~12 GB float32). MPS/CPU keep float32,
+    # which is what those backends prefer.
     dtype = torch.bfloat16 if device == "cuda" else torch.float32
-    print(f"[moss-worker] device={device} dtype={dtype}", file=sys.stderr)
+
+    # Put the audio codec on its OWN device, defaulting to CPU when the LM is on
+    # CUDA. WHY: the codec loads in float32 at ~7.2 GB — the single biggest line
+    # item in MOSS's footprint — so LM (~6 GB) + codec on one 11 GB card totals
+    # ~13.4 GB and over-subscribes it. On a discrete GPU that forces a host-RAM
+    # spill that, under generation, thrashes catastrophically (measured 4.55
+    # s/token, ~0 GB free) and eventually wedges. Moving the codec to CPU leaves
+    # the LM alone on the GPU (~6.3 GB peak, ~4.4 GB free → no spill) and cut
+    # per-token time ~10× to 0.43 s in benchmarks. Crucially it's audio-neutral:
+    # decoding identical tokens on CPU vs GPU differs only at float epsilon
+    # (RMS diff −118 dBFS, correlation 1.0), so CPU-decoded segments mix with
+    # GPU-decoded ones with no re-render. The codec is only used to encode the
+    # reference clip and decode the output codes — not in the autoregressive
+    # loop — so running it on CPU costs ~0.6 s/segment, not the generation. On
+    # unified-memory backends (MPS) there's no separate VRAM ceiling to spill
+    # against, so the codec stays with the LM. Override via MOSS_TTS_CODEC_DEVICE.
+    # See methodology.md "Memory requirements" for the full benchmark table.
+    codec_device = os.environ.get(
+        "MOSS_TTS_CODEC_DEVICE", "cpu" if device == "cuda" else device
+    )
+    print(
+        f"[moss-worker] device={device} dtype={dtype} codec_device={codec_device}",
+        file=sys.stderr,
+    )
 
     processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
-    processor.audio_tokenizer = processor.audio_tokenizer.to(device)
+    processor.audio_tokenizer = processor.audio_tokenizer.to(codec_device)
 
     model = AutoModel.from_pretrained(
         args.model,
@@ -95,10 +119,18 @@ def main():
     # provider treats the worker as "still loading", not "wedged".
     _emit({"ready": True, "samplingRate": sampling_rate})
 
+    # Whether to bother with CUDA cache eviction between segments. CPU/MPS
+    # have their own allocators and don't suffer the same fragmentation
+    # pattern, so we only pay this cost on CUDA.
+    cuda_in_use = device == "cuda"
+
     for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
+        # Per-segment state we want to release on the way out, OOM or not.
+        # Declared here so the `finally` can `del` them unconditionally.
+        batch = input_ids = attention_mask = outputs = None
         try:
             req = json.loads(line)
             text = req["text"]
@@ -163,6 +195,18 @@ def main():
             _emit({"ok": True})
         except Exception as exc:  # one bad segment shouldn't kill the worker
             _emit({"ok": False, "error": str(exc)})
+        finally:
+            # Release this segment's heavy tensors before the next iteration
+            # so PyTorch's caching allocator can return them to CUDA. Without
+            # this the cached blocks accumulate as the KV cache grows/shrinks
+            # across differently-sized segments and eventually fragment past
+            # the point where a fresh generation can find a contiguous slab.
+            del batch, input_ids, attention_mask, outputs
+            if cuda_in_use:
+                import torch
+
+                gc.collect()
+                torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ import { join } from "node:path";
 import {
   createQwen3Aligner,
   forcedAligners,
-  _parseAlignerOutputForTests,
+  alignedTokensFromWorker,
 } from "./aligner.ts";
 import { asMs } from "../shared/time.ts";
 
@@ -121,21 +121,21 @@ test("createQwen3Aligner.align rejects a missing audio path early (no subprocess
   );
 });
 
-// --- align.py output parser --------------------------------------------------
+// --- worker token mapper -----------------------------------------------------
 //
-// The aligner test suite doesn't invoke align.py for real, so the parser is
-// validated against captured-shape strings. The format is "  S.SSS - E.EEE\ttext"
-// (printed by align.py with `:7.3f` and a literal tab).
+// The worker emits structured tokens (seconds + text) over JSON; the mapper
+// converts them to the pipeline's ms-based AlignedToken. The unit tests don't
+// spawn the worker (same posture as the MOSS tests) — they validate the pure
+// seconds→ms conversion, which is where the old stdout parser's rounding
+// behavior now lives.
 
-test("parser: extracts timing + text from align.py's printed format", () => {
-  const stdout = [
-    "  0.000 -   0.300\tHash",
-    "  0.300 -   0.700\tfunctions",
-    "  0.700 -   0.880\tare",
-    "  0.880 -   1.470\teverywhere.",
-    "", // trailing blank line
-  ].join("\n");
-  const tokens = _parseAlignerOutputForTests(stdout);
+test("mapper: converts worker tokens (seconds) to ms AlignedToken", () => {
+  const tokens = alignedTokensFromWorker([
+    { start: 0.0, end: 0.3, text: "Hash" },
+    { start: 0.3, end: 0.7, text: "functions" },
+    { start: 0.7, end: 0.88, text: "are" },
+    { start: 0.88, end: 1.47, text: "everywhere." },
+  ]);
   expect(tokens).toEqual([
     { text: "Hash", startMs: asMs(0), endMs: asMs(300) },
     { text: "functions", startMs: asMs(300), endMs: asMs(700) },
@@ -144,34 +144,23 @@ test("parser: extracts timing + text from align.py's printed format", () => {
   ]);
 });
 
-test("parser: ignores noise lines (torch warnings, progress bars, etc.)", () => {
-  const stdout = [
-    "Loading checkpoint shards: 100%|██████| 1/1 [00:00<00:00, 12.3it/s]",
-    "Some non-matching line of chatter",
-    "  0.000 -   0.300\tHello",
-    "another line with no - separator at all",
-    "  0.300 -   0.500\tworld",
-  ].join("\n");
-  const tokens = _parseAlignerOutputForTests(stdout);
-  expect(tokens.map((t) => t.text)).toEqual(["Hello", "world"]);
-});
-
-test("parser: handles multi-digit second values", () => {
-  const stdout = [" 12.500 -  13.250\tlong", "123.000 - 124.000\tposts"].join("\n");
-  const tokens = _parseAlignerOutputForTests(stdout);
+test("mapper: handles multi-digit second values", () => {
+  const tokens = alignedTokensFromWorker([
+    { start: 12.5, end: 13.25, text: "long" },
+    { start: 123.0, end: 124.0, text: "posts" },
+  ]);
   expect(tokens).toEqual([
     { text: "long", startMs: asMs(12500), endMs: asMs(13250) },
     { text: "posts", startMs: asMs(123000), endMs: asMs(124000) },
   ]);
 });
 
-test("parser: rounds sub-millisecond values rather than truncating", () => {
+test("mapper: rounds sub-millisecond values rather than truncating", () => {
   // 0.0005s → 1ms (rounded), not 0ms (floor)
-  const tokens = _parseAlignerOutputForTests("  0.0005 -   0.0015\tx");
+  const tokens = alignedTokensFromWorker([{ start: 0.0005, end: 0.0015, text: "x" }]);
   expect(tokens).toEqual([{ text: "x", startMs: asMs(1), endMs: asMs(2) }]);
 });
 
-test("parser: returns empty array for completely empty stdout", () => {
-  expect(_parseAlignerOutputForTests("")).toEqual([]);
-  expect(_parseAlignerOutputForTests("\n\n\n")).toEqual([]);
+test("mapper: returns empty array for no tokens", () => {
+  expect(alignedTokensFromWorker([])).toEqual([]);
 });
