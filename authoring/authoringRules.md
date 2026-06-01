@@ -12,7 +12,7 @@ reader feedback to one of their posts. Each post is one self-contained
   reaches that mark.
 - <script type="application/pls+xml"> blocks: PLS pronunciation
   lexicon for technical terms — used only by the offline audio
-  pipeline, not by readers.
+  pipeline, not by readers. Prefer adding to the global PLS over article-local one when it makes sense.
 - Infrastructure tags you must NOT touch: <meta name="author-email">,
   <link rel="stylesheet" href="../client/…">, <script type="module"
   src="../client/…">. These wire the post to the runtime and break
@@ -48,3 +48,21 @@ one section per thread, in this exact form:
 
 This is the ground truth of what you did: only threads you mark APPLIED
 get resolved.
+
+Per-post stylesheets (CSS authoring contract):
+
+- Wrap every per-post CSS file in `@layer post { … }`. This puts the
+  rules in the `post` cascade layer, which can shape the article body
+  (titles, paragraphs, prose links, figures, tables, callouts) but
+  won't reach engine-injected components — the author byline at the
+  top, the "Last updated" strip, the follow-CTA at the bottom, the
+  "Built with presidocs" attribution, or the per-heading copy-link
+  icon. Engine components live in `@layer engine.components`, declared
+  after `post` in `client/base.css`, so they win by ordering regardless
+  of selector specificity.
+
+- If a post genuinely wants to restyle an engine component, write the
+  rule *outside* `@layer post` — a plain unlayered block. Unlayered
+  rules beat every layer, so this is the deliberate override surface.
+  Use it sparingly; it's the path that lets one blog look different on
+  purpose, not the path that should kick in by accident.

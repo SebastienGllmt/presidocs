@@ -6,337 +6,404 @@
    page theme to the narration player — so a post that opted out of narration
    (no narrator.css link) silently lost `box-sizing: border-box`, the page
    background, and the design tokens. Keep anything page-global here, not in
-   narrator.css. */
+   narrator.css.
 
-:root {
-  --page-fg: #1f2328;
-  --page-fg-muted: #57606a;
-  --page-bg: #fafbfc;
-}
+   Cascade-layer order (declared once, here, because base.css is the first
+   stylesheet every post links — see post HTML head). Later layers win over
+   earlier layers, and unlayered rules win over every layer:
 
-* { box-sizing: border-box; }
+     engine.tokens      → :root design tokens + box-sizing reset. Lowest
+                          precedence so a post can override a token in its
+                          own layer without `!important`.
+     vendor             → third-party stylesheets (Shikwasa, …) routed
+                          through this layer via `@import "…" layer(vendor)`
+                          (see client/shikwasa-vendor.css). Lower than
+                          `engine.components` so our overrides win without
+                          having to chase the vendor's selector specificity.
+     engine.layout      → page-global html/body typography, scroll-behavior,
+                          .site-footer. Lower than `post` so a post that
+                          wants a different body font wins.
+     post               → every per-post stylesheet (figures/*.css) opts in
+                          via `@layer post { … }`. Article-body styling
+                          (titles, paragraphs, prose links, figures) lives
+                          here.
+     engine.components  → engine-injected UI that sits *inside* <article>:
+                          .post-meta, .byline*, .author-cta*, .engine-
+                          attribution*, .heading-link*; plus the player
+                          dock (narrator.css) and comments UI (comments.css)
+                          which override vendor defaults from this layer.
+                          Declared last so a post sheet scoped to its
+                          article class can't accidentally cascade onto
+                          these — the byline icons stay muted-gray, the
+                          follow-CTA stays neutral, the "Last updated" line
+                          stays in its calibrated slot.
 
-html, body {
-  margin: 0;
-  padding: 0;
-  background: var(--page-bg);
-  color: var(--page-fg);
-  font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-}
+   The escape hatch: a post that *deliberately* wants to restyle an engine
+   component writes an unlayered rule (no `@layer` wrapper). Unlayered beats
+   every layer regardless of specificity, so the override surface is
+   preserved — it just has to be explicit. The documented `.engine-
+   attribution { display: none }` opt-out still works either way (collapsing
+   the element wins over color/margin no matter the cascade resolution). */
 
-/* Smooth-scroll any hash navigation (in-page deep-links into headings,
-   chapter pills jumping by id, etc.) site-wide. Respects the user's
-   prefers-reduced-motion via @media below — the browser honors that
-   automatically for `scroll-behavior: smooth` in modern engines, but the
-   explicit override keeps it consistent across older Safari builds. */
-html { scroll-behavior: smooth; }
-@media (prefers-reduced-motion: reduce) {
-  html { scroll-behavior: auto; }
-}
+@layer engine.tokens, vendor, engine.layout, post, engine.components;
 
-/* Article meta strip (client/byline.ts → buildPostMeta). Sits directly under
-   the <h1> title — the standard "date / reading time / mode toggle" slot on
-   blogs. Currently shows "Last updated <date>"; later it'll be the home for
-   the slideshow-mode toggle and any other consumption-mode controls —
-   anything that's *about the article*, distinct from the author block.
-   Snugged up to the title with a 0 top margin so it reads as a subtitle line
-   rather than a floating block. */
-.post-meta {
-  font-size: .75rem;
-  color: var(--page-fg-muted);
-  /* Negative top margin pulls the strip up tight against the title so it reads
-     as a subtitle line rather than a separate paragraph block. */
-  margin: -24px 0 .25rem;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: .4em;
-  opacity: 0.75;
-}
-/* Fade the "Last updated" label so the date itself is the line's focal point. */
-.post-meta-label {
-  opacity: .85;
-}
+@layer engine.tokens {
+  :root {
+    --page-fg: #1f2328;
+    --page-fg-muted: #57606a;
+    --page-bg: #fafbfc;
+  }
 
-/* Author byline (client/byline.ts). Lives in base.css — not narrator.css —
-   because it must appear on every post, including narration opt-out posts that
-   never link narrator.css (same reasoning that moved the page-global layer
-   here). The element is injected by JS, so these rules style markup the static
-   HTML doesn't contain. */
-.byline {
-  display: flex;
-  align-items: center;
-  gap: .75rem;
-  margin: 1rem 0 1.5rem;
-}
-/* When post-meta sits above the byline, its margin-bottom already provides the
-   gap, so the byline only needs a thin top margin (otherwise the two stack
-   with awkward space between them). */
-.post-meta + .byline {
-  margin-top: .25rem;
-}
-.byline-avatar {
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  object-fit: cover;
-  flex: none;
-}
-.byline-text {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.3;
-}
-.byline-name {
-  font-weight: 600;
-}
-.byline-links {
-  display: flex;
-  align-items: center;
-  gap: .55rem;
-  font-size: .9rem;
-}
-.byline-link {
-  color: var(--page-fg-muted);
-  text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-  line-height: 1;
-}
-.byline-link:hover {
-  color: var(--page-fg);
-  text-decoration: underline;
-}
-/* The icon variant of a byline-link has no visible text — only an inline SVG
-   with aria-label on the anchor. Strip the hover underline so an empty text
-   node doesn't paint a stray rule. */
-.byline-link:has(> .byline-icon):hover {
-  text-decoration: none;
-}
-.byline-icon {
-  width: 1.1em;
-  height: 1.1em;
-  fill: currentColor;
-  display: block;
+  * { box-sizing: border-box; }
 }
 
-/* Follow-the-author CTA (client/byline.ts → buildFollowCta). Appended at the
-   end of every article that has at least one follow link. Card-styled so it
-   reads as a deliberate call-to-action distinct from the identity byline at
-   the top — larger avatar, headline, and link row. Shares the link-icon SVG
-   shape with the byline via a parallel `author-cta-*` class surface. */
-.author-cta {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  margin: 3rem 0 1.5rem;
-  padding: 1.25rem 1.5rem;
-  border: 1px solid rgba(31, 35, 40, 0.12);
-  border-radius: 12px;
-  background: #fff;
-}
-.author-cta-avatar {
-  width: 72px;
-  height: 72px;
-  border-radius: 50%;
-  object-fit: cover;
-  flex: none;
-}
-.author-cta-text {
-  display: flex;
-  flex-direction: column;
-  gap: .2rem;
-  min-width: 0;
-}
-.author-cta-headline {
-  font-size: 1.05rem;
-  font-weight: 600;
-  color: var(--page-fg);
-}
-.author-cta-sub {
-  font-size: .95rem;
-  color: var(--page-fg-muted);
-}
-.author-cta-name {
-  color: var(--page-fg);
-  font-weight: 600;
-}
-.author-cta-links {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: .75rem;
-  margin-top: .5rem;
-  font-size: 1rem;
-}
-.author-cta-link {
-  color: var(--page-fg-muted);
-  text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-  line-height: 1;
-}
-.author-cta-link:hover {
-  color: var(--page-fg);
-  text-decoration: underline;
-}
-/* Icon-only follow links: strip the hover underline (same reason as the
-   byline — no visible text, only an SVG with aria-label on the anchor). */
-.author-cta-link:has(> .author-cta-icon):hover {
-  text-decoration: none;
-}
-.author-cta-icon {
-  width: 1.35em;
-  height: 1.35em;
-  fill: currentColor;
-  display: block;
-}
+@layer engine.layout {
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--page-bg);
+    color: var(--page-fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
 
-/* Engine attribution (client/byline.ts → buildEngineAttribution). A subtle
-   "Built with presidocs" line, appended after the follow-CTA. Deliberately
-   muted so it never competes visually with the CTA: small font, page-fg-muted
-   color, no border or card framing. A downstream blog that wants it gone can
-   hide it with `display: none` on this selector. */
-.engine-attribution {
-  margin: 1.5rem 0 0;
-  text-align: center;
-  font-size: .8rem;
-  color: var(--page-fg-muted);
-}
-.engine-attribution-link {
-  color: inherit;
-  text-decoration: underline;
-  text-decoration-color: rgba(0, 0, 0, 0.2);
-  text-underline-offset: 2px;
-}
-.engine-attribution-link:hover {
-  color: var(--page-fg);
-  text-decoration-color: currentColor;
-}
+  /* Smooth-scroll any hash navigation (in-page deep-links into headings,
+     chapter pills jumping by id, etc.) site-wide. Respects the user's
+     prefers-reduced-motion via @media below — the browser honors that
+     automatically for `scroll-behavior: smooth` in modern engines, but the
+     explicit override keeps it consistent across older Safari builds. */
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+  }
 
-/* Heading deep-link affordance (client/headerLinks.ts). A small link icon
-   sits to the right of every <h2>/<h3>/<h4> in the article, hidden until the
-   user hovers (or keyboard-focuses) the heading or the icon itself. Click
-   copies the absolute URL with #id to the clipboard and briefly swaps the
-   icon to a checkmark; the native <a href="#id"> still smooth-scrolls + lets
-   right-click → "Copy link address" work. */
+  /* Article container + default body typography. Lives in base.css (not
+     narrator.css) so every post gets the same column width and heading
+     rhythm regardless of whether it loads the narration player — what's
+     "shared across all posts" is owned at the page-global layer, not
+     duplicated per narration mode. The bottom padding that reserves room
+     for the floating player stays in narrator.css under engine.components,
+     since only narration posts need it.
 
-/* When a hash deep-links into a heading, keep it clear of the viewport top
-   so the heading isn't flush against the edge after the smooth-scroll lands.
-   Applies to every heading the module touches, plus the post title. */
-article h1, article h2, article h3, article h4, article h5, article h6 {
-  scroll-margin-top: 1rem;
-}
+     A post can rebrand any of this from `@layer post` (post is declared
+     after engine.layout, so a post sheet that wraps `.<slug> h1 { … }` in
+     `@layer post` wins). The :has() collapse for the post-meta sits in
+     engine.components and beats both. */
+  article {
+    max-width: 768px;
+    margin: 64px auto 0;
+    padding: 0 24px;
+  }
+  article h1 { font-size: 2rem; margin: 0 0 12px; }
+  article h2 { margin: 2em 0 0.5em; }
+  article h3 { margin: 1.5em 0 0.4em; }
+  article .lede { font-size: 1.15rem; color: var(--page-fg-muted); }
+  article code { background: #f3f4f6; padding: 1px 5px; border-radius: 4px; }
 
-/* The heading is the positioning context for its absolutely-positioned link
-   icon. We keep it `static` by default (so the icon flows in the text on
-   small screens) and switch to `relative` only at desktop widths where
-   there's gutter space for an absolute-positioned icon. */
-article h2, article h3, article h4 {
-  position: relative;
-}
-
-.heading-link {
-  /* Sit in the left gutter, just outside the heading's left edge — the
-     GitHub / Docusaurus convention readers already know. `right: 100%`
-     pins the icon's right edge to the heading's left edge; the small
-     `margin-right` is the gap between icon and text. */
-  position: absolute;
-  top: 0;
-  right: 100%;
-  display: inline-flex;
-  align-items: center;
-  height: 1.2em;
-  margin-top: 0.15em;
-  margin-right: 0.25rem;
-  padding: 0.15rem 0.3rem;
-  border-radius: 4px;
-  color: var(--page-fg-muted);
-  text-decoration: none;
-  opacity: 0;
-  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
-}
-/* Reveal on hover anywhere over the heading, on hover over the icon itself,
-   and on keyboard focus of the icon (so a Tab user can find it). */
-article h2:hover > .heading-link,
-article h3:hover > .heading-link,
-article h4:hover > .heading-link,
-.heading-link:hover,
-.heading-link:focus-visible {
-  opacity: 1;
-}
-.heading-link:hover {
-  color: var(--page-fg);
-  background: rgba(31, 35, 40, 0.06);
-}
-.heading-link:focus-visible {
-  outline: 2px solid var(--page-fg-muted);
-  outline-offset: 2px;
-}
-
-/* Icon stack — both icons live in the same wrap and we cross-fade by
-   toggling .heading-link-copied on the anchor. No layout shift between
-   states because both occupy the same grid cell. */
-.heading-link-icon-wrap {
-  position: relative;
-  display: inline-flex;
-  width: 1em;
-  height: 1em;
-}
-.heading-link-icon {
-  position: absolute;
-  inset: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: opacity 100ms ease;
-}
-.heading-link-icon-default { opacity: 1; }
-.heading-link-icon-copied { opacity: 0; color: #1a7f37; }
-.heading-link.heading-link-copied .heading-link-icon-default { opacity: 0; }
-.heading-link.heading-link-copied .heading-link-icon-copied { opacity: 1; }
-.heading-link-svg {
-  width: 0.7em;
-  height: 0.7em;
-  fill: currentColor;
-  display: block;
-}
-
-/* On touch / no-hover devices the hover trigger never fires, so the icon
-   would never appear. Make it always-visible (and slightly dimmed) so the
-   affordance is reachable from a tap — and switch to inline-after-text
-   positioning, because the absolute `right: 100%` desktop placement sits
-   the icon in the left gutter, which clips off-screen on narrow mobile
-   viewports where the article hugs the viewport edge. */
-@media (hover: none) {
-  .heading-link {
-    position: static;
-    margin: 0 0 0 0.4rem;
-    vertical-align: middle;
-    opacity: 0.55;
+  /* Site footer — injected at build time by shared/injectFooter.ts on every
+     served page, holds the privacy-policy link required by GDPR / CalOPPA /
+     APPI. Mirrored in landing.css so the landing/legal pages (which don't
+     link base.css) get the same look. Kept minimal so it never competes with
+     article content for attention. */
+  .site-footer {
+    max-width: 768px;
+    margin: 4rem auto 2rem;
+    padding: 1rem 24px;
+    border-top: 1px solid rgba(31, 35, 40, 0.08);
+    font-size: .85rem;
+    color: var(--page-fg-muted);
+    text-align: center;
+  }
+  .site-footer a {
+    color: var(--page-fg-muted);
+    text-decoration: none;
+    margin: 0 .5rem;
+  }
+  .site-footer a:hover {
+    color: var(--page-fg);
+    text-decoration: underline;
   }
 }
 
-/* Site footer — injected at build time by shared/injectFooter.ts on every
-   served page, holds the privacy-policy link required by GDPR / CalOPPA /
-   APPI. Mirrored in landing.css so the landing/legal pages (which don't
-   link base.css) get the same look. Kept minimal so it never competes with
-   article content for attention. */
-.site-footer {
-  max-width: 720px;
-  margin: 4rem auto 2rem;
-  padding: 1rem 24px;
-  border-top: 1px solid rgba(31, 35, 40, 0.08);
-  font-size: .85rem;
-  color: var(--page-fg-muted);
-  text-align: center;
-}
-.site-footer a {
-  color: var(--page-fg-muted);
-  text-decoration: none;
-  margin: 0 .5rem;
-}
-.site-footer a:hover {
-  color: var(--page-fg);
-  text-decoration: underline;
+@layer engine.components {
+  /* Article meta strip (client/byline.ts → buildPostMeta). Sits directly under
+     the <h1> title — the standard "date / reading time / mode toggle" slot on
+     blogs. Currently shows "Last updated <date>"; later it'll be the home for
+     the slideshow-mode toggle and any other consumption-mode controls —
+     anything that's *about the article*, distinct from the author block.
+
+     The -24px top margin pulls the strip up against the title so it reads as
+     a subtitle line rather than a separate paragraph block. The constant
+     works because engine.layout owns the default h1 margin (`0 0 12px`), so
+     the calibration holds across every post — no per-post h1 sizing can
+     shift this out of alignment without the post also opting into a
+     custom-margin override. */
+  .post-meta {
+    font-size: .75rem;
+    color: var(--page-fg-muted);
+    margin: -24px .25rem 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .4em;
+    opacity: 0.75;
+  }
+  /* Fade the "Last updated" label so the date itself is the line's focal point. */
+  .post-meta-label {
+    opacity: .85;
+  }
+
+  /* Author byline (client/byline.ts). Lives in base.css — not narrator.css —
+     because it must appear on every post, including narration opt-out posts that
+     never link narrator.css (same reasoning that moved the page-global layer
+     here). The element is injected by JS, so these rules style markup the static
+     HTML doesn't contain. */
+  .byline {
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+    margin: 1rem 0 1.5rem;
+  }
+  .byline-avatar {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex: none;
+  }
+  .byline-text {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.3;
+  }
+  .byline-name {
+    font-weight: 600;
+  }
+  .byline-links {
+    display: flex;
+    align-items: center;
+    gap: .55rem;
+    font-size: .9rem;
+  }
+  .byline-link {
+    color: var(--page-fg-muted);
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    line-height: 1;
+  }
+  .byline-link:hover {
+    color: var(--page-fg);
+    text-decoration: underline;
+  }
+  /* The icon variant of a byline-link has no visible text — only an inline SVG
+     with aria-label on the anchor. Strip the hover underline so an empty text
+     node doesn't paint a stray rule. */
+  .byline-link:has(> .byline-icon):hover {
+    text-decoration: none;
+  }
+  .byline-icon {
+    width: 1.1em;
+    height: 1.1em;
+    fill: currentColor;
+    display: block;
+  }
+
+  /* Follow-the-author CTA (client/byline.ts → buildFollowCta). Appended at the
+     end of every article that has at least one follow link. Card-styled so it
+     reads as a deliberate call-to-action distinct from the identity byline at
+     the top — larger avatar, headline, and link row. Shares the link-icon SVG
+     shape with the byline via a parallel `author-cta-*` class surface. */
+  .author-cta {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin: 3rem 0 1.5rem;
+    padding: 1.25rem 1.5rem;
+    border: 1px solid rgba(31, 35, 40, 0.12);
+    border-radius: 12px;
+    background: #fff;
+  }
+  .author-cta-avatar {
+    width: 72px;
+    height: 72px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex: none;
+  }
+  .author-cta-text {
+    display: flex;
+    flex-direction: column;
+    gap: .2rem;
+    min-width: 0;
+  }
+  .author-cta-headline {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--page-fg);
+  }
+  .author-cta-sub {
+    font-size: .95rem;
+    color: var(--page-fg-muted);
+  }
+  .author-cta-name {
+    color: var(--page-fg);
+    font-weight: 600;
+  }
+  .author-cta-links {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: .75rem;
+    margin-top: .5rem;
+    font-size: 1rem;
+  }
+  .author-cta-link {
+    color: var(--page-fg-muted);
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    line-height: 1;
+  }
+  .author-cta-link:hover {
+    color: var(--page-fg);
+    text-decoration: underline;
+  }
+  /* Icon-only follow links: strip the hover underline (same reason as the
+     byline — no visible text, only an SVG with aria-label on the anchor). */
+  .author-cta-link:has(> .author-cta-icon):hover {
+    text-decoration: none;
+  }
+  .author-cta-icon {
+    width: 1.35em;
+    height: 1.35em;
+    fill: currentColor;
+    display: block;
+  }
+
+  /* Engine attribution (client/byline.ts → buildEngineAttribution). A subtle
+     "Built with presidocs" line, appended after the follow-CTA. Deliberately
+     muted so it never competes visually with the CTA: small font, page-fg-muted
+     color, no border or card framing. A downstream blog that wants it gone can
+     hide it with `display: none` on this selector — that opt-out still works
+     across the cascade-layer fence because `display: none` collapses the
+     element regardless of other property resolution. */
+  .engine-attribution {
+    margin: 1.5rem 0 0;
+    text-align: center;
+    font-size: .8rem;
+    color: var(--page-fg-muted);
+  }
+  .engine-attribution-link {
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-color: rgba(0, 0, 0, 0.2);
+    text-underline-offset: 2px;
+  }
+  .engine-attribution-link:hover {
+    color: var(--page-fg);
+    text-decoration-color: currentColor;
+  }
+
+  /* Heading deep-link affordance (client/headerLinks.ts). A small link icon
+     sits to the right of every <h2>/<h3>/<h4> in the article, hidden until the
+     user hovers (or keyboard-focuses) the heading or the icon itself. Click
+     copies the absolute URL with #id to the clipboard and briefly swaps the
+     icon to a checkmark; the native <a href="#id"> still smooth-scrolls + lets
+     right-click → "Copy link address" work. */
+
+  /* When a hash deep-links into a heading, keep it clear of the viewport top
+     so the heading isn't flush against the edge after the smooth-scroll lands.
+     Applies to every heading the module touches, plus the post title. */
+  article h1, article h2, article h3, article h4, article h5, article h6 {
+    scroll-margin-top: 1rem;
+  }
+
+  /* The heading is the positioning context for its absolutely-positioned link
+     icon. We keep it `static` by default (so the icon flows in the text on
+     small screens) and switch to `relative` only at desktop widths where
+     there's gutter space for an absolute-positioned icon. */
+  article h2, article h3, article h4 {
+    position: relative;
+  }
+
+  .heading-link {
+    /* Sit in the left gutter, just outside the heading's left edge — the
+       GitHub / Docusaurus convention readers already know. `right: 100%`
+       pins the icon's right edge to the heading's left edge; the small
+       `margin-right` is the gap between icon and text. */
+    position: absolute;
+    top: 0;
+    right: 100%;
+    display: inline-flex;
+    align-items: center;
+    height: 1.2em;
+    margin-top: 0.15em;
+    margin-right: 0.25rem;
+    padding: 0.15rem 0.3rem;
+    border-radius: 4px;
+    color: var(--page-fg-muted);
+    text-decoration: none;
+    opacity: 0;
+    transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+  }
+  /* Reveal on hover anywhere over the heading, on hover over the icon itself,
+     and on keyboard focus of the icon (so a Tab user can find it). */
+  article h2:hover > .heading-link,
+  article h3:hover > .heading-link,
+  article h4:hover > .heading-link,
+  .heading-link:hover,
+  .heading-link:focus-visible {
+    opacity: 1;
+  }
+  .heading-link:hover {
+    color: var(--page-fg);
+    background: rgba(31, 35, 40, 0.06);
+  }
+  .heading-link:focus-visible {
+    outline: 2px solid var(--page-fg-muted);
+    outline-offset: 2px;
+  }
+
+  /* Icon stack — both icons live in the same wrap and we cross-fade by
+     toggling .heading-link-copied on the anchor. No layout shift between
+     states because both occupy the same grid cell. */
+  .heading-link-icon-wrap {
+    position: relative;
+    display: inline-flex;
+    width: 1em;
+    height: 1em;
+  }
+  .heading-link-icon {
+    position: absolute;
+    inset: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 100ms ease;
+  }
+  .heading-link-icon-default { opacity: 1; }
+  .heading-link-icon-copied { opacity: 0; color: #1a7f37; }
+  .heading-link.heading-link-copied .heading-link-icon-default { opacity: 0; }
+  .heading-link.heading-link-copied .heading-link-icon-copied { opacity: 1; }
+  .heading-link-svg {
+    width: 0.7em;
+    height: 0.7em;
+    fill: currentColor;
+    display: block;
+  }
+
+  /* On touch / no-hover devices the hover trigger never fires, so the icon
+     would never appear. Make it always-visible (and slightly dimmed) so the
+     affordance is reachable from a tap — and switch to inline-after-text
+     positioning, because the absolute `right: 100%` desktop placement sits
+     the icon in the left gutter, which clips off-screen on narrow mobile
+     viewports where the article hugs the viewport edge. */
+  @media (hover: none) {
+    .heading-link {
+      position: static;
+      margin: 0 0 0 0.4rem;
+      vertical-align: middle;
+      opacity: 0.55;
+    }
+  }
 }

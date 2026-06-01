@@ -2,8 +2,11 @@
    spans, graphic trigger. Visual tokens piggyback on narrator.css's
    palette where it makes sense; we add a soft-blue highlight for
    commented text (distinct from the orange narration highlight so the
-   two are visually separable when both apply). */
+   two are visually separable when both apply). Wrapped in
+   `@layer engine.components` so it participates in the cascade-layer
+   ordering — see base.css header for the layer contract. */
 
+@layer engine.components {
 :root {
   --cmt-bg: #ffffff;
   --cmt-fg: #1f2328;
@@ -825,3 +828,5 @@ body.cmt-highlights-hidden .cmt-action-bar { display: none; }
      short screens. Push it above the popover when both are visible. */
   .cmt-action-bar { z-index: calc(var(--cmt-z-card) + 1); }
 }
+
+} /* @layer engine.components */

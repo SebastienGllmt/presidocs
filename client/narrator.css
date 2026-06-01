@@ -1,6 +1,13 @@
-/* Narration player + default-post typography. The page-global base layer
-   (box-sizing reset, --page-* tokens, html/body theme) lives in base.css so
-   it survives on posts that don't load this file (see base.css header). */
+/* Narration player + narration-specific post styling. The page-global base
+   layer (box-sizing reset, --page-* tokens, html/body theme, article box and
+   default heading typography) lives in base.css so every post — narration or
+   opt-out — shares those defaults. This file owns the things only a narration
+   post needs: the player dock, the chapter strip, the .narration-active
+   highlight, and the bottom-padding reservation that keeps the article's last
+   block clear of the floating player. Wrapped in `@layer engine.components`
+   so it participates in the engine's cascade-layer ordering — see base.css
+   header for the layer contract. */
+@layer engine.components {
 :root {
   --narration-bg: rgba(255, 213, 79, 0.18);
   --narration-border: rgba(241, 145, 21, 0.55);
@@ -10,18 +17,10 @@
   --accent: #58a6ff;
 }
 
-article {
-  max-width: 720px;
-  /* Bottom padding leaves room for the fixed Shikwasa player. */
-  margin: 64px auto 0;
-  padding: 0 24px 200px;
-}
-
-article h1 { font-size: 2rem; margin: 0 0 12px; }
-article h2 { margin: 2em 0 0.5em; }
-article h3 { margin: 1.5em 0 0.4em; }
-article .lede { font-size: 1.15rem; color: var(--page-fg-muted); }
-article code { background: #f3f4f6; padding: 1px 5px; border-radius: 4px; }
+/* Bottom padding leaves room for the fixed Shikwasa player. Engine.components
+   so a post can't shrink it away by accident, and only present on narration
+   posts (this file isn't loaded on opt-outs). */
+article { padding-bottom: 200px; }
 
 /* Section dividers. The plain `<hr class="section-divider" />` is the older
    unadorned form; the labeled variant (a `<div>` so it can hold text) draws
@@ -162,7 +161,9 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   bottom: 18px;
   left: 50%;
   transform: translateX(-50%);
-  width: min(720px, calc(100% - 24px));
+  /* Matches the engine.layout article max-width so the dock visually aligns
+     with the article column. */
+  width: min(768px, calc(100% - 24px));
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -1118,3 +1119,5 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   .spoken-segment { transition: none; }
   .spoken-segment.anchor-flash { animation: none; }
 }
+
+} /* @layer engine.components */

@@ -11,7 +11,9 @@
 // Every time field is integer milliseconds; we convert to seconds only at
 // the audio element + Shikwasa boundary (their APIs are second-based).
 
-import "shikwasa/dist/style.css";
+// Route Shikwasa's stylesheet through the `vendor` cascade layer (declared
+// in base.css) — see shikwasa-vendor.css for the why.
+import "./shikwasa-vendor.css";
 import { Player, Chapter } from "shikwasa";
 import { asMs, msToSeconds, secondsToMs, asSeconds, type Milliseconds } from "../shared/time.ts";
 import { computeActiveMark, findActiveWord } from "../shared/narratorTiming.ts";

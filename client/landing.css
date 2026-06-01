@@ -38,7 +38,7 @@ p { color: #57606a; }
    typography but widens the column slightly (more body text than the
    landing list) and tightens vertical rhythm for headings. */
 main.legal {
-  max-width: 720px;
+  max-width: 768px;
   margin: 6vh auto 0;
 }
 main.legal h1 { margin-bottom: 4px; }
@@ -78,7 +78,7 @@ main.legal a { color: #0969da; }
    privacy-policy link required by GDPR / CalOPPA / APPI guidance. Kept
    minimal so it never competes with content for attention. */
 .site-footer {
-  max-width: 720px;
+  max-width: 768px;
   margin: 4rem auto 2rem;
   padding: 1rem 24px;
   border-top: 1px solid #e1e4e8;
