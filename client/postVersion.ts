@@ -7,6 +7,8 @@
 // we render a banner so the user understands why their old comments
 // might appear outdated or have been resolved.
 
+import { parseProblem } from "../shared/problemDetails.ts";
+
 export type PostVersionEntry = {
   hash: string;
   builtAt: string; // ISO 8601
@@ -36,11 +38,18 @@ export async function fetchPostVersion(
   try {
     const res = await fetch(
       `/post-version?post=${encodeURIComponent(postPath)}`,
-      { credentials: "same-origin" },
+      {
+        credentials: "same-origin",
+        headers: { Accept: "application/json, application/problem+json" },
+      },
     );
     if (res.status === 404) return null;
     if (!res.ok) {
-      console.warn(`fetchPostVersion: ${res.status} ${res.statusText}`);
+      const p = await parseProblem(res);
+      console.warn(
+        `fetchPostVersion: ${res.status}${p ? ` ${p.type}` : ""}` +
+          (p?.detail ? ` — ${p.detail}` : ""),
+      );
       return null;
     }
     return (await res.json()) as PostVersionResponse;

@@ -23,7 +23,54 @@
 // flag is a politeness measure, not a correctness one.
 
 import { SEED_CHANGE_HASH, type CommentStore } from "./commentsStore.ts";
-import { getChange, listChanges, putChange } from "./commentsApi.ts";
+import {
+  ApiError,
+  MAX_RETRY_AFTER_MS,
+  getChange,
+  listChanges,
+  putChange,
+} from "./commentsApi.ts";
+
+// Default backoff window when the server emits a 429 without a
+// Retry-After header or a `retryAfter` JSON extension. Matches our
+// Worker's rate-limiter window (wrangler.toml: 60s).
+const DEFAULT_RATE_LIMIT_MS = 60_000;
+
+function formatErr(err: unknown): string {
+  if (err instanceof ApiError) {
+    return `${err.status}${err.problem?.type ? ` ${err.problem.type}` : ""}` +
+      (err.problem?.detail ? ` — ${err.problem.detail}` : "");
+  }
+  return String(err);
+}
+
+// Detect a rate-limit response from either our Worker OR the
+// Cloudflare edge (e.g. 1015). Two signals, in priority order:
+//   1. HTTP status 429 — the universal wire-level rate-limit code.
+//      Backoff window comes from the standard Retry-After header
+//      (parsed in ApiError); falls back to the JSON `retryAfter`
+//      extension our Worker emits, then to the default window.
+//   2. Belt-and-suspenders: any non-429 carrying a Retry-After
+//      header still earns the backoff (some intermediaries proxy
+//      this header on other statuses).
+// Returns the milliseconds to back off, or null if not rate-limited.
+function rateLimitBackoffMs(err: ApiError): number | null {
+  // ApiError.retryAfterMs is already clamped to [0, MAX_RETRY_AFTER_MS]
+  // by parseRetryAfter. The body-fallback branch below applies the
+  // same cap directly — a hostile server emitting
+  // `{ "retryAfter": 9e15 }` must not wedge the client (see commentsApi
+  // header comment on MAX_RETRY_AFTER_MS).
+  if (err.status === 429) {
+    if (err.retryAfterMs !== null) return err.retryAfterMs;
+    const fromBody = err.problem?.retryAfter;
+    if (typeof fromBody === "number" && Number.isFinite(fromBody)) {
+      return Math.min(Math.max(0, fromBody) * 1000, MAX_RETRY_AFTER_MS);
+    }
+    return DEFAULT_RATE_LIMIT_MS;
+  }
+  if (err.retryAfterMs !== null) return err.retryAfterMs;
+  return null;
+}
 
 export class CommentSync {
   // Hashes the server is known to have for *our* user. Starts with
@@ -36,6 +83,14 @@ export class CommentSync {
   // one finishes if anything new was added meanwhile.
   private pushing = false;
   private dirty = false;
+
+  // Rate-limit backoff: when the server returns 429 with the
+  // rate-limit/exceeded problem type, suppress pushes until this
+  // monotonic-ms timestamp. Local mutations still land in the
+  // Automerge doc — they just don't burn rate-limit budget on the
+  // wire. When the window expires the next requestSync() flushes the
+  // accumulated set.
+  private rateLimitedUntilMs = 0;
 
   constructor(
     private readonly store: CommentStore,
@@ -51,7 +106,7 @@ export class CommentSync {
     try {
       remote = await listChanges(this.postPath, this.userId);
     } catch (err) {
-      console.warn("comment hydrate (listChanges) failed:", err);
+      console.warn(`comment hydrate (listChanges) failed: ${formatErr(err)}`);
       return;
     }
     const remoteHashes = new Set(remote.map((e) => e.hash));
@@ -80,8 +135,21 @@ export class CommentSync {
       this.dirty = true;
       return;
     }
+    // Honour an in-flight rate-limit window: defer the push to when
+    // the window expires. The local change is already in the doc and
+    // will get picked up by the catch-up flush.
+    const now = Date.now();
+    if (now < this.rateLimitedUntilMs) {
+      this.dirty = true;
+      const wait = this.rateLimitedUntilMs - now;
+      setTimeout(() => {
+        this.dirty = false;
+        this.requestSync();
+      }, wait);
+      return;
+    }
     void this.pushLoop().catch((err) => {
-      console.warn("comment sync push failed:", err);
+      console.warn(`comment sync push failed: ${formatErr(err)}`);
     });
   }
 
@@ -105,11 +173,38 @@ export class CommentSync {
     if (toPush.length === 0) return;
     // Parallel upload — each change is independent and the server is
     // happy to receive concurrent writes (different keys).
-    await Promise.all(
+    const results = await Promise.allSettled(
       toPush.map(async (c) => {
         await putChange(this.postPath, this.userId, c.hash, c.bytes);
         this.serverKnownHashes.add(c.hash);
       }),
     );
+    // Hoist any rate-limit response into the backoff window. One
+    // rate-limit hit in a batch poisons the whole window — we treat
+    // the limiter's signal (whichever layer emitted it) as
+    // authoritative for "the user is over budget right now".
+    for (const r of results) {
+      if (r.status !== "rejected") continue;
+      const err = r.reason;
+      if (!(err instanceof ApiError)) continue;
+      const backoffMs = rateLimitBackoffMs(err);
+      if (backoffMs !== null) {
+        this.rateLimitedUntilMs = Math.max(
+          this.rateLimitedUntilMs,
+          Date.now() + backoffMs,
+        );
+        console.warn(
+          `comment sync rate-limited; backing off ${Math.ceil(backoffMs / 1000)}s ` +
+            `(${formatErr(err)})`,
+        );
+        // Don't re-throw — the unpushed change is still in the doc
+        // and will retry once the window expires.
+        return;
+      }
+    }
+    // Non-rate-limit rejections propagate to the pushLoop catch().
+    for (const r of results) {
+      if (r.status === "rejected") throw r.reason;
+    }
   }
 }

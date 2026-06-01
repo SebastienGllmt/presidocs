@@ -3,6 +3,12 @@
 //   GET /resolutions?post=X                — list entries     (any user)
 //   GET /resolutions?post=X&thread=T       — fetch one body   (any user)
 //   PUT /resolutions?post=X&thread=T       — write one body   (author only)
+//
+// Errors are RFC 9457 problem+json; see commentsApi.ts for the
+// ApiError contract.
+
+import { ApiError } from "./commentsApi.ts";
+import { parseProblem } from "../shared/problemDetails.ts";
 
 export type ResolutionListEntry = {
   threadId: string;
@@ -19,10 +25,16 @@ export type ResolutionEnvelope = {
   resolverName: string; // for display ("Resolved by …")
 };
 
+const ACCEPT = "application/json, application/problem+json";
+
 function resolutionsUrl(post: string, thread?: string): string {
   const params = new URLSearchParams({ post });
   if (thread !== undefined) params.set("thread", thread);
   return `/resolutions?${params.toString()}`;
+}
+
+async function apiError(res: Response, op: string): Promise<ApiError> {
+  return new ApiError(res.status, await parseProblem(res), op);
 }
 
 export async function listResolutions(
@@ -30,10 +42,9 @@ export async function listResolutions(
 ): Promise<ResolutionListEntry[]> {
   const res = await fetch(resolutionsUrl(post), {
     credentials: "same-origin",
+    headers: { Accept: ACCEPT },
   });
-  if (!res.ok) {
-    throw new Error(`listResolutions failed: ${res.status} ${res.statusText}`);
-  }
+  if (!res.ok) throw await apiError(res, "listResolutions");
   return (await res.json()) as ResolutionListEntry[];
 }
 
@@ -43,11 +54,10 @@ export async function getResolution(
 ): Promise<ResolutionEnvelope | null> {
   const res = await fetch(resolutionsUrl(post, threadId), {
     credentials: "same-origin",
+    headers: { Accept: ACCEPT },
   });
   if (res.status === 404) return null;
-  if (!res.ok) {
-    throw new Error(`getResolution failed: ${res.status} ${res.statusText}`);
-  }
+  if (!res.ok) throw await apiError(res, "getResolution");
   return (await res.json()) as ResolutionEnvelope;
 }
 
@@ -59,10 +69,8 @@ export async function putResolution(
   const res = await fetch(resolutionsUrl(post, threadId), {
     method: "PUT",
     credentials: "same-origin",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", Accept: ACCEPT },
     body: JSON.stringify(envelope),
   });
-  if (!res.ok) {
-    throw new Error(`putResolution failed: ${res.status} ${res.statusText}`);
-  }
+  if (!res.ok) throw await apiError(res, "putResolution");
 }

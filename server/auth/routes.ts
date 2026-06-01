@@ -43,6 +43,22 @@ import {
   clearCookie,
   type CookieOpts,
 } from "./cookies.ts";
+import { problem } from "../../shared/problemDetails.ts";
+
+// RFC 6749 §4.1.2.1 enumerates the legal `error` query values for the
+// authorization-endpoint redirect. Reflecting the raw query value back
+// in the problem-details body (even JSON-encoded) is attacker-
+// controlled input; allow-list to the spec'd set and collapse the
+// long tail to "unknown". Per RFC 9457 §5.
+const RFC6749_ERROR_CODES = new Set([
+  "invalid_request",
+  "unauthorized_client",
+  "access_denied",
+  "unsupported_response_type",
+  "invalid_scope",
+  "server_error",
+  "temporarily_unavailable",
+]);
 
 const SESSION_COOKIE_BASE = "blog-session";
 const STATE_COOKIE_PREFIX = "blog-oauth-state-";
@@ -119,11 +135,12 @@ function startAuth(provider: ProviderName, req: Request): Response {
       ? googleProvider().createAuthorizationURL(state, codeVerifier, GOOGLE_SCOPES)
       : microsoftProvider().createAuthorizationURL(state, codeVerifier, MICROSOFT_SCOPES);
   } catch (err) {
-    // Most likely: missing env var. Surface the message so the operator
-    // sees what's wrong instead of a generic 500.
-    return new Response(`auth misconfigured: ${(err as Error).message}`, {
-      status: 500,
-    });
+    // Most likely: missing env var. Per RFC 9457 §5, do NOT surface the
+    // raw provider/error message to the client — it can leak
+    // implementation details. Log for the operator; respond with the
+    // static problem-type title.
+    console.warn(`auth misconfigured (${provider}):`, err);
+    return problem(500, "auth/misconfigured");
   }
 
   const headers = new Headers({ Location: url.toString() });
@@ -170,16 +187,29 @@ async function handleCallback(
   const oauthError = url.searchParams.get("error");
   if (oauthError) {
     // User cancelled at the provider, or admin blocked the app, etc.
-    return new Response(`oauth error: ${oauthError}`, { status: 400 });
+    // The OAuth `error` codes are enumerated in RFC 6749 §4.1.2.1;
+    // anything outside the enum collapses to "unknown" so we don't
+    // reflect attacker-controlled query content into our problem body.
+    const providerError = RFC6749_ERROR_CODES.has(oauthError)
+      ? oauthError
+      : "unknown";
+    if (providerError === "unknown") {
+      console.warn(`${provider} callback: unknown oauth error code:`, oauthError);
+    }
+    return problem(400, "auth/oauth-provider-error", undefined, {
+      providerError,
+    });
   }
   if (!code || !state) {
-    return new Response("missing code or state", { status: 400 });
+    return problem(400, "auth/callback-invalid");
   }
   const cookies = parseCookies(req.headers.get("cookie"));
   const expectedState = cookies[`${STATE_COOKIE_PREFIX}${provider}`];
   const verifier = cookies[`${VERIFIER_COOKIE_PREFIX}${provider}`];
   if (!expectedState || !verifier || state !== expectedState) {
-    return new Response("state mismatch", { status: 400 });
+    // CSRF surface — do NOT leak which of the three checks failed.
+    // Same slug as the missing-code/state branch above.
+    return problem(400, "auth/callback-invalid");
   }
 
   let tokens: OAuth2Tokens;
@@ -189,7 +219,7 @@ async function handleCallback(
       : await microsoftProvider().validateAuthorizationCode(code, verifier);
   } catch (err) {
     console.warn(`${provider} code exchange failed:`, err);
-    return new Response("oauth code exchange failed", { status: 400 });
+    return problem(400, "auth/callback-invalid");
   }
 
   let userInfo: UserInfo;
@@ -199,7 +229,7 @@ async function handleCallback(
       : await fetchMicrosoftUserInfo(tokens.accessToken());
   } catch (err) {
     console.warn(`${provider} userinfo failed:`, err);
-    return new Response("could not load user info", { status: 502 });
+    return problem(502, "auth/userinfo-unavailable");
   }
 
   const sessionToken = await createSessionToken({

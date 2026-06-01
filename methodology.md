@@ -872,6 +872,111 @@ The state / verifier cookies are deliberately **bound to the provider** in their
 - **Mid-session identity refresh.** `/auth/me` is read once at boot; an expired cookie mid-session leaves the UI looking signed-in until reload. Writes still hit localStorage immediately (so no data loss), but the per-write PUT to R2 silently 401s until the user reloads and re-auths. Low-impact at the current 400-day TTL but a real footgun to clean up before any meaningfully shorter session expiry.
 - **ID token signature verification** (we trust TLS to the provider + the `/userinfo` round trip instead, see above).
 
+## HTTP error responses (problem details, `shared/problemDetails.ts`)
+
+Every non-2xx response from a gated route — `/comments`, `/resolutions`, `/post-version`, `/auth/*` (start + callback), and the `createWorker.ts` range-error path — uses the [RFC 9457][ProblemDetails] [`application/problem+json`][ProblemDetails] wire shape:
+
+```http
+HTTP/1.1 429 Too Many Requests
+Content-Type: application/problem+json
+Retry-After: 60
+
+{
+  "type": "https://blog.example.com/probs/rate-limit/exceeded",
+  "title": "Rate limit exceeded",
+  "status": 429,
+  "retryAfter": 60
+}
+```
+
+One helper (`shared/problemDetails.ts`) owns the format. Every error site calls `problem(status, slug, detail?, ext?)`; the helper resolves the slug to a stable type URI under `PROBLEM_BASE_URL`, looks up the per-slug title constant, sets the right content-type, and (for `rate-limit/exceeded` only) pairs the body with the standard `Retry-After` header — value sourced from a shared `RATE_LIMIT_WINDOW_SECONDS` constant so the header and body's `retryAfter` extension can't disagree, and so any future re-tune of the limiter window stays in one place. The slug union is a closed enum — adding a new error class is a one-file change.
+
+The base origin for those type URIs has a three-step resolution chain. `PROBLEM_BASE_URL` takes priority if set (the explicit override, for the rare case where problem docs live on a different origin than the site). Otherwise `SITE_URL` — which a content repo already configures for feeds + Open Graph + structured-data injection — is reused as `${SITE_URL}/probs`, so one origin var anchors both the site and its error URIs without drift. The third-step fallback is a documentation-reserved [RFC 2606][RFC2606] domain that is NOT under our control; the helper warns once on first use of it, so a deploy that set *neither* of the two preceding vars is loud at boot rather than silently shipping spec-incompliant type URIs. See `.env.example` for the wiring template.
+
+### The slug taxonomy
+
+Eleven project-specific slugs cover everything that has more semantics than the bare status code:
+
+```
+auth/unauthenticated         auth/forbidden
+auth/misconfigured           auth/oauth-provider-error
+auth/callback-invalid        auth/userinfo-unavailable
+request/missing-parameter    request/empty-body
+rate-limit/exceeded
+comments/change-too-large    resolutions/resolution-too-large
+```
+
+Truly generic responses — every 404/405/416 in the gated set — use **`about:blank`**, the spec's sentinel for "no problem type beyond the status code" ([RFC 9457 §4][ProblemDetails]). The title in that case is the HTTP reason phrase ("Not Found", "Method Not Allowed"). Inventing `comments/change-not-found` for a 404 would be cargo-culting — the status code itself already conveys what the client needs to know.
+
+The three CSRF-adjacent OAuth-callback failure modes (missing code/state, state mismatch, code-exchange failure) deliberately collapse to one `auth/callback-invalid` slug. Telling an attacker *which* check rejected them — "your state is wrong" vs "your code is wrong" — is exactly the leakage RFC 9457 §5 warns against. The slug is the same; the *console.warn* server-side disambiguates for the operator.
+
+The fourth callback case — when the provider itself rejects (`?error=<code>` on the redirect) — surfaces a separate `auth/oauth-provider-error` slug carrying the OAuth error code as an extension. The reflected value is **allow-listed against the [RFC 6749 §4.1.2.1][RFC6749] enumeration** before it lands on the wire (`access_denied`, `server_error`, `temporarily_unavailable`, etc.); anything outside the enum collapses to `"unknown"` and the raw query value is logged server-side only. Without that gate, the value would be attacker-controlled and the comment-claimed-to-be-public ("the OAuth error codes are public") would be a lie.
+
+### Why this exists at all
+
+The win is concentrated in three places:
+
+1. **`server/auth/routes.ts:124` used to leak.** The old line was `` new Response(`auth misconfigured: ${(err as Error).message}`, …) `` — the raw provider/error message reached the client. That's the exact pattern RFC 9457 §5 calls out ("avoid making implementation details such as a stack dump available through the HTTP interface"). The migration is also the fix: the helper produces a static `auth/misconfigured` body and the operator gets the original `err` via `console.warn` server-side.
+2. **Rate-limit backoff is now wire-driven.** The push loop in `client/commentsSync.ts` reads either the standard `Retry-After` response header or the body's `retryAfter` extension; whichever is present sets a backoff window during which further `requestSync()` calls are deferred (the change still lands locally — it's the *network* push that pauses). Before this, a flurry of edits during a rate-limited window kept re-firing failed PUTs.
+3. **The four client wrappers stopped discarding everything.** `commentsApi.ts` / `resolutionsApi.ts` used to `throw new Error("X failed: 403 Forbidden")` and lose the body. Now they throw `ApiError`, which carries `status`, the parsed problem (or null), and the parsed `Retry-After` ms. The warn-and-swallow paths in `commentsSync.ts` and `postVersion.ts` log the problem `type` instead of just the status code, so debugging a 403 means seeing whether it was the "not-author" check or the "not-self" check at a glance.
+
+### Helper and parser invariants
+
+The helper and its symmetric client parser commit to a small set of defensive contracts. They exist because the wire format is a public API surface — once a problem body leaves the Worker it can be consumed by anything from our own client to a curl session to Cloudflare's edge — and a future call site shouldn't be able to violate the spec by accident.
+
+- **Core members win over extensions.** Call sites pass an `ext` bag, but the helper spreads it *under* the core `type` / `title` / `status` / `detail` literals so an extension named `status: 999` (or any of the others) cannot corrupt the body. This protects [RFC 9457 §3.1.2's][ProblemDetails] MUST that the body status matches the wire status. `instance` is the one spec member that *is* extension-controllable (the helper exposes no dedicated parameter), matching the spec's treatment of `instance` as an occurrence identifier the caller knows about, not a helper concern.
+- **Parser is bounded.** `parseProblem` rejects responses larger than 64 KB (a `Content-Length` pre-check, plus a streaming read that cancels the body when the byte count crosses the cap). Our own bodies are <500 B in the worst case; the cap exists so a misbehaving intermediary returning a multi-gigabyte body under our content type can't OOM a tab.
+- **Media type is matched strictly, not by substring.** The pre-fix sniff used `.includes("application/problem+json")`, which would have accepted `text/plain; note="application/problem+json"`. The parser now splits on `;`, lowercases, and equality-checks — exactly the algorithm any media-type-aware consumer would use.
+- **Backoff is clamped.** The client's rate-limit backoff window is capped at one hour regardless of what `Retry-After` says (header or body extension). Above ~24.8 days (2³¹-1 ms) `setTimeout` silently clamps the delay to ~1 ms and fires immediately, which would busy-loop the push-sync layer against a `rateLimitedUntilMs` that never elapses; one hour is comfortably above any limiter window we'd realistically emit and immune to a hostile/misconfigured proxy injecting `Retry-After: 99999999999`.
+
+### Coexistence with Cloudflare's edge
+
+This is the reason adopting the spec — rather than rolling our own JSON shape — is the right call given the Cloudflare deploy target: **the edge also speaks RFC 9457**. The Cloudflare blog ["RFC 9457 agent error pages"][CFRFC9457] documents that their proxy emits `application/problem+json` for 1xxx-class errors. An [example body][CFRFC9457] for a 1015 (rate-limited by the website owner's configuration) looks like:
+
+```json
+{
+  "type": "https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1015/",
+  "title": "Error 1015: You are being rate limited",
+  "status": 429,
+  "detail": "You are being rate-limited by the website owner's configuration.",
+  "instance": "9d99a4434fz2d168",
+  "cloudflare_error": true,
+  "retryable": true,
+  "retry_after": 30,
+  "error_code": 1015,
+  "ray_id": "9d99a4434fz2d168"
+}
+```
+
+Three concrete consequences:
+
+- **The client's `parseProblem` already handles both layers.** A 429 raised by our Worker's rate-limiter and a 429 raised before the request ever reaches our Worker both arrive as `application/problem+json`; the comments sync layer's backoff branch fires either way. We did not have to write a Cloudflare-aware fallback.
+- **`cloudflare_error: true` is a clear discriminator.** A client (or a future monitoring hook) that wants to attribute errors by layer can read this boolean; our Worker never sets it. Any problem body without that field is ours.
+- **Field-name divergence is real but doesn't bite.** Cloudflare uses snake_case extensions (`retry_after`, `error_code`); we use camelCase (`retryAfter`) — JS-idiomatic for our shared client+server types. The reason this divergence costs nothing is that the **`Retry-After` HTTP header** is what both layers set (and what RFC 9457 §4 + RFC 9110 §10.2.3 endorse as the authoritative signal); our `ApiError` reads the header, so whichever layer emitted the body, the backoff still triggers.
+
+### Out of scope
+
+Three deliberate omissions, each documented at its file so a future edit doesn't quietly close them:
+
+- **`server/analyticsRoute.ts`** — every path returns `204 No Content`, including invalid payloads and bot-flagged requests, so a probe can't discover valid post slugs by response code. Problem Details has nothing to say about 2xx, and giving up the 204 invariant to gain a structured 400 would regress a security property. The route's header comment explains why; the helper isn't imported there.
+- **`server/regenerate.dev.ts`, `server/soundTest.dev.ts`** — dev/author-only tooling. Their error strings encode dynamic shape hints (the allowed `?tts` set, the valid `?index` range, the list of posts that failed per-post auth) that don't fit a closed slug taxonomy. The single consumer is the author reading a curl response in their terminal. Plain text is correct here; both files carry a top-of-file comment recording the deliberate stance.
+- **`createDevServer.ts` static-asset 404/416/403 paths** — local-FS asset serving, no programmatic consumer; the response surfaces as a broken `<img>` or a curl shrug. Routing through the JSON helper would buy nothing.
+
+### Why not roll our own JSON shape
+
+The temptation was real — we have a single first-party client and a small handful of error classes; we could've defined `{ error: "rate-limited", retryAfter: 60 }` and been done. RFC 9457 won because:
+
+- The IANA-registered media type means the `Accept: application/problem+json` advertisement on every wrapper is a stable contract, not a private convention. Any tool that already speaks problem-details (curl pretty-printers, monitoring agents, Cloudflare's own edge) reads our errors without bespoke parsing.
+- Extensions are first-class (§3.2): consumers MUST ignore unknown ones, so adding `actualBytes` to `comments/change-too-large` later doesn't break anything that was happy with `{type, title, status, maxBytes}` yesterday.
+- The wire-format symmetry with Cloudflare's edge (above) means we don't carry two parsers.
+
+### Future direction
+
+Two follow-ups are open by design:
+
+- **Surfacing rate-limit state in the UI.** Today the rate-limit signal goes only to `console.warn` + the silent backoff window. The composer doesn't tell the user "you're rate-limited, your last keystroke is queued and will flush in ~60s." The flag this lights up is small (one toast component reading `ApiError.problem.type` ending in `rate-limit/exceeded` and the parsed `Retry-After` ms), but the UX work and the design decision about how aggressively to interrupt the writer are non-trivial. Deferred until rate-limit hits show up in real usage.
+- **Dev-only routes eventually conforming.** `regenerate.dev.ts` and `soundTest.dev.ts` are plain-text today (see [Out of scope](#out-of-scope)). If either grows a non-author consumer — a browser-side admin UI for regeneration jobs, say — the dynamic shape hints in those error strings stop being the right contract. At that point a small slug taxonomy under `dev/` (e.g. `dev/job-busy`, `dev/post-not-found`) becomes cheaper than ad-hoc string parsing on the client.
+
 ## Per-post author metadata (`server/postMeta.ts`)
 
 Authorship is **per-post**, not site-wide. Each post HTML declares its author in a head meta tag:
@@ -1737,6 +1842,9 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 [CSSAnchorPos2]: https://drafts.csswg.org/css-anchor-position-2/
 [Popover]: https://html.spec.whatwg.org/multipage/popover.html
 [ProblemDetails]: https://www.rfc-editor.org/rfc/rfc9457.html
+[CFRFC9457]: https://blog.cloudflare.com/rfc-9457-agent-error-pages/
+[RFC2606]: https://www.rfc-editor.org/rfc/rfc2606.html
+[RFC6749]: https://www.rfc-editor.org/rfc/rfc6749.html#section-4.1.2.1
 
 <!-- For LLMs: local copies of the specs above. (No local copy of [TwitterCards]
 — developer.x.com renders it client-side as a JS app, so there is no static
@@ -1786,5 +1894,7 @@ the same site already mirrored at [SchemaOrg]/SchemaOrg-spec.html.)
 [CSSAnchorPos1]: ./specs/CSSAnchorPosition1-spec.html
 [CSSAnchorPos2]: ./specs/CSSAnchorPosition2-spec.html
 [ProblemDetails]: ./specs/ProblemDetails-spec.html
+[RFC2606]: ./specs/ReservedDomains-spec.html
+[RFC6749]: ./specs/OAuth2-spec.html (section 4.1.2.1)
 -->
 

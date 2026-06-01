@@ -19,6 +19,11 @@
 import { getSessionFromRequest } from "../auth/routes.ts";
 import type { Session } from "../auth/session.ts";
 import { isPostAuthor, type PostMetaIndex } from "../postMeta.ts";
+import {
+  problem,
+  RATE_LIMIT_WINDOW_SECONDS,
+  type ProblemSlug,
+} from "../../shared/problemDetails.ts";
 import type {
   ChangeListEntry,
   CommentChangeStore,
@@ -42,14 +47,24 @@ export type CommentsDeps = {
   rateLimiter: RateLimiter | null;
 };
 
-function unauthorized(message = "unauthorized"): Response {
-  return new Response(message, { status: 401 });
+function unauthorized(): Response {
+  return problem(401, "auth/unauthenticated");
 }
-function forbidden(message = "forbidden"): Response {
-  return new Response(message, { status: 403 });
+function forbidden(): Response {
+  return problem(403, "auth/forbidden");
 }
-function badRequest(message: string): Response {
-  return new Response(message, { status: 400 });
+function badRequest(
+  slug: Extract<ProblemSlug, `request/${string}`>,
+  detail: string,
+  extensions?: Record<string, unknown>,
+): Response {
+  return problem(400, slug, detail, extensions);
+}
+function methodNotAllowed(): Response {
+  return problem(405, "about:blank");
+}
+function notFound(): Response {
+  return problem(404, "about:blank");
 }
 
 // Author moderation list: comma-separated `<provider>:<sub>` userIds
@@ -75,13 +90,15 @@ export async function handleCommentsRequest(
   const post = url.searchParams.get("post");
   const user = url.searchParams.get("user");
   const change = url.searchParams.get("change");
-  if (!post) return badRequest("missing 'post' query parameter");
+  if (!post) {
+    return badRequest("request/missing-parameter", "missing 'post' query parameter", {
+      param: "post",
+    });
+  }
 
   // No `user` → list users (author only).
   if (user === null) {
-    if (req.method !== "GET") {
-      return new Response("method not allowed", { status: 405 });
-    }
+    if (req.method !== "GET") return methodNotAllowed();
     if (!isPostAuthor(session, deps.postMeta.get(post))) return forbidden();
     const users = await deps.store.listUsers(post);
     return Response.json(users, {
@@ -91,9 +108,7 @@ export async function handleCommentsRequest(
 
   // `user` but no `change` → list change hashes for that user.
   if (change === null) {
-    if (req.method !== "GET") {
-      return new Response("method not allowed", { status: 405 });
-    }
+    if (req.method !== "GET") return methodNotAllowed();
     if (
       session.userId !== user &&
       !isPostAuthor(session, deps.postMeta.get(post))
@@ -113,7 +128,7 @@ export async function handleCommentsRequest(
     case "PUT":
       return await handlePutChange(req, post, user, change, session, deps);
     default:
-      return new Response("method not allowed", { status: 405 });
+      return methodNotAllowed();
   }
 }
 
@@ -131,7 +146,7 @@ async function handleGetChange(
     return forbidden();
   }
   const bytes = await deps.store.getChange(post, user, changeHash);
-  if (!bytes) return new Response("not found", { status: 404 });
+  if (!bytes) return notFound();
   return new Response(bytes as BodyInit, {
     status: 200,
     headers: {
@@ -166,15 +181,22 @@ async function handlePutChange(
 
   if (deps.rateLimiter) {
     const { success } = await deps.rateLimiter.limit({ key: session.userId });
-    if (!success) return new Response("rate limited", { status: 429 });
+    if (!success) {
+      return problem(429, "rate-limit/exceeded", undefined, {
+        retryAfter: RATE_LIMIT_WINDOW_SECONDS,
+      });
+    }
   }
 
   const body = await req.arrayBuffer();
   if (body.byteLength > MAX_CHANGE_BYTES) {
-    return new Response("change too large", { status: 413 });
+    return problem(413, "comments/change-too-large", undefined, {
+      maxBytes: MAX_CHANGE_BYTES,
+      actualBytes: body.byteLength,
+    });
   }
   if (body.byteLength === 0) {
-    return badRequest("empty body");
+    return badRequest("request/empty-body", "request body is required");
   }
 
   await deps.store.putChange(post, user, changeHash, new Uint8Array(body));

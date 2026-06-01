@@ -13,6 +13,7 @@
 
 import { getSessionFromRequest } from "./auth/routes.ts";
 import { isPostAuthor, type PostMetaIndex } from "./postMeta.ts";
+import { problem } from "../shared/problemDetails.ts";
 import type { PostVersionIndex } from "./postVersions.ts";
 
 export type PostVersionDeps = {
@@ -25,18 +26,20 @@ export async function handlePostVersionRequest(
   deps: PostVersionDeps,
 ): Promise<Response> {
   const session = await getSessionFromRequest(req);
-  if (!session) return new Response("unauthorized", { status: 401 });
+  if (!session) return problem(401, "auth/unauthenticated");
 
-  if (req.method !== "GET") {
-    return new Response("method not allowed", { status: 405 });
-  }
+  if (req.method !== "GET") return problem(405, "about:blank");
 
   const url = new URL(req.url);
   const post = url.searchParams.get("post");
-  if (!post) return new Response("missing 'post'", { status: 400 });
+  if (!post) {
+    return problem(400, "request/missing-parameter", "missing 'post' query parameter", {
+      param: "post",
+    });
+  }
 
   const record = deps.postVersions.get(post);
-  if (!record) return new Response("not found", { status: 404 });
+  if (!record) return problem(404, "about:blank");
 
   // Server-computed `isAuthor` for the current session. Authoritative
   // — the client can't be trusted to know this (the source-only

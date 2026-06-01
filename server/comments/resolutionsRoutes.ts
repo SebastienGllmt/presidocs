@@ -20,6 +20,11 @@
 
 import { getSessionFromRequest } from "../auth/routes.ts";
 import { isPostAuthor, type PostMetaIndex } from "../postMeta.ts";
+import {
+  problem,
+  RATE_LIMIT_WINDOW_SECONDS,
+  type ProblemSlug,
+} from "../../shared/problemDetails.ts";
 import type { CommentChangeStore } from "./store.ts";
 import type { RateLimiter } from "./routes.ts";
 
@@ -36,13 +41,23 @@ export type ResolutionsDeps = {
 };
 
 function unauthorized(): Response {
-  return new Response("unauthorized", { status: 401 });
+  return problem(401, "auth/unauthenticated");
 }
 function forbidden(): Response {
-  return new Response("forbidden", { status: 403 });
+  return problem(403, "auth/forbidden");
 }
-function badRequest(message: string): Response {
-  return new Response(message, { status: 400 });
+function badRequest(
+  slug: Extract<ProblemSlug, `request/${string}`>,
+  detail: string,
+  extensions?: Record<string, unknown>,
+): Response {
+  return problem(400, slug, detail, extensions);
+}
+function methodNotAllowed(): Response {
+  return problem(405, "about:blank");
+}
+function notFound(): Response {
+  return problem(404, "about:blank");
 }
 
 export async function handleResolutionsRequest(
@@ -55,13 +70,15 @@ export async function handleResolutionsRequest(
   const url = new URL(req.url);
   const post = url.searchParams.get("post");
   const thread = url.searchParams.get("thread");
-  if (!post) return badRequest("missing 'post' query parameter");
+  if (!post) {
+    return badRequest("request/missing-parameter", "missing 'post' query parameter", {
+      param: "post",
+    });
+  }
 
   // LIST: any logged-in user.
   if (thread === null) {
-    if (req.method !== "GET") {
-      return new Response("method not allowed", { status: 405 });
-    }
+    if (req.method !== "GET") return methodNotAllowed();
     const entries = await deps.store.listResolutions(post);
     return Response.json(entries, {
       headers: { "Cache-Control": "private, no-store" },
@@ -71,7 +88,7 @@ export async function handleResolutionsRequest(
   switch (req.method) {
     case "GET": {
       const bytes = await deps.store.getResolution(post, thread);
-      if (!bytes) return new Response("not found", { status: 404 });
+      if (!bytes) return notFound();
       return new Response(bytes as BodyInit, {
         status: 200,
         headers: {
@@ -91,17 +108,26 @@ export async function handleResolutionsRequest(
         const { success } = await deps.rateLimiter.limit({
           key: session.userId,
         });
-        if (!success) return new Response("rate limited", { status: 429 });
+        if (!success) {
+          return problem(429, "rate-limit/exceeded", undefined, {
+            retryAfter: RATE_LIMIT_WINDOW_SECONDS,
+          });
+        }
       }
       const body = await req.arrayBuffer();
       if (body.byteLength > MAX_RESOLUTION_BYTES) {
-        return new Response("resolution too large", { status: 413 });
+        return problem(413, "resolutions/resolution-too-large", undefined, {
+          maxBytes: MAX_RESOLUTION_BYTES,
+          actualBytes: body.byteLength,
+        });
       }
-      if (body.byteLength === 0) return badRequest("empty body");
+      if (body.byteLength === 0) {
+        return badRequest("request/empty-body", "request body is required");
+      }
       await deps.store.putResolution(post, thread, new Uint8Array(body));
       return new Response(null, { status: 200 });
     }
     default:
-      return new Response("method not allowed", { status: 405 });
+      return methodNotAllowed();
   }
 }

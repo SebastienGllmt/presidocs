@@ -41,6 +41,7 @@ import {
   resolveRange,
   unsatisfiedRangeHeader,
 } from "../shared/httpRange.ts";
+import { problem } from "../shared/problemDetails.ts";
 
 // The two build-time maps, supplied by the content repo's `worker.ts` from its
 // own `.generated/` directory. Structural types (not the engine's `PostMeta` /
@@ -108,8 +109,12 @@ async function applyRangeSupport(req: Request, res: Response): Promise<Response>
     });
   }
   if (outcome.kind === "unsatisfiable") {
-    headers.set("Content-Range", unsatisfiedRangeHeader(outcome.size));
-    return new Response("range not satisfiable", { status: 416, headers });
+    // Per RFC 9110 §15.5.17, the 416 SHOULD carry Content-Range with
+    // the selected representation's size. The body is `about:blank`
+    // (problem details §4: generic status-code-only).
+    const res = problem(416, "about:blank");
+    res.headers.set("Content-Range", unsatisfiedRangeHeader(outcome.size));
+    return res;
   }
   const { start, end, size } = outcome;
   headers.set("Content-Range", contentRangeHeader(start, end, size));

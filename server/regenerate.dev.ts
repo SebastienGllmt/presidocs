@@ -18,6 +18,12 @@
 // The client polls GET until `running` is false, then reloads (ok) or shows the
 // error. Single-flight: one job at a time (MOSS loads one model); a second POST
 // while one runs gets 409.
+//
+// Error bodies here are deliberately plain-text, NOT RFC 9457 Problem Details
+// (see methodology.md → "HTTP error responses" → "Out of scope"): the single
+// consumer is the author reading curl output in a terminal, and the strings
+// encode dynamic shape hints (allowed `?tts` set, valid `?index` range) that
+// don't fit a closed problem-type slug taxonomy.
 
 import { getSessionFromRequest } from "./auth/routes.ts";
 import { isPostAuthor, type PostMetaIndex } from "./postMeta.ts";

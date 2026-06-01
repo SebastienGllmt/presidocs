@@ -19,6 +19,12 @@
 //          unrelated segments hit cache. Requires the session to author every affected post.
 //   GET  /dev/sound-test/regenerate                 → { running, ok?, error?, posts? }
 // The page polls GET until the job finishes, then refreshes the list.
+//
+// Error bodies here are deliberately plain-text, NOT RFC 9457 Problem Details
+// (see methodology.md → "HTTP error responses" → "Out of scope"): same
+// rationale as regenerate.dev.ts — dev-only, author-only, and the error
+// strings encode dynamic shape hints (valid `?index` range, per-post auth
+// failures listing the failing posts) that don't fit a closed slug set.
 
 import { join } from "node:path";
 import { existsSync, statSync } from "node:fs";
