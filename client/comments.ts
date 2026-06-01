@@ -66,7 +66,6 @@ import { DraftsStorage } from "./draftsStorage.ts";
 import { compareSegmentHashes } from "./commentsStale.ts";
 import {
   BLOCK_TAGS,
-  computePopoverPositionForRect,
   loadHighlightsHidden,
   normalizeText,
   saveHighlightsHidden,
@@ -93,22 +92,36 @@ type BlockInfo = {
 // need a wrapper before we could place the trigger; we can add that later.
 const GRAPHIC_ROOT_TAGS = new Set(["FIGURE"]);
 
-// Cards stack with this much vertical space between them when collision-
-// avoidance pushes a later card past its preferred anchor-aligned top.
-const CARD_GAP_PX = 8;
 // Extra gap kept between the lowest card's bottom and the player dock
 // when reserving bottom scroll room, so a bottom card never sits flush
 // against the dock.
 const BOTTOM_CLEARANCE_PX = 24;
 
 // Below this viewport width the column doesn't fit alongside the
-// article. We switch to a popover model: cards are rendered into the
-// column DOM as usual, but CSS hides them by default and only the
-// `data-mobile-active`-tagged card pops up as a fixed overlay.
+// article. Each card carries `popover="auto"`; CSS Anchor Positioning
+// places the open popover against its tapped highlight (with a
+// bottom-sheet fallback when the anchor's edges are cramped).
 const MOBILE_BREAKPOINT_PX = 1099;
 
 function uid(): string {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+}
+
+// Coerce an arbitrary id into a CSS `<dashed-ident>`-safe tail.
+// Thread ids are already alphanumeric (see `uid`), but block / graphic
+// ids embed `:` and `__` (e.g. `article:__b-3`), which aren't valid in
+// a CSS identifier. The substitution is one-way; uniqueness within our
+// id namespace holds because no two distinct ids differ only in `:`.
+function cssIdent(s: string): string {
+  return s.replace(/[^A-Za-z0-9_-]/g, "_");
+}
+
+function anchorNameForText(threadId: string): string {
+  return `--cmt-${cssIdent(threadId)}`;
+}
+
+function anchorNameForGraphic(graphicId: string): string {
+  return `--cmt-graphic-${cssIdent(graphicId)}`;
 }
 
 async function sha256(s: string): Promise<string> {
@@ -248,19 +261,9 @@ class CommentSystem {
   // Mobile-only: id of the thread/draft currently displayed as the
   // popover. Null when nothing is open. Switches on highlight /
   // graphic-indicator tap and on draft creation; cleared on
-  // tap-outside.
+  // tap-outside (driven by the card's native `toggle` event so the
+  // platform's light-dismiss and ESC stay in sync with our state).
   private activeCardId: string | null = null;
-  // Mobile-only: viewport-relative position chosen for the popover
-  // at the moment the user opened it. Re-applied after every render
-  // (a poll-driven `renderAll` rebuilds the card element and would
-  // otherwise drop the inline styles). Stays in viewport coordinates
-  // — the popover is `position: fixed` so it deliberately doesn't
-  // scroll with the anchor.
-  private activeMobilePosition: {
-    top?: string;
-    bottom?: string;
-    maxHeight: string;
-  } | null = null;
   // Floating button (mobile-only) that toggles visibility of all
   // highlights + indicators + popovers. State mirrored on
   // `body.cmt-highlights-hidden`.
@@ -312,12 +315,16 @@ class CommentSystem {
   // Invisible flow element appended to <body> that grows just enough to
   // give scroll room below the lowest comment card, so a card can always
   // be scrolled clear of the viewport-fixed player dock (see
-  // repositionCards). 0 height when not needed.
+  // `updateBottomSpacer`). 0 height when not needed.
   private bottomSpacer: HTMLElement | null = null;
-  // See mountColumn — measures the column's positioning origin so card
-  // tops align with their anchors instead of sitting lower.
-  private columnProbe: HTMLElement | null = null;
   private cardEls = new Map<string, HTMLElement>();
+  // Block elements we stamped `anchor-name` on as the fallback
+  // anchor for stale text threads (whose highlights are gone).
+  // Tracked so the next render can clear them before re-stamping —
+  // unlike highlight spans, blocks are reused across renders and
+  // a stale stamp would otherwise persist after the thread is
+  // deleted or revived.
+  private staleAnchorBlocks = new Set<HTMLElement>();
 
   // Floating "Comment" pill that appears above a text selection.
   private actionBar: HTMLDivElement | null = null;
@@ -375,7 +382,13 @@ class CommentSystem {
     mql.addEventListener("change", (e) => {
       this.isMobile = e.matches;
       if (!this.isMobile) this.setActiveCard(null);
-      this.repositionCards();
+      // Cards built for the previous breakpoint either have or lack
+      // `popover="auto"`. Reconcile so the next tap-to-open path
+      // works without a full re-render.
+      for (const card of this.cardEls.values()) {
+        card.popover = this.isMobile ? "auto" : null;
+      }
+      this.updateBottomSpacer();
     });
 
     if (this.identity) {
@@ -467,11 +480,15 @@ class CommentSystem {
 
     document.addEventListener("selectionchange", () => this.onSelectionChange());
     document.addEventListener("click", (e) => this.onAnyClick(e));
-    window.addEventListener("scroll", () => this.repositionCards(), {
-      passive: true,
-    });
+    // No scroll listener — CSS Anchor Positioning re-evaluates
+    // `anchor()` on every scroll frame in C++, so cards stay aligned
+    // to their anchors without JS layout work.
     window.addEventListener("resize", () => {
-      this.repositionCards();
+      // Card placement is anchor-driven (CSS); only the bottom
+      // spacer's reservation depends on viewport math (dock-height +
+      // lowest-card position), so that's the only thing to recompute
+      // on resize. The action-bar follows its pending range below.
+      this.updateBottomSpacer();
       if (this.pendingRange && this.actionBar && !this.actionBar.hidden) {
         this.showActionBarFor(this.pendingRange);
       }
@@ -584,10 +601,9 @@ class CommentSystem {
   }
 
   // (Re-)mount the banner + history elements. Idempotent — wipes
-  // and replaces. Cards live in the same column but in absolute
-  // positioning, so the inserted-after-header pattern doesn't
-  // disturb their layout (we account for the inserted heights in
-  // `repositionCards`).
+  // and replaces. Cards live in the same column but are CSS-anchor-
+  // positioned to their highlights, so the inserted-after-header
+  // pattern doesn't disturb their layout.
   private renderVersionUI() {
     if (!this.column) return;
     this.versionBannerEl?.remove();
@@ -618,7 +634,7 @@ class CommentSystem {
         e.stopPropagation();
         banner.remove();
         this.versionBannerEl = null;
-        this.repositionCards();
+        this.updateBottomSpacer();
       });
       banner.appendChild(dismiss);
 
@@ -669,7 +685,7 @@ class CommentSystem {
       this.versionHistoryEl = details;
     }
 
-    this.repositionCards();
+    this.updateBottomSpacer();
   }
 
   // Author-only at-a-glance counter of unresolved threads, mounted in
@@ -769,19 +785,19 @@ class CommentSystem {
   // Also unhides the card if the user had previously dismissed it
   // via "Hide", since on mobile there's no other way to bring it
   // back than tapping the highlight.
+  //
+  // Placement is handled by CSS Anchor Positioning + the Popover
+  // API's top-layer rendering; light-dismiss, ESC, and focus return
+  // come from the platform. We only own `activeCardId` (for the
+  // tap-same-highlight-to-close gesture) and the body class.
   private setActiveCard(threadId: string | null): void {
     if (this.activeCardId) {
-      const prev = this.cardEls.get(this.activeCardId);
-      if (prev) {
-        prev.removeAttribute("data-mobile-active");
-        this.clearMobileCardPosition(prev);
-      }
+      this.cardEls.get(this.activeCardId)?.hidePopover(); // no-op if closed
     }
     this.activeCardId = threadId;
-    this.activeMobilePosition = null;
     // Body class drives the mobile identity-bar hide while a popover
     // is open — keeps the top of the viewport clear when the popover
-    // computes a placement near it.
+    // lands near it.
     document.body.classList.toggle("cmt-mobile-popover-active", !!threadId);
     if (!threadId) return;
     if (this.hiddenCardIds.has(threadId)) {
@@ -792,94 +808,10 @@ class CommentSystem {
     }
     const card = this.cardEls.get(threadId);
     if (!card) return;
-    card.setAttribute("data-mobile-active", "true");
-    // Compute the popover's placement against the tapped anchor's
-    // current rect. Done before focus() because focusing a textarea
-    // on iOS pops the soft keyboard, which shrinks the visual
-    // viewport and would otherwise corrupt the rect math.
-    this.activeMobilePosition = this.computeMobilePopoverPosition(threadId);
-    this.applyMobileCardPosition(card);
+    card.showPopover();
     // Auto-focus the textarea so the user can start typing
     // immediately — matches the desktop draft-focus behavior.
-    const ta = card.querySelector<HTMLTextAreaElement>(".cmt-reply-input");
-    ta?.focus();
-  }
-
-  // Clear any inline positioning we wrote on a card. Called when a
-  // card is dropped from active — leaving stale inline `top` etc.
-  // around would conflict with the next render (and with the
-  // desktop-column layout if the user resizes the viewport).
-  private clearMobileCardPosition(card: HTMLElement): void {
-    card.style.top = "";
-    card.style.bottom = "";
-    card.style.maxHeight = "";
-  }
-
-  // Apply `activeMobilePosition` to the given card. Always sets BOTH
-  // top and bottom so a stale value from a different render mode
-  // (e.g. an inline `top` left over from desktop `repositionCards`)
-  // is overwritten, not partially shadowed by CSS.
-  private applyMobileCardPosition(card: HTMLElement): void {
-    const pos = this.activeMobilePosition;
-    if (!pos) {
-      // Fallback to the CSS default (bottom-sheet at bottom: 80px).
-      this.clearMobileCardPosition(card);
-      return;
-    }
-    if (pos.top !== undefined) {
-      card.style.top = pos.top;
-      card.style.bottom = "auto";
-    } else if (pos.bottom !== undefined) {
-      card.style.bottom = pos.bottom;
-      card.style.top = "auto";
-    }
-    card.style.maxHeight = pos.maxHeight;
-  }
-
-  // Decide where to anchor the popover relative to the tapped
-  // element. Prefer placing it *below* the anchor (matches Google
-  // Docs / native iOS contextual popovers); flip to above if there's
-  // more usable room there. Both placements respect the bottom-end
-  // dock area (so the popover doesn't get hidden behind the player)
-  // and the viewport's top margin. Returns null if we can't resolve
-  // an anchor element — caller falls back to the CSS default.
-  private computeMobilePopoverPosition(threadId: string): {
-    top?: string;
-    bottom?: string;
-    maxHeight: string;
-  } | null {
-    const thread = this.snapshot.find((t) => t.id === threadId)
-      ?? this.drafts.find((t) => t.id === threadId);
-    if (!thread) return null;
-
-    let anchorEl: HTMLElement | null = null;
-    if (isTextTarget(thread.target)) {
-      anchorEl = document.querySelector<HTMLElement>(
-        `.cmt-highlight[data-thread-id="${CSS.escape(threadId)}"]`,
-      );
-      if (!anchorEl) {
-        const firstSeg = textTargetParts(thread.target).blocks[0];
-        if (firstSeg) {
-          anchorEl = this.blocksById.get(firstSeg.id)?.element ?? null;
-        }
-      }
-    } else {
-      anchorEl = this.graphicsById.get(graphicTargetId(thread.target)) ?? null;
-    }
-    if (!anchorEl) return null;
-
-    // Resolve the anchor's geometry, then delegate the placement math to
-    // the pure helper in ./commentsDom.ts. Splitting the two halves means
-    // the unit tests can fuzz the math without faking
-    // `getBoundingClientRect()` on every variant.
-    return computePopoverPositionForRect(anchorEl.getBoundingClientRect(), {
-      viewportHeight: window.innerHeight,
-      // Reserve room at the bottom for the narrator's "Listen" pill plus
-      // player dock area. The dock's measured height is published by
-      // narrator.ts as `--narrate-dock-height`; we read it back here so
-      // the reservation tracks the actual dock size.
-      dockHeight: this.dockHeightPx(),
-    });
+    card.querySelector<HTMLTextAreaElement>(".cmt-reply-input")?.focus();
   }
 
   private mountHideAllFab(): void {
@@ -949,33 +881,18 @@ class CommentSystem {
     this.column = col;
 
     // Flow element that reserves bottom scroll room (sized in
-    // repositionCards). Must be in normal flow — not inside the
-    // absolutely-positioned column — so it actually extends the
-    // document's scrollHeight.
+    // `updateBottomSpacer`). Must be in normal flow — not inside
+    // the absolutely-positioned column — so it actually extends
+    // the document's scrollHeight.
     const spacer = document.createElement("div");
     spacer.id = "cmt-bottom-spacer";
     spacer.setAttribute("aria-hidden", "true");
     document.body.appendChild(spacer);
     this.bottomSpacer = spacer;
 
-    // Zero-size absolutely-positioned probe sharing the cards'
-    // containing block. Cards' `top` is relative to the column's
-    // positioning origin, not the document, and that origin isn't
-    // reliably the column's own box top (the article's top margin
-    // shifts it). We measure the origin off this probe so card tops can
-    // be converted from document coordinates (what anchors give us) into
-    // the column-relative coordinates `style.top` actually wants — see
-    // repositionCards.
-    const probe = document.createElement("div");
-    probe.setAttribute("aria-hidden", "true");
-    probe.style.cssText =
-      "position:absolute;top:0;left:0;width:0;height:0;pointer-events:none;";
-    col.appendChild(probe);
-    this.columnProbe = probe;
-
-    // The identity header sits above the cards. It lives outside the
-    // column's normal absolutely-positioned card flow so it doesn't get
-    // shoved around by `repositionCards`.
+    // The identity header sits above the cards in the column flow.
+    // Cards are CSS-anchor-positioned to their highlights, so the
+    // header doesn't need to coordinate with their placement.
     const header = document.createElement("div");
     header.className = "cmt-identity";
     col.appendChild(header);
@@ -1132,6 +1049,52 @@ class CommentSystem {
       }
     }
 
+    // A multi-segment thread produces N `.cmt-highlight` spans (one
+    // per text node spanned by `wrapRange`). CSS Anchor Positioning
+    // needs a single anchor element per name, so we stamp
+    // `anchor-name` on the FIRST highlight per thread in document
+    // order — matches the existing `querySelector` semantics in
+    // `computeAnchorTop`. The unwrap pass above already removed the
+    // previous render's spans, so this is always a fresh stamp.
+    const anchoredThreads = new Set<string>();
+    document.querySelectorAll<HTMLElement>(".cmt-highlight").forEach((span) => {
+      const tid = span.dataset.threadId;
+      if (!tid || anchoredThreads.has(tid)) return;
+      anchoredThreads.add(tid);
+      span.style.setProperty("anchor-name", anchorNameForText(tid));
+    });
+
+    // Stale text threads have no highlight (the segments changed and
+    // we deliberately don't draw an unsafe highlight). Without an
+    // anchor the card would fall through to `top: anchor(top, 0px)`
+    // and pile up at the column top. Stamp `anchor-name` on the
+    // first segment block instead so the stale card still aligns
+    // with where the thread used to point — matches the prior
+    // `repositionCards` fallback. Multiple stale threads on the
+    // same first block compose via `anchor-name`'s comma-separated
+    // list syntax. We track stamped blocks so the next render can
+    // reset them before re-stamping.
+    for (const el of this.staleAnchorBlocks) {
+      el.style.removeProperty("anchor-name");
+    }
+    this.staleAnchorBlocks.clear();
+    for (const thread of this.snapshot) {
+      if (!isTextTarget(thread.target)) continue;
+      if (!this.threadIsStale(thread)) continue;
+      if (anchoredThreads.has(thread.id)) continue;
+      const firstSeg = textTargetParts(thread.target).blocks[0];
+      const block = firstSeg ? this.blocksById.get(firstSeg.id) : undefined;
+      if (!block) continue;
+      const name = anchorNameForText(thread.id);
+      const existing = block.element.style.getPropertyValue("anchor-name");
+      block.element.style.setProperty(
+        "anchor-name",
+        existing && existing !== "none" ? `${existing}, ${name}` : name,
+      );
+      this.staleAnchorBlocks.add(block.element);
+      anchoredThreads.add(thread.id);
+    }
+
     // Cards. Hidden saved threads are skipped entirely (their highlight
     // remains in the article so the user can click to bring them back).
     // Drafts can't be hidden — they don't have a recovery affordance.
@@ -1155,22 +1118,19 @@ class CommentSystem {
       this.cardEls.set(thread.id, card);
     }
 
-    // Re-apply the mobile "active popover" marker — `cardEls` was
-    // just cleared, so the new card for `activeCardId` (if any)
-    // needs the attribute again, and the inline positioning we
-    // computed at tap time has to be restored (otherwise a
-    // poll-driven re-render would snap the popover back to the CSS
-    // default bottom-sheet position). If the active thread
-    // vanished (e.g. resolved by the author between renders), drop
-    // the state.
+    // Re-open the mobile popover after a rebuild — `cardEls` was
+    // just cleared, so the new card for `activeCardId` (if any) is
+    // a fresh element and starts in the closed state. Call
+    // `showPopover()` to restore it; the toggle handler keeps
+    // `activeCardId` in sync if the platform later light-dismisses.
+    // If the active thread vanished (e.g. resolved between renders),
+    // drop the state.
     if (this.activeCardId) {
       const card = this.cardEls.get(this.activeCardId);
       if (card) {
-        card.setAttribute("data-mobile-active", "true");
-        this.applyMobileCardPosition(card);
+        card.showPopover();
       } else {
         this.activeCardId = null;
-        this.activeMobilePosition = null;
       }
     }
 
@@ -1187,7 +1147,7 @@ class CommentSystem {
 
     this.updateGraphicIndicators();
     this.renderUnresolvedCount();
-    this.repositionCards();
+    this.updateBottomSpacer();
 
     this.restoreActiveComposer(activeComposer);
   }
@@ -1261,6 +1221,46 @@ class CommentSystem {
     card.dataset.context = isNarration ? "narration" : "article";
     if (isDraft) card.dataset.draft = "true";
     if (isStale) card.dataset.stale = "true";
+    // Bind the card to its CSS anchor. Text threads anchor to their
+    // first highlight span (stamped in `renderAll` after wrapping);
+    // narration threads anchor to the article element their segment
+    // maps to (stamped here, since `narrationArticleAnchor` is the
+    // resolver); graphic threads anchor to the graphic root
+    // (stamped in `installGraphicTriggers`). The desktop CSS uses
+    // this anchor for `top: anchor(top)`; the mobile popover uses
+    // it for `position-area: block-end span-inline`.
+    if (isTextTarget(thread.target)) {
+      const anchorName = anchorNameForText(thread.id);
+      card.style.setProperty("position-anchor", anchorName);
+      if (isNarration) {
+        const articleAnchor = this.narrationArticleAnchor(thread);
+        articleAnchor?.style.setProperty("anchor-name", anchorName);
+      }
+    } else {
+      card.style.setProperty(
+        "position-anchor",
+        anchorNameForGraphic(graphicTargetId(thread.target)),
+      );
+    }
+    // Mobile: render as a native popover so the platform handles
+    // top-layer placement, light-dismiss, ESC, and focus return.
+    // Desktop leaves the attribute off so the card sits inline in
+    // the column. The MQL handler flips this on viewport-cross.
+    if (this.isMobile) card.popover = "auto";
+    // The platform fires `toggle` whenever the popover state flips
+    // (programmatic show/hide, light-dismiss, ESC). Sync our
+    // `activeCardId` to the "closed" half so a platform-driven
+    // close doesn't strand us thinking the popover is still open.
+    // The `activeCardId === thread.id` guard makes a switch
+    // (close A → open B) a no-op for A's toggle, since by the time
+    // A's queued event fires we've already moved activeCardId to B.
+    card.addEventListener("toggle", (e) => {
+      const ev = e as ToggleEvent;
+      if (ev.newState === "closed" && this.activeCardId === thread.id) {
+        this.activeCardId = null;
+        document.body.classList.remove("cmt-mobile-popover-active");
+      }
+    });
 
     // --- Anchor preview ---
     const preview = document.createElement("div");
@@ -1636,91 +1636,39 @@ class CommentSystem {
     return Number.isFinite(n) ? n : 0;
   }
 
-  // Vertically align each card with its anchor's top, then push later
-  // cards down to avoid overlap. Stale text threads (no highlight) fall
-  // back to their first segment's position; if even that segment is gone,
-  // we stack them at the page bottom.
-  private repositionCards() {
-    if (!this.column) return;
-    // Mobile uses fixed-overlay positioning driven entirely by CSS;
-    // the column's normal stacked layout doesn't apply and a JS
-    // `top` write would just be overridden. Drop any reserved bottom
-    // room — the desktop spacer shouldn't linger after a resize down.
+  // Grow an invisible spacer below the article so the lowest comment
+  // card can be scrolled clear of the viewport-fixed player dock
+  // (otherwise a card on the final paragraph stays stuck behind the
+  // dock with nothing below to scroll into).
+  //
+  // Card placement itself is handled by CSS Anchor Positioning —
+  // `top: anchor(top)` in the desktop rule and `position-area` in the
+  // mobile popover rule. Scroll-tracking, cross-element flipping,
+  // anchor resolution all happen in the layout engine. This pass only
+  // reads the resulting geometry to size the spacer.
+  private updateBottomSpacer() {
+    if (!this.column || !this.bottomSpacer) return;
+    // Mobile is popover-based; cards render in the top layer when
+    // open and don't extend the document flow. No spacer needed.
     if (this.isMobile) {
-      if (this.bottomSpacer) this.bottomSpacer.style.height = "0px";
+      if (this.bottomSpacer.style.height !== "0px") {
+        this.bottomSpacer.style.height = "0px";
+      }
       return;
     }
-
     // Height of the document *without* our spacer, so the spacer math
-    // below is stable (and so a bottom-stacked card's fallback target
-    // doesn't chase the spacer it then grows).
-    const spacerH = this.bottomSpacer?.offsetHeight ?? 0;
+    // below is stable (and so we don't recursively chase the spacer
+    // we then grow).
+    const spacerH = this.bottomSpacer.offsetHeight;
     const naturalHeight = document.documentElement.scrollHeight - spacerH;
-
-    // The document Y at which a card's `top: 0` would render. `style.top`
-    // is relative to the column's positioning origin, so we subtract this
-    // from each anchor's document Y to align the card with its anchor
-    // (without it, every card sits lower by the origin's offset).
-    const originY = this.columnProbe
-      ? this.columnProbe.getBoundingClientRect().top + window.scrollY
-      : 0;
-
-    const items: Array<{
-      card: HTMLElement;
-      thread: Thread;
-      target: number;
-    }> = [];
-    for (const [tid, card] of this.cardEls) {
-      const thread = this.snapshot.find((t) => t.id === tid)
-        ?? this.drafts.find((t) => t.id === tid);
-      if (!thread) continue;
-      // computeAnchorTop is in document coords; convert to column-relative.
-      const docTarget = this.computeAnchorTop(thread) ?? naturalHeight + 200;
-      items.push({ card, thread, target: docTarget - originY });
+    let lowestBottom = 0;
+    for (const card of this.cardEls.values()) {
+      const b = card.getBoundingClientRect().bottom + window.scrollY;
+      if (b > lowestBottom) lowestBottom = b;
     }
-    items.sort((a, b) => a.target - b.target);
-
-    // The identity header (and any version banner / history details
-    // inserted between it and the cards) sits at the top of the
-    // column in normal flow, but cards are absolutely positioned and
-    // would otherwise stack starting at column-top = 0. Sum every
-    // non-card child so the first card lands below them.
-    const topReserved =
-      (this.identityHeader?.offsetHeight ?? 0) +
-      (this.versionBannerEl?.offsetHeight ?? 0) +
-      (this.versionHistoryEl?.offsetHeight ?? 0) +
-      (this.unresolvedCountEl?.offsetHeight ?? 0);
-    let prevBottom = topReserved > 0 ? topReserved - CARD_GAP_PX : 0;
-    for (const { card, target } of items) {
-      const top = Math.max(target, prevBottom + CARD_GAP_PX);
-      card.style.top = `${top}px`;
-      // Use offsetHeight after the style.top write — height is independent
-      // of top so reading offsetHeight here is safe.
-      prevBottom = top + card.offsetHeight;
-    }
-
-    // The player dock is fixed to the viewport bottom, so a card whose
-    // document position lands in the last dock-height band can never be
-    // scrolled out from under it (worst case: a comment on the final
-    // paragraph — there's nothing below to scroll into). Grow an invisible
-    // spacer so the document scrolls far enough to lift the lowest card
-    // clear of the dock + a margin.
-    if (this.bottomSpacer) {
-      // Measure the lowest card's bottom in *document* coordinates via
-      // getBoundingClientRect — NOT `prevBottom`/`card.style.top`, which
-      // are relative to the absolutely-positioned column and so understate
-      // the true document position by the column's own offset (~the
-      // article's top margin), leaving the reservation short and the card
-      // still partly behind the dock.
-      let lowestBottom = 0;
-      for (const { card } of items) {
-        const b = card.getBoundingClientRect().bottom + window.scrollY;
-        if (b > lowestBottom) lowestBottom = b;
-      }
-      const needed = lowestBottom + this.dockHeightPx() + BOTTOM_CLEARANCE_PX;
-      const spacer = Math.max(0, Math.ceil(needed - naturalHeight));
-      if (spacer !== spacerH) this.bottomSpacer.style.height = `${spacer}px`;
-    }
+    const needed = lowestBottom + this.dockHeightPx() + BOTTOM_CLEARANCE_PX;
+    const spacer = Math.max(0, Math.ceil(needed - naturalHeight));
+    if (spacer !== spacerH) this.bottomSpacer.style.height = `${spacer}px`;
   }
 
   // The article element a narration comment refers to. A narration
@@ -2197,7 +2145,11 @@ class CommentSystem {
   // ===== Graphics: hover trigger =====
 
   private installGraphicTriggers() {
-    for (const [, el] of this.graphicsById) {
+    for (const [gid, el] of this.graphicsById) {
+      // Stamp the graphic root as a CSS anchor so cards on this
+      // graphic can `position-anchor` to it without JS layout math.
+      el.style.setProperty("anchor-name", anchorNameForGraphic(gid));
+
       // The "+" button (visible on hover) → creates a new draft. Only
       // mounted when logged in; without identity the comment-creation
       // path is fully closed off (mirrors the action-bar gate above).
@@ -2304,22 +2256,11 @@ class CommentSystem {
     const target = e.target as HTMLElement | null;
     if (!target) return;
 
-    // On mobile, a tap outside any card / highlight / control closes
-    // the active popover. Check this BEFORE the highlight handling
-    // so a tap on the highlight itself opens the popover (handled
-    // below) rather than closing it.
-    if (this.isMobile && this.activeCardId) {
-      const insideCard = target.closest(".cmt-card");
-      const onHighlight = target.closest(".cmt-highlight");
-      const onGraphic = target.closest(
-        ".cmt-graphic-btn, .cmt-graphic-indicator",
-      );
-      const onActionBar = target.closest(".cmt-action-bar");
-      const onFab = target.closest(".cmt-hide-all-fab");
-      if (!insideCard && !onHighlight && !onGraphic && !onActionBar && !onFab) {
-        this.setActiveCard(null);
-      }
-    }
+    // Tap-outside-to-dismiss on mobile is handled by the Popover
+    // API's light-dismiss (an `auto` popover closes on any
+    // pointerdown outside it). The `toggle` event listener wired
+    // in `buildCard` syncs `activeCardId` when that happens, so we
+    // don't need to inspect the click target here.
 
     // Click on a highlight → unhide its card (if hidden) and scroll to
     // it. When highlights are *nested* (multiple threads on the same

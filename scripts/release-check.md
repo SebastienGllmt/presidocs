@@ -20,6 +20,9 @@ The list is short on purpose. Adding a check that the automated layer already co
 - Tap a highlight near the bottom. Popover lands *above* the anchor, fully visible.
 - Scroll the page while the popover is open. The popover stays anchored to its element.
 - Tap a *different* highlight. The popover switches to the new thread; the old card dismisses.
+- Tap an empty area. Light-dismiss closes the popover (the platform handles this — no JS outside-tap handler).
+- Press ESC on a desktop browser narrowed to <1100px. The popover dismisses.
+- Tap a highlight, then focus the reply textarea. The soft keyboard pops up; the popover stays usable (the browser re-evaluates its anchor against the contracted visual viewport — there is no JS placement pass to "compute placement before focus()" anymore, so this is the engine's job to get right).
 
 ## 3. Sign-in flow
 

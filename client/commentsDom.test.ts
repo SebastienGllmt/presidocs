@@ -1,6 +1,6 @@
 // Tier 1.2 — happy-dom coverage of the pure helpers that drive comment
-// indexing, stale-anchor hashing, mobile-popover placement, and the
-// hide-all FAB's localStorage pref.
+// indexing, stale-anchor hashing, and the hide-all FAB's localStorage
+// pref.
 //
 // Class-level behavior (cards-column layout, selection-driven draft
 // creation, the second-click-hide latch) requires standing up the full
@@ -14,11 +14,8 @@ import { beforeEach, expect, test } from "bun:test";
 
 import {
   BLOCK_TAGS,
-  computePopoverPositionForRect,
   loadHighlightsHidden,
   normalizeText,
-  POPOVER_MIN_HEIGHT_PX,
-  POPOVER_TOP_MARGIN_PX,
   saveHighlightsHidden,
   walkBlocks,
 } from "./commentsDom.ts";
@@ -128,70 +125,6 @@ test("walkBlocks — root itself is NOT yielded even when it would match", () =>
   document.body.innerHTML = `<p id="r"><span id="x">x</span></p>`;
   const root = document.querySelector("p")!;
   expect(Array.from(walkBlocks(root, BLOCK_TAGS))).toEqual([]);
-});
-
-// ---- computePopoverPositionForRect (mobile popover math) -------------
-
-test("placeholder anchor with plenty of room below → places below, top set", () => {
-  // Viewport 800, dock 100, anchor at y=100..130 → spaceBelow ≈ 562,
-  // far above MIN_HEIGHT. Choose `below`.
-  const pos = computePopoverPositionForRect(
-    { top: 100, bottom: 130 },
-    { viewportHeight: 800, dockHeight: 100 },
-  );
-  expect(pos.top).toBeDefined();
-  expect(pos.bottom).toBeUndefined();
-  // top is rect.bottom + GAP (130 + 8 = 138).
-  expect(pos.top).toBe("138px");
-  expect(parseInt(pos.maxHeight, 10)).toBeGreaterThanOrEqual(POPOVER_MIN_HEIGHT_PX);
-});
-
-test("anchor near viewport bottom (no room below) → places above, bottom set", () => {
-  // Viewport 800, dock 100, anchor at y=700..730 → spaceBelow ≈ -38
-  // (overlapped with the dock reserve); spaceAbove ≈ 676. Flip to above.
-  const pos = computePopoverPositionForRect(
-    { top: 700, bottom: 730 },
-    { viewportHeight: 800, dockHeight: 100 },
-  );
-  expect(pos.top).toBeUndefined();
-  expect(pos.bottom).toBeDefined();
-  expect(parseInt(pos.maxHeight, 10)).toBeGreaterThanOrEqual(POPOVER_MIN_HEIGHT_PX);
-});
-
-test("anchor flush at the top — placeBelow wins because spaceAbove is tiny", () => {
-  // Anchor at y=0..20 → spaceAbove = 0 - 16 - 8 = -24; spaceBelow is
-  // huge. Below is the choice.
-  const pos = computePopoverPositionForRect(
-    { top: 0, bottom: 20 },
-    { viewportHeight: 800, dockHeight: 100 },
-  );
-  expect(pos.top).toBeDefined();
-  // Clamped to TOP_MARGIN minimum so the popover never crosses the
-  // viewport's top edge.
-  expect(parseInt(pos.top!, 10)).toBeGreaterThanOrEqual(POPOVER_TOP_MARGIN_PX);
-});
-
-test("maxHeight never falls below MIN_HEIGHT (even in cramped layout)", () => {
-  // Vanishingly thin viewport (300px) with a big dock (200px) leaves
-  // negative spaceBelow. We still must report at least MIN_HEIGHT so the
-  // popover renders something usable rather than collapsing to 0.
-  const pos = computePopoverPositionForRect(
-    { top: 50, bottom: 80 },
-    { viewportHeight: 300, dockHeight: 200 },
-  );
-  expect(parseInt(pos.maxHeight, 10)).toBeGreaterThanOrEqual(POPOVER_MIN_HEIGHT_PX);
-});
-
-test("zero dock + plenty of viewport → 'below' has nearly the full viewport", () => {
-  // Dock isn't always mounted (passive readers, opt-out posts). The
-  // positioner must still produce a coherent placement.
-  const pos = computePopoverPositionForRect(
-    { top: 200, bottom: 230 },
-    { viewportHeight: 1000, dockHeight: 0 },
-  );
-  expect(pos.top).toBeDefined();
-  // spaceBelow ≈ 1000 - 24 - 230 - 8 = 738
-  expect(parseInt(pos.maxHeight, 10)).toBe(738);
 });
 
 // ---- hide-all FAB localStorage round-trip ----------------------------

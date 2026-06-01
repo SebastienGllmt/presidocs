@@ -9,12 +9,7 @@
 //      (commentsStale.ts).
 //   2. `walkBlocks` — the depth-first commentable-block iterator. Used
 //      both at index time and at insert-id-suffixing time.
-//   3. `computePopoverPositionForRect` — the pure math half of the
-//      mobile-popover anchor placement. The class-level wrapper resolves
-//      the anchor element; this helper takes the resolved rect plus
-//      viewport / dock dimensions and returns the inline style overrides
-//      (top/bottom/max-height).
-//   4. `loadHighlightsHidden` / `saveHighlightsHidden` — the hide-all FAB
+//   3. `loadHighlightsHidden` / `saveHighlightsHidden` — the hide-all FAB
 //      pref's localStorage round-trip.
 //
 // Nothing here imports the CommentStore / Automerge / fetch — that's
@@ -85,74 +80,6 @@ export function* walkBlocks(
       stack.push(node.children[i]!);
     }
   }
-}
-
-// Minimal Rect shape the popover positioner reads. Matches the subset of
-// `DOMRect` the production code touches.
-export type AnchorRect = {
-  readonly top: number;
-  readonly bottom: number;
-};
-
-export type PopoverDimensions = {
-  readonly viewportHeight: number;
-  readonly dockHeight: number;
-};
-
-export type PopoverPosition = {
-  top?: string;
-  bottom?: string;
-  maxHeight: string;
-};
-
-// Constants the production positioner uses; exported so a future caller
-// (or test) can reason about the band where placement flips between
-// "below" and "above."
-export const POPOVER_GAP_PX = 8;
-export const POPOVER_TOP_MARGIN_PX = 16;
-export const POPOVER_MIN_HEIGHT_PX = 140;
-// Extra clearance above the dock so the popover doesn't kiss its top edge.
-export const POPOVER_DOCK_CLEARANCE_PX = 24;
-
-/**
- * Compute the inline style for the mobile popover anchored to an
- * element. The implementation prefers placement BELOW the anchor — where
- * a contextual menu is conventionally expected — unless there's clearly
- * more usable space above.
- *
- *   - "Usable space below" is the band between the anchor's bottom edge
- *     (+ gap) and the reserved bottom margin for the player dock.
- *   - "Usable space above" is the band between the anchor's top edge
- *     (− gap) and the viewport's top margin.
- *   - Below wins ties; only when `spaceBelow < MIN_HEIGHT AND
- *     spaceBelow < spaceAbove` do we flip to "above."
- *
- * Always returns BOTH `top` OR `bottom` AND `max-height`; the caller
- * writes `auto` for whichever isn't set so a stale value from a previous
- * desktop layout pass can't bleed through (methodology calls this out
- * as the load-bearing inline-style rule).
- */
-export function computePopoverPositionForRect(
-  rect: AnchorRect,
-  { viewportHeight, dockHeight }: PopoverDimensions,
-): PopoverPosition {
-  const BOTTOM_RESERVE = dockHeight + POPOVER_DOCK_CLEARANCE_PX;
-  const spaceBelow =
-    viewportHeight - BOTTOM_RESERVE - rect.bottom - POPOVER_GAP_PX;
-  const spaceAbove = rect.top - POPOVER_TOP_MARGIN_PX - POPOVER_GAP_PX;
-  const placeBelow =
-    spaceBelow >= POPOVER_MIN_HEIGHT_PX || spaceBelow >= spaceAbove;
-
-  if (placeBelow) {
-    return {
-      top: `${Math.round(Math.max(POPOVER_TOP_MARGIN_PX, rect.bottom + POPOVER_GAP_PX))}px`,
-      maxHeight: `${Math.max(POPOVER_MIN_HEIGHT_PX, spaceBelow)}px`,
-    };
-  }
-  return {
-    bottom: `${Math.round(Math.max(BOTTOM_RESERVE, viewportHeight - rect.top + POPOVER_GAP_PX))}px`,
-    maxHeight: `${Math.max(POPOVER_MIN_HEIGHT_PX, spaceAbove)}px`,
-  };
 }
 
 const HIGHLIGHTS_HIDDEN_KEY = "blog-comments-highlights-hidden";

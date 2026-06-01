@@ -84,9 +84,12 @@
 
 /* ============================================================================
    Right-margin column — Google-Docs-style. Each thread (and each draft) is
-   a card, absolutely positioned within the column so it aligns vertically
-   with its anchor. The column itself spans the full document height so
-   cards scroll naturally with the page.
+   a card, CSS-anchor-positioned to its highlight (text), graphic root,
+   or narration article element. The column is a `position: absolute`
+   positioning frame: its `top`/`right`/`width` set the cards' horizontal
+   bounds, and `anchor(top)` aligns each card's top edge with its anchor
+   in the column's coordinate space (the engine handles document-Y →
+   column-Y conversion natively, on every scroll frame, in C++).
    ============================================================================ */
 .cmt-column {
   position: absolute;
@@ -103,6 +106,13 @@
   position: absolute;
   left: 0;
   right: 0;
+  /* `position-anchor` is set inline per-card in `buildCard` (the value
+     varies by thread shape — text / graphic / narration). The `anchor()`
+     fallback handles stale or off-screen anchors: a 0 falls into the
+     `--cmt-pin-to-column-top` fallback below when overflow detection
+     would otherwise leave the card invisible. */
+  top: anchor(top, 0px);
+  position-try-fallbacks: --cmt-pin-to-column-top;
   pointer-events: auto;
   background: var(--cmt-bg);
   color: var(--cmt-fg);
@@ -114,6 +124,10 @@
   transition: top 180ms cubic-bezier(0.22, 1, 0.36, 1),
               box-shadow 160ms ease,
               border-color 160ms ease;
+}
+
+@position-try --cmt-pin-to-column-top {
+  top: 0;
 }
 .cmt-card:hover {
   box-shadow: var(--cmt-shadow);
@@ -719,13 +733,13 @@ body.cmt-highlights-hidden .cmt-action-bar { display: none; }
    article's `margin: auto` shifts it left, opening a clear gutter for the
    column instead of overlapping article content.
 
-   Below ~1100px the column doesn't fit alongside the article, so we
-   switch to a *popover model*: cards still render into the column DOM
-   (so the existing build/event logic works unchanged), but everything
-   in the column is hidden by CSS — only the card tagged
-   `data-mobile-active="true"` shows up, as a fixed-position bottom
-   sheet anchored to the viewport. The hide-all FAB takes over as the
-   single dismiss affordance.
+   Below ~1100px the column doesn't fit alongside the article, so each
+   card carries `popover="auto"` instead and renders as a native popover
+   in the browser's top layer when its highlight is tapped. Light-dismiss,
+   ESC, and focus return are handled by the platform; CSS Anchor
+   Positioning (set in the desktop block above + ts-stamped `anchor-name`
+   on the tapped highlight) places the popover next to its anchor. The
+   hide-all FAB remains the single mute-all affordance.
    ============================================================================ */
 @media (min-width: 1100px) {
   body { padding-right: 360px; }
@@ -800,33 +814,41 @@ body.cmt-highlights-hidden .cmt-action-bar { display: none; }
      `setActiveCard`. */
   body.cmt-mobile-popover-active .cmt-identity { display: none; }
 
-  /* Every card is hidden by default… */
-  .cmt-card { display: none; }
+  /* Cards carry `popover="auto"` on mobile; the platform's UA
+     stylesheet already gives them `display: none` until the popover
+     is shown, so we don't need our own hide rule. When the platform
+     promotes a card to the top layer (via `showPopover()` or a
+     light-dismiss-toggle), `:popover-open` matches and we override
+     the column's positioning with bottom-sheet geometry.
 
-  /* …except the one marked active, which renders as a bottom-sheet
-     overlay. left/right padding keeps it off the screen edges; the
-     max-height + overflow-y lets long threads scroll within the
-     popover. `bottom: 80px` leaves room for the narrator's "Listen"
-     pill (bottom: 18px) without obscuring it — the popover may
-     partially overlap the player dock when both are open, but the
-     z-index put the popover on top and the overlap is small. */
-  .cmt-card[data-mobile-active="true"] {
-    display: block;
-    position: fixed;
-    left: 12px;
-    right: 12px;
-    bottom: 80px;
-    top: auto;
+     `position-area` would place the popover against an anchor —
+     wired in by stamping `anchor-name` on the tapped highlight and
+     `position-anchor` on the card (see comments.ts). `flip-block`
+     tries an above-anchor placement if below overflows; if both
+     overflow (anchor near top + tall dock) we fall through to the
+     `--cmt-bottom-sheet` rule, which pins the popover to the bottom
+     of the viewport above the player dock. */
+  .cmt-card:popover-open {
+    margin: 0;
+    border: 1px solid var(--cmt-border);
+    border-radius: 10px;
+    background: var(--cmt-bg);
+    color: var(--cmt-fg);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+    width: calc(100vw - 24px);
+    max-width: 520px;
     max-height: 60vh;
     overflow-y: auto;
-    pointer-events: auto;
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
-    z-index: var(--cmt-z-card);
+    position-area: block-end span-inline;
+    position-try-fallbacks: flip-block, --cmt-bottom-sheet;
+    margin-block: 8px;
   }
 
-  /* The drafting selection bar can collide with the bottom-sheet on
-     short screens. Push it above the popover when both are visible. */
-  .cmt-action-bar { z-index: calc(var(--cmt-z-card) + 1); }
+  @position-try --cmt-bottom-sheet {
+    position-area: none;
+    inset: auto 12px calc(var(--narrate-dock-height, 0px) + 24px) 12px;
+    margin: 0;
+  }
 }
 
 } /* @layer engine-components */
