@@ -15,6 +15,7 @@
 // Idempotent — running twice without adding a post produces byte-identical
 // output (entries are sorted).
 
+import type { Dirent } from "node:fs";
 import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
@@ -78,6 +79,30 @@ async function main(): Promise<void> {
       urlPath: "/",
     });
     used.add("landing");
+  }
+
+  // Other root-level *.html files (privacy.html, terms.html, etc.) become
+  // top-level routes at /<basename>. They're not posts (no narration, no
+  // comments column) but they're real pages the blog wants to serve — the
+  // canonical case is the privacy policy that the build-time footer
+  // injector links to. Without this, `/privacy` would 404 in dev even
+  // though `bun build` produces dist/privacy.html.
+  let rootEntries: Dirent[] = [];
+  try {
+    rootEntries = await readdir(paths.contentRoot, { withFileTypes: true });
+  } catch {
+    rootEntries = [];
+  }
+  rootEntries.sort((a, b) => a.name.localeCompare(b.name));
+  for (const ent of rootEntries) {
+    if (!ent.isFile() || !ent.name.endsWith(".html") || ent.name === "index.html") continue;
+    const full = join(paths.contentRoot, ent.name);
+    const slug = ent.name.replace(/\.html$/, "");
+    routes.push({
+      importName: toIdent(slug, used),
+      importPath: relative(paths.generatedMapsDir, full).split(sep).join("/"),
+      urlPath: `/${slug}`,
+    });
   }
 
   const postFiles: string[] = [];

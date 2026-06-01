@@ -33,3 +33,65 @@ p { color: #57606a; }
 }
 .posts a:hover { text-decoration: underline; }
 .meta { display: block; font-size: 0.9rem; color: #6e7781; margin-top: 4px; }
+
+/* Legal pages (privacy policy, terms of service). Reuses landing.css's
+   typography but widens the column slightly (more body text than the
+   landing list) and tightens vertical rhythm for headings. */
+main.legal {
+  max-width: 720px;
+  margin: 6vh auto 0;
+}
+main.legal h1 { margin-bottom: 4px; }
+main.legal h2 {
+  margin-top: 2.25rem;
+  margin-bottom: .5rem;
+  font-size: 1.25rem;
+  color: #1f2328;
+}
+main.legal h3 {
+  margin-top: 1.5rem;
+  margin-bottom: .25rem;
+  font-size: 1.05rem;
+  color: #1f2328;
+}
+main.legal p, main.legal li { color: #24292f; }
+main.legal ul { padding-left: 1.25rem; }
+main.legal li { margin: .35rem 0; }
+main.legal code {
+  font: 0.9em/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #f3f4f6;
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+main.legal a { color: #0969da; }
+.legal-meta {
+  color: #6e7781;
+  font-size: .85rem;
+  margin: 0 0 1.5rem;
+}
+.legal-back {
+  margin: 0 0 1rem;
+  font-size: .9rem;
+}
+
+/* Site footer — present on every page (landing, posts, legal). Holds the
+   privacy-policy link required by GDPR / CalOPPA / APPI guidance. Kept
+   minimal so it never competes with content for attention. */
+.site-footer {
+  max-width: 720px;
+  margin: 4rem auto 2rem;
+  padding: 1rem 24px;
+  border-top: 1px solid #e1e4e8;
+  font-size: .85rem;
+  color: #6e7781;
+  text-align: center;
+}
+.site-footer a {
+  color: #57606a;
+  text-decoration: none;
+  margin: 0 .5rem;
+}
+.site-footer a:hover {
+  color: #0969da;
+  text-decoration: underline;
+}

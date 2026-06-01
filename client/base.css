@@ -316,3 +316,27 @@ article h4:hover > .heading-link,
     opacity: 0.55;
   }
 }
+
+/* Site footer — injected at build time by shared/injectFooter.ts on every
+   served page, holds the privacy-policy link required by GDPR / CalOPPA /
+   APPI. Mirrored in landing.css so the landing/legal pages (which don't
+   link base.css) get the same look. Kept minimal so it never competes with
+   article content for attention. */
+.site-footer {
+  max-width: 720px;
+  margin: 4rem auto 2rem;
+  padding: 1rem 24px;
+  border-top: 1px solid rgba(31, 35, 40, 0.08);
+  font-size: .85rem;
+  color: var(--page-fg-muted);
+  text-align: center;
+}
+.site-footer a {
+  color: var(--page-fg-muted);
+  text-decoration: none;
+  margin: 0 .5rem;
+}
+.site-footer a:hover {
+  color: var(--page-fg);
+  text-decoration: underline;
+}

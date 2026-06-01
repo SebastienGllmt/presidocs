@@ -1350,6 +1350,113 @@ Two remaining behaviors to double-check at runtime:
 - **A CSP nonce** — buys nothing while there are no inline `<script>` blocks (the analytics beacon is external-`src`). Revisit only if authored post HTML grows inline scripts.
 - **`Cross-Origin-Embedder-Policy`** — `require-corp` would force every cross-origin response we load (avatars, the beacon) to ship CORP headers of their own, for the sole benefit of `SharedArrayBuffer` / high-res timers, which we don't use (Automerge's WASM works without them).
 
+## Privacy & data protection
+
+A reader-facing blog with login-gated comments and page-view analytics is **already a personal-data system** under [GDPR][GDPR], [CCPA/CPRA][CCPA], and Japan's [APPI][APPI] — even when the data collection is deliberately small. The engine treats privacy as a first-class concern with three layers: a small, mostly-zero **data inventory** that we keep accountable to ourselves; an **always-on disclosure surface** (footer link + just-in-time notice + full policy page) sized to satisfy GDPR Art. 12–14, CalOPPA's "conspicuously post," and APPI's notice-at-collection rule with one pattern; and a **forward-looking checklist** that any new feature has to pass before it ships.
+
+The disclosure pattern follows [ISO/IEC 29184:2020][ISO29184] (the international standard for online privacy notices and consent) and the UK ICO's "concise, transparent, intelligible, easily accessible" reading of GDPR Art. 12 — *layered notices*: a one-click footer link on every page (full policy), plus just-in-time disclosure at the point of collection (the OAuth login button). No single web standard mandates an exact location, so we follow the industry pattern that satisfies every named regime at once.
+
+### Data inventory
+
+What gets collected, where it lives, who acts as processor, what the legal basis is. **Keep this list authoritative** — every entry needs a matching paragraph in the per-blog `privacy.html`, and adding to this list always means updating that page in the same PR.
+
+- **Page-view analytics** — Cloudflare Web Analytics, the *cookieless* variant (see [Analytics](#analytics-cloudflare-web-analytics)). Per page load: URL, referrer, coarse browser/device info; no cookies, no fingerprinting, no per-visitor identifier reaches the operator. Cloudflare receives the IP transiently to handle the request and does not retain it in the analytics dataset. **Legal basis:** legitimate interest (GDPR Art. 6(1)(f)) — minimal, aggregate, no profiling. **Sub-processor:** Cloudflare.
+
+- **Comments** — only collected if a reader chooses to sign in. From the OAuth provider we receive `(provider, sub, name, email, picture URL)`; we store the comment body, anchor, and that identity in per-user R2 blobs (see [Storage layer](#storage-layer-clientcommentsstorets) and [Comments R2 layout](#why-not-kv)). The blob path embeds `<provider>:<sub>`, the byline shows name + avatar, the email is held server-side only (used for reply notification, never rendered — same property the [byline privacy invariant](#author-profiles-and-bylines-sharedauthorprofilets-clientbylinets) enforces for authors). **Legal basis:** consent (GDPR Art. 6(1)(a)), recorded by the act of clicking "Sign in with X" and submitting a comment; withdrawable by deleting the comment or requesting deletion. **Sub-processors:** Cloudflare (storage), Google + Microsoft (authentication).
+
+- **Session cookie** — `__Host-blog-session` (prod) / `blog-session` (dev), HS256 JWT, `HttpOnly; Secure; SameSite=Lax`, 400-day TTL (see [Sessions](#sessions-jwt-cookie-hs256-jose)). Set *only* after a user clicks a login button, so it's **strictly necessary** under GDPR/ePrivacy — no banner required. The cookie value is opaque to the operator beyond the JWT payload (`userId`, `name`, `email`, `picture`).
+
+- **OAuth flow cookies** — `blog-oauth-state-<provider>` and `blog-oauth-verifier-<provider>`, 10-minute lifetime, cleared on callback (see [OAuth flow plumbing](#oauth-flow-plumbing)). CSRF + PKCE plumbing only; never read after the flow completes. Strictly necessary.
+
+- **Server logs** — the Worker emits standard request logs (timestamp, method, path, status, edge IP) as a side effect of running on Cloudflare's platform. Not extracted for analytics; Cloudflare's standard retention applies.
+
+What we do **not** collect: third-party advertising cookies, tracking pixels, persistent client fingerprints, behavioral profiles, geolocation, account passwords (OAuth handles that at the provider). The CSP (`shared/securityHeaders.ts`) is the structural check on this — adding a new tracking script would require relaxing `script-src` first.
+
+### Disclosure surfaces
+
+Three surfaces, one source of truth (the per-blog `privacy.html`):
+
+- **The policy page** — `<content-repo>/privacy.html`. Lives in the **content repo**, not the engine, because it makes operator-specific claims (controller identity, contact email, jurisdictions named, sub-processor list as of today). The engine ships no policy text — that would be a forged representation on behalf of the operator. A fresh content repo without `privacy.html` simply gets no footer link (the injector is env-gated, see below).
+
+- **The footer** — every served page carries a `<footer class="site-footer">` containing a "Privacy Policy" link, injected at build time by `shared/injectFooter.ts` (see [Build-time HTML strip](#build-time-html-strip-generatestrip-served-htmlts) — the footer inject runs in the same post-build pass as the strip / analytics / structured-data injects, mirroring their idempotent, env-gated, fail-silent posture). Configured by a single env var, `PRIVACY_POLICY_URL`, in the content repo's `.env`. Unset → no footer (same pattern as `CF_ANALYTICS_TOKEN`). The injector's idempotency check looks for `class="site-footer"` and refuses to double-inject; a content page can hand-author its own footer (the policy page does, so it renders correctly in dev where the injector doesn't run) and the build pass leaves it alone.
+
+- **The just-in-time notice** — a single `<p class="cmt-identity-privacy">` rendered by `client/comments.ts` directly under the OAuth login buttons, naming what's recorded and linking to `/privacy`. This is the *point of collection* — GDPR Art. 13 wants the legal basis (consent) and a pointer to the full notice surfaced at exactly the moment the user is about to give it. Built with `textContent` + a single anchor — no `innerHTML` splicing — matching the rest of the comments UI's XSS posture (every interpolation point is `textContent`; the CSP is the structural backstop, see [HTTP security headers](#http-security-headers-sharedsecurityheadersts)).
+
+**Why build-time injection, not a static `<footer>` in each post.** Hand-rolling the same footer into every post HTML would duplicate the markup, and a content repo author would have to remember to paste it into every new post they wrote. A client-side DOM injection would either flash the page without a footer before the script ran, or require adding script-driven content (breaking the "no extra runtime JS" posture). Build-time injection treats the footer as a deploy-time decoration, exactly like the analytics beacon and the structured-data block, with the same fail-silent posture if the env var is unset.
+
+**Dev visibility.** The injector doesn't run in dev (same posture as the strip/analytics/structured-data injects — localhost isn't where regulators look). The policy page's own static `<footer>` is the exception; it's hand-authored so the page renders complete in dev too, and the injector's marker-class check (`class="site-footer"`) prevents a double-footer in prod. For everything else, the source HTML is intentionally "clean" in dev; if a dev-mode footer ever becomes load-bearing, the same env var would work — the Bun dev server would need a small HTML transform plugin (same shape as the strip's "Dev doesn't strip" note).
+
+**Dev routes for non-post pages.** `generate/post-routes.ts` (the dev-server route-table codegen) picks up any root-level `*.html` besides `index.html` and routes it to `/<basename>`, so `/privacy` works under `bun run dev` without a manual import. This is the general path for any future top-level legal/marketing page (`terms.html`, `accessibility.html`) — drop the file in the content repo, restart dev, the route is there.
+
+### Considering privacy for new features
+
+Privacy isn't only "what we collect today." A new feature can quietly turn a no-data system into a data-handling one, and the cost of fixing that *after* it ships is high. Before adding anything that touches reader-side state, walk the checklist:
+
+**1. Does this feature collect or process personal data?** Personal data is anything that could identify a specific person, directly (name, email, login ID) or indirectly (IP-pinned analytics, persistent client fingerprints, comment text mentioning identity). If yes:
+
+- **What's the legal basis under GDPR?** Pick exactly one and document it. The realistic options here are *consent* (Art. 6(1)(a) — explicit user action like "Sign in with X" or a notification opt-in), *legitimate interest* (Art. 6(1)(f) — only safe when data is minimal, aggregate, and not used for profiling; see analytics), and *contract* (Art. 6(1)(b) — almost never applies on a personal blog). If the choice isn't obvious, the answer is probably "we shouldn't be collecting it."
+
+- **Where will it be stored, and who can read it?** Sub-processor or first-party? If new sub-processor, add to the policy and the data inventory in this section.
+
+- **What's the retention policy?** "Until the user deletes it" is fine for user-authored content; "indefinitely" for anything else is a red flag. Anything operational (logs, debug traces) should have a stated upper bound.
+
+- **Does the user need a just-in-time notice at the point of collection?** Sub-rule: if the action that records the data is *user-initiated* (click a button), JIT is mandatory — it's where GDPR Art. 13 wants the notice. If the data is collected passively in the background, the footer link plus a paragraph in the policy is the floor.
+
+- **Is there a deletion path?** Every personal-data store has to be removable on request; if the feature stores something the operator can't see or delete on the user's behalf (e.g. a third-party widget's cookie), don't ship it.
+
+**2. Does it set or read a cookie?**
+
+- *Strictly necessary* cookies (session auth, CSRF state, language preference set by user action) need **no** banner and no consent, but they go in the policy with their purpose, lifetime, flags.
+- *Non-essential* cookies (analytics, advertising, A/B testing, persistence beyond the session) would require a **consent banner with a real reject path** before being set. We have none today and the bar to add one is high — Cloudflare Web Analytics is cookieless precisely so we don't have to. If a feature would set a non-essential cookie, the right move is almost always to use a cookieless alternative or skip the feature.
+
+**3. Does it add a sub-processor?**
+
+Every external service that touches reader data is a sub-processor under GDPR and a "service provider" under CCPA. **Name it in the policy.** Today the list is short (Cloudflare; Google and Microsoft as OAuth IdPs). Adding e.g. a third-party comment system, a hosted search service, an email-newsletter platform, or an embed that fetches data, means amending the policy *in the same PR* that wires up the integration. If the policy update isn't worth doing, the integration probably isn't worth shipping.
+
+Within Cloudflare itself, R2 and Workers KV are already covered by Cloudflare's data-processing terms — moving comments to KV (we've [explicitly declined to](#why-not-kv)) wouldn't add a new sub-processor, but adding e.g. Cloudflare Email Routing or Stream would.
+
+**4. Does it expose data to third parties beyond service-provider use?**
+
+- "Sale" or "sharing" under CCPA/CPRA is broader than "for money" — it includes most forms of disclosure for cross-context behavioral advertising. **We do not sell or share**, full stop, and the policy says so. A new feature that would change this (e.g. an embed that ships visitor data to an ad network) would also require: a "Do Not Sell or Share My Personal Information" or "Your Privacy Choices" link in the footer (CCPA §1798.135), a Global Privacy Control handler, and explicit consent-or-opt-out plumbing. That's a multi-week add, not an afternoon — treat the choice with that weight.
+
+- *Disclosures to authorities* (legal-process compliance) are not "sale" but they're worth keeping in mind; the policy already covers them with a single sentence.
+
+**5. Is the feature reader-visible only, or does it touch the operator's own data?**
+
+If the feature collects data *about the operator* (e.g. surface authoring analytics, expose draft history publicly), the analysis is the same — the operator is also a person under these regulations. But the [author-email privacy invariant](#why-email-and-not-userid) and the [byline-email-doesn't-leak invariant](#author-profiles-and-bylines-sharedauthorprofilets-clientbylinets) are already engine-level guarantees; respect them. Specifically, *no public surface should derive from the author email* (avatar URLs hash it, byline never renders it, JSON-LD omits it). New surfaces that would expose author data have to maintain that property.
+
+**6. Is the feature subject to a stricter regime than GDPR/CCPA/APPI?**
+
+The blog is not directed at children (under 16, per the policy); a feature that *would* attract under-16 users (e.g. content for schools) crosses into COPPA / Article 8 territory and needs verifiable parental consent. Health, financial, biometric, location-pinpoint data are all special categories under GDPR Art. 9 and out of scope for this engine — do not store them.
+
+**7. Operational defaults.**
+
+- Use the existing CSP as a structural check (a new tracking script can't load without relaxing `script-src`).
+- Use the existing comment-system "everything goes through `textContent`" rule as a structural check on what reaches the DOM.
+- Use the existing R2-per-user blob shape: it makes per-user deletion a single `DELETE` and per-user export a single `GET`, which is what Art. 15 / 17 / 20 rights mostly come down to.
+- Keep the `.env` env var pattern (fail-silent if unset). A privacy feature that *requires* a build-time secret to function should not silently no-op the privacy property — but a feature that *additionally* discloses something can fail-silent (no analytics token → no analytics, no policy URL → no footer link, both fine for a personal-build).
+
+**When in doubt, the answer is "don't collect it."** The cheapest data to keep compliant is the data that was never collected; the second cheapest is data the operator can delete with a single command. Optimize for that ordering before reaching for processes (audit logs, DPIA, data-mapping doc).
+
+### Operator obligations (what the engine doesn't automate)
+
+A handful of compliance duties are inherent to running a blog and the engine deliberately doesn't try to solve them — they're per-operator and not technical:
+
+- **Keep `<content-repo>/privacy.html` current**, including the "Last updated" date. Any change to the data inventory in this section is a code-and-content change in the same PR.
+- **Respond to data-subject requests** (access, rectification, deletion, portability) within the regulatory window (30 days GDPR / APPI, 45 days CCPA). The contact email on the policy is the funnel.
+- **Maintain the sub-processor list** as Cloudflare's own product surface evolves (new bindings, new regions). The list in this section is a snapshot.
+- **Notify affected users of a personal-data breach** within 72 hours of becoming aware (GDPR Art. 33–34). The R2 audit log we [chose not to ship](#excluded-from-v1-3) is a real gap here at scale; reconsider it before any commercial deployment.
+
+### Excluded from v1
+
+- **Cookie banner / consent management platform** — not required under the current shape (cookieless analytics, strictly-necessary session cookie set only on user-initiated login). Adding one would mean adding a *non-essential* cookie or tracker — see the checklist above. If that ever happens, the banner has to offer a reject-all path as prominent as accept-all (the EDPB has been explicit on this).
+- **"Do Not Sell or Share / Your Privacy Choices" link** — required only if the operator sells or shares personal information in the CCPA sense, which we don't. Surface and Global Privacy Control wiring would come together.
+- **Formal DPIA** (Data Protection Impact Assessment under GDPR Art. 35) — not required at this scale or risk level; this section + the policy file are the proportionate substitute. A DPIA becomes mandatory if e.g. comments are processed in bulk for sentiment analysis, or features start systematically profiling readers.
+- **DSAR (Data Subject Access Request) self-service portal** — manual via email is fine at this volume. The R2-per-user blob shape means a fulfillment is `GET blobs/<userId>` for export, `DELETE blobs/<userId>` for erasure; if request volume ever justifies it, a `/me/data` route would be a small add.
+- **R2 audit log** of every write — same note as in the deploy-architecture [Excluded from v1](#excluded-from-v1-3), reconsidered through the privacy lens: it would also harden Art. 33 breach response. Still deferred; flagged for any commercial deployment.
+- **Cookie consent for Cloudflare Web Analytics** — Cloudflare's beacon is cookieless and the data flow is minimal/aggregate, so we treat it as legitimate-interest with no banner. The EDPB has not blessed cookieless analytics in general, and some regulators read ePrivacy strictly enough that a banner might still be required in some jurisdictions; revisit if a regulator points one out, or move to a fully self-hosted aggregate counter.
+- **Engine-level policy boilerplate.** We deliberately ship no `privacy.html` template — see "Disclosure surfaces" above. A future helper that scaffolded a placeholder policy (`bun run init:privacy`) is reasonable, but it would have to make extremely loud that the operator owns every claim it makes.
+
 ## Terminology
 
 Two units of spoken content come up throughout this doc
@@ -1373,6 +1480,10 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 - **Sitemaps 0.9** ([sitemaps.org protocol][Sitemaps]): `dist/sitemap.xml` lists the canonical URL set (landing + every real post) with `<lastmod>` from `versions.json` — the same source the feed `<updated>` uses, so feed freshness and sitemap freshness can't drift. `<changefreq>`/`<priority>` deliberately omitted (Google documents that it ignores both). See [Site-level discovery](#site-level-discovery-generatesite-discoveryts).
 - **`llms.txt`** ([llmstxt.org convention][LlmsTxt]): `dist/llms.txt` is a curated Markdown map an LLM indexer can read instead of crawling every page — H1 title + blockquote summary + `## Posts` (the curated post index, the same per-post descriptions the feed `<summary>` carries) + `## Optional` (subscription endpoints — the convention reserves `## Optional` for "URLs that can be skipped if a shorter context is needed," and Atom/podcast feeds are exactly that). The companion `/llms-full.txt` is deferred (article body is already the canonical crawlable text — see [§9 of proposal 16](./proposals/16-seo-llm-discoverability.md)). See [Site-level discovery](#site-level-discovery-generatesite-discoveryts).
 - **WebVTT** ([spec][WebVTT]) **as an emitted export sidecar**: each aligned post emits `generated/<slug>/captions.vtt` — one cue per `<mark>`, intra-cue `<HH:MM:SS.mmm>` timestamp tags per word — generated from the same `marks[].words` table the runtime manifest carries. The file exists for the future social-media video subtitle pipeline (out of scope — see [proposals/17 §10](./proposals/17-word-level-narration-sync.md)) and for general interop with caption tooling. The drawer does **not** consume it (it reads the same data inline from the manifest, sidestepping a second fetch and a parser; we don't use a `<track>` overlay either — the browser's `TextTrack` API surfaces only whole cues on `cuechange`, never intra-cue tokens, so it wouldn't save us code). See [Word-level timing](#word-level-timing-drawer-karaoke--subtitle-sidecar).
+- **GDPR / UK GDPR** ([Regulation (EU) 2016/679][GDPR]): the EU regulation that frames every data-handling decision the engine makes — the lawful-basis vocabulary (consent / legitimate interest), the transparency duties of Art. 12–14, the data-subject rights of Art. 15–22 mapped 1:1 in the policy, and the 72-hour breach window flagged for operator follow-through. See [Privacy & data protection](#privacy--data-protection).
+- **CCPA / CPRA** ([Cal. Civ. Code §1798.100 et seq.][CCPA]) and **[CalOPPA][CalOPPA]**: California's privacy regime — drives the policy's "we do not sell or share" representation, the no-required "Do Not Sell" link rationale (no sale → not required), the 45-day response window, and CalOPPA's "conspicuously post" footer placement. See [Privacy & data protection](#privacy--data-protection).
+- **APPI** ([Act on the Protection of Personal Information, Act No. 57 of 2003][APPI]): Japan's privacy law — the operator-jurisdiction floor for this blog. Drives the policy's PPC-as-supervisory-authority pointer, the 30-day response window, and the access/correction/deletion rights of Art. 33–35. See [Privacy & data protection](#privacy--data-protection).
+- **ISO/IEC 29184:2020** ([spec][ISO29184]): the international standard for online privacy notices and consent. We follow its layered-notice structure (full policy + just-in-time disclosure + every-page link) without reproducing its prescriptive checklist verbatim — the document is paywalled, and our regime-by-regime rights mapping in `privacy.html` already covers the substantive content points. See [Privacy & data protection](#privacy--data-protection).
 
 ### Possibly usable later
 
@@ -1430,6 +1541,11 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 [Sitemaps]: https://www.sitemaps.org/protocol.html
 [SitemapExt]: https://www.sitemaps.org/protocol.html#extending
 [LlmsTxt]: https://llmstxt.org/
+[GDPR]: https://eur-lex.europa.eu/eli/reg/2016/679/oj
+[CCPA]: https://leginfo.legislature.ca.gov/faces/codes_displayText.xhtml?division=3.&part=4.&lawCode=CIV&title=1.81.5
+[CalOPPA]: https://oag.ca.gov/privacy/online-privacy
+[APPI]: https://www.ppc.go.jp/en/legal/
+[ISO29184]: https://www.iso.org/standard/70331.html
 
 <!-- For LLMs: local copies of the specs above. (No local copy of [TwitterCards]
 — developer.x.com renders it client-side as a JS app, so there is no static

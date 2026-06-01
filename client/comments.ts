@@ -1037,6 +1037,7 @@ class CommentSystem {
       buttons.appendChild(this.buildProviderLink("microsoft", "Sign in with Microsoft"));
       h.appendChild(label);
       h.appendChild(buttons);
+      h.appendChild(this.buildPrivacyNotice());
     }
   }
 
@@ -1046,6 +1047,30 @@ class CommentSystem {
     a.href = loginUrl(provider);
     a.textContent = label;
     return a;
+  }
+
+  // Just-in-time privacy notice rendered directly under the login
+  // buttons. GDPR Art. 13 wants the legal basis (consent) and a
+  // pointer to the full notice at the point of collection — exactly
+  // here, where the user is about to OAuth in and have their name +
+  // email + provider id recorded. The full Privacy Policy lives at
+  // /privacy; we link to it rather than reproduce it inline. We
+  // intentionally use textContent for the body so the link is the
+  // only HTML node (no innerHTML splicing of attacker-influenced
+  // strings — same posture as every other interpolation point in
+  // this file).
+  private buildPrivacyNotice(): HTMLElement {
+    const wrap = document.createElement("p");
+    wrap.className = "cmt-identity-privacy";
+    wrap.appendChild(document.createTextNode(
+      "Signing in records your name, email, and a provider account ID alongside your comments. See the ",
+    ));
+    const a = document.createElement("a");
+    a.href = "/privacy";
+    a.textContent = "Privacy Policy";
+    wrap.appendChild(a);
+    wrap.appendChild(document.createTextNode("."));
+    return wrap;
   }
 
   // Small round avatar. Falls back to a colored initial if no picture

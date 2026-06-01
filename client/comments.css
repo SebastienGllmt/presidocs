@@ -434,6 +434,27 @@ body.cmt-identity-dismissed .cmt-identity { display: none; }
 .cmt-identity-provider:hover { background: #eef0f3; }
 .cmt-identity-provider-google { border-color: #d0d7de; }
 .cmt-identity-provider-microsoft { border-color: #d0d7de; }
+/* GDPR-style just-in-time notice, rendered directly under the login
+   buttons. Kept smaller and dimmer than the pitch above so it reads
+   as a footnote, not another call to action — but still legible (the
+   regulation asks for "concise, transparent, intelligible"). The link
+   inherits muted color and only colors up on hover. */
+.cmt-identity-privacy {
+  margin: 8px 0 0;
+  color: var(--cmt-fg-muted);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+.cmt-identity-privacy a {
+  color: var(--cmt-fg-muted);
+  text-decoration: underline;
+  text-decoration-color: rgba(0, 0, 0, 0.25);
+  text-underline-offset: 2px;
+}
+.cmt-identity-privacy a:hover {
+  color: var(--cmt-accent);
+  text-decoration-color: currentColor;
+}
 
 /* ============================================================================
    Document-version UI — sits between the identity header and the cards.

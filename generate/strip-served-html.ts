@@ -18,6 +18,7 @@ import { existsSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { stripServedHtml } from "../shared/stripServedHtml.ts";
 import { injectCloudflareAnalytics } from "../shared/injectAnalytics.ts";
+import { injectSiteFooter } from "../shared/injectFooter.ts";
 import {
   injectStructuredData,
   injectSiteStructuredData,
@@ -149,6 +150,12 @@ async function walkHtml(dir: string): Promise<string[]> {
 
 async function main(): Promise<void> {
   const analyticsToken = (process.env.CF_ANALYTICS_TOKEN ?? "").trim();
+  // URL of the blog's privacy policy. If set, every served page gets a
+  // small <footer> at the end of <body> linking to it — the GDPR /
+  // CalOPPA / APPI guidance pattern (one conspicuous, every-page link
+  // using the word "Privacy"). Unset → no footer is injected, exactly
+  // like an unset CF_ANALYTICS_TOKEN.
+  const privacyHref = (process.env.PRIVACY_POLICY_URL ?? "").trim();
   // Canonical site origin for absolute URLs in structured data / OG tags. No
   // value → skip the structured-data inject entirely (same fail-silent posture
   // as a missing CF_ANALYTICS_TOKEN); the blog still works, it just doesn't get
@@ -160,6 +167,8 @@ async function main(): Promise<void> {
   else stages.push("(no SITE_URL — skipping structured-data inject)");
   if (analyticsToken) stages.push("Cloudflare Analytics beacon");
   else stages.push("(no CF_ANALYTICS_TOKEN — skipping analytics inject)");
+  if (privacyHref) stages.push("privacy-policy footer");
+  else stages.push("(no PRIVACY_POLICY_URL — skipping footer inject)");
   console.log(`Post-build HTML rewrite: ${stages.join(", ")}…`);
 
   const files = await walkHtml(DIST);
@@ -248,6 +257,9 @@ async function main(): Promise<void> {
 
     if (analyticsToken) {
       after = injectCloudflareAnalytics(after, analyticsToken);
+    }
+    if (privacyHref) {
+      after = injectSiteFooter(after, { privacyHref });
     }
     if (after === before) continue;
     await writeFile(file, after, "utf8");
