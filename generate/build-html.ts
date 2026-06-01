@@ -35,6 +35,15 @@ async function main(): Promise<void> {
     outdir: paths.distDir,
     target: "browser",
     plugins: [siteFooterPlugin()],
+    define: {
+      // client/swRegister.ts uses `typeof __BUN_DEV__ === "undefined"` to
+      // decide whether to register the SW. Substituting the identifier with
+      // the literal `false` here means the bundled output runs the
+      // registration path; the un-bundled source served by Bun's inner loop
+      // sees an undeclared identifier and the SW stays unregistered there.
+      // (Proposal 06 §7 "Don't register the SW from the Bun inner loop".)
+      __BUN_DEV__: "false",
+    },
   });
 
   if (!result.success) {

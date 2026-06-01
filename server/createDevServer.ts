@@ -207,6 +207,37 @@ export async function createDevServer(opts: DevServerOptions) {
           "Cache-Control": "public, max-age=2592000, immutable",
         },
       })),
+    // PWA surface (proposal 06 §7). The Bun inner loop does NOT register the
+    // SW (swRegister.ts gates on `typeof __BUN_DEV__ === "undefined"`), so
+    // these routes are dormant on `bun run dev` — they exist for parity with
+    // `dev:edge` (wrangler dev) and for anyone exercising the URLs manually.
+    //
+    // Engine-owned: SW source (reusable across blogs, no per-blog values).
+    // __SW_VERSION__ is left un-substituted in dev — the placeholder is
+    // harmless because the SW never registers here.
+    "/sw.js": pub(async () =>
+      new Response(Bun.file(join(paths.engineRoot, "client/sw.js")), {
+        headers: {
+          "Content-Type": "application/javascript",
+          // Never let the browser cache the SW itself, or a stale SW will
+          // sit in front of a deployed new one.
+          "Cache-Control": "no-cache",
+          // Lets the SW claim a wider scope than its URL. Not needed for
+          // "/" but documented in case we relocate sw.js later.
+          "Service-Worker-Allowed": "/",
+        },
+      })),
+    // Content-owned: per-blog manifest. Missing → 404; the SW (when it
+    // registers) and offline still work, just no install affordance.
+    "/manifest.webmanifest": pub(async () => {
+      const file = Bun.file(join(paths.contentRoot, "manifest.webmanifest"));
+      if (!(await file.exists())) return new Response("not found", { status: 404 });
+      return new Response(file, {
+        headers: { "Content-Type": "application/manifest+json" },
+      });
+    }),
+    // Content-owned: per-blog icons.
+    "/icons/*": pub(serveFromDir(join(paths.contentRoot, "icons"), "icons")),
     // Author byline data (client/byline.ts fetches this). Built fresh per
     // request from the same `buildAuthorMap` the prod build uses, so a new post
     // or edited profile shows up on reload without a restart. The map carries

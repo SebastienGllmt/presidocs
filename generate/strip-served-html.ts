@@ -17,6 +17,7 @@ import { existsSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { stripServedHtml } from "../shared/stripServedHtml.ts";
 import { injectSiteFooter } from "../shared/injectFooter.ts";
+import { injectPwaHead, type PwaHeadOptions } from "../shared/injectPwaHead.ts";
 import {
   injectStructuredData,
   injectSiteStructuredData,
@@ -158,11 +159,35 @@ async function main(): Promise<void> {
   // knows its hostname.
   const siteUrl = (process.env.SITE_URL ?? "").trim().replace(/\/+$/, "");
 
+  // Per-blog PWA <head> values, read once from the blog's manifest.webmanifest.
+  // If absent, the PWA inject is skipped entirely (no broken /manifest link in
+  // the served HTML — same fail-silent posture as the structured-data + footer
+  // injects). When present, theme_color and icons[0].src flow through as the
+  // <meta name="theme-color"> and <link rel="apple-touch-icon"> values.
+  let pwaOpts: PwaHeadOptions | null = null;
+  const manifestPath = join(ROOT, "manifest.webmanifest");
+  if (existsSync(manifestPath)) {
+    try {
+      const m = (await Bun.file(manifestPath).json()) as {
+        theme_color?: string;
+        icons?: { src?: string }[];
+      };
+      pwaOpts = {
+        themeColor: m.theme_color,
+        appleTouchIcon: m.icons?.[0]?.src,
+      };
+    } catch {
+      pwaOpts = null;
+    }
+  }
+
   const stages = ["author-email + narration + PLS strip"];
   if (siteUrl) stages.push("structured data + OG + Twitter Card");
   else stages.push("(no SITE_URL — skipping structured-data inject)");
   if (privacyHref) stages.push("privacy-policy footer");
   else stages.push("(no PRIVACY_POLICY_URL — skipping footer inject)");
+  if (pwaOpts) stages.push("PWA <head> (manifest + theme-color + apple-touch-icon)");
+  else stages.push("(no manifest.webmanifest — skipping PWA <head> inject)");
   console.log(`Post-build HTML rewrite: ${stages.join(", ")}…`);
 
   const files = await walkHtml(DIST);
@@ -251,6 +276,9 @@ async function main(): Promise<void> {
 
     if (privacyHref) {
       after = injectSiteFooter(after, { privacyHref });
+    }
+    if (pwaOpts) {
+      after = injectPwaHead(after, pwaOpts);
     }
     if (after === before) continue;
     await writeFile(file, after, "utf8");

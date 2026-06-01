@@ -16,6 +16,12 @@
 //   - `generated/.comments-dev/` — dev-only fs-adapter comment blobs
 //   - `generated/<slug>/cache-keys.json` — GC index for the TTS cache
 //
+// PWA files (proposal 06 §7 "Prod: bundle into dist/"):
+//   - engine/client/sw.js         → dist/sw.js (with __SW_VERSION__ replaced)
+//   - <content>/manifest.webmanifest → dist/manifest.webmanifest
+//   - <content>/icons/*           → dist/icons/*
+//   - dist/_headers gets `/sw.js → no-cache` appended (engine policy)
+//
 // Runs as part of `bun run build` (between `bun build` and the HTML
 // strip). Idempotent; safe to re-run.
 
@@ -28,6 +34,7 @@ import { buildPublicPostVersionsMap } from "../shared/publicPostVersions.ts";
 const paths = resolveBlogPaths();
 const ROOT = paths.contentRoot;
 const DIST = paths.distDir;
+const ENGINE = paths.engineRoot;
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -141,6 +148,66 @@ async function copyPublicPostVersions(): Promise<number> {
   return Object.keys(map).length;
 }
 
+// PWA bundle: SW source (engine), manifest + icons (content), and the engine
+// policy header for /sw.js (Cache-Control: no-cache so a deploy rolls out).
+// See proposal 06 §7 for the engine/content split rationale.
+async function copyPwaFiles(): Promise<{ sw: boolean; manifest: boolean; icons: number }> {
+  const out = { sw: false, manifest: false, icons: 0 };
+
+  // Engine-owned: the SW source. Substitute __SW_VERSION__ at copy time so
+  // each deploy invalidates activate's cache reap. Bun's bundler doesn't
+  // process sw.js (served as top-level /sw.js, not in the bundle graph), so
+  // the rewrite happens here, not via Bun.build's `define`.
+  const swSrc = join(ENGINE, "client/sw.js");
+  if (await exists(swSrc)) {
+    const swText = await Bun.file(swSrc).text();
+    const version = Date.now().toString();
+    await writeFile(
+      join(DIST, "sw.js"),
+      swText.replaceAll("__SW_VERSION__", version),
+      "utf8",
+    );
+    out.sw = true;
+  }
+
+  // Content-owned: per-blog manifest. Missing → blog hasn't authored one yet;
+  // the SW still works, the install prompt just won't fire on Chrome/Edge.
+  const manifestSrc = join(ROOT, "manifest.webmanifest");
+  if (await exists(manifestSrc)) {
+    await cp(manifestSrc, join(DIST, "manifest.webmanifest"));
+    out.manifest = true;
+  }
+
+  // Content-owned: per-blog icons.
+  const iconsSrc = join(ROOT, "icons");
+  if (await exists(iconsSrc)) {
+    await mkdir(join(DIST, "icons"), { recursive: true });
+    await cp(iconsSrc, join(DIST, "icons"), { recursive: true });
+    out.icons = (await readdir(iconsSrc)).filter((n) => !n.startsWith(".")).length;
+  }
+
+  // Engine-owned policy: `Cache-Control: no-cache` on /sw.js. Append (not
+  // overwrite) so a blog can add its own _headers rules later without losing
+  // this one. Idempotent via the marker comment.
+  if (out.sw) {
+    await appendSwHeadersRule(join(DIST, "_headers"));
+  }
+
+  return out;
+}
+
+const SW_HEADERS_MARKER = "# presidocs: sw.js no-cache";
+async function appendSwHeadersRule(headersPath: string): Promise<void> {
+  let current = "";
+  if (await exists(headersPath)) {
+    current = await Bun.file(headersPath).text();
+    if (current.includes(SW_HEADERS_MARKER)) return;
+  }
+  const sep = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
+  const block = `${sep}${SW_HEADERS_MARKER}\n/sw.js\n  Cache-Control: no-cache\n`;
+  await writeFile(headersPath, current + block, "utf8");
+}
+
 async function main(): Promise<void> {
   console.log("Copying static assets into dist/…");
   if (!(await exists(DIST))) {
@@ -160,6 +227,12 @@ async function main(): Promise<void> {
   const versionCount = await copyPublicPostVersions();
   console.log(
     `  posts/versions.json → dist/assets/post-versions.json (${versionCount} post(s))`,
+  );
+  const pwa = await copyPwaFiles();
+  console.log(
+    `  PWA: ${pwa.sw ? "sw.js + _headers" : "(no sw.js source)"}, ${
+      pwa.manifest ? "manifest.webmanifest" : "(no manifest)"
+    }, ${pwa.icons} icon(s)`,
   );
   console.log("Done.");
 }

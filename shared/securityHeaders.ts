@@ -49,7 +49,9 @@ const CSP_DIRECTIVES = [
   "connect-src 'self'",
   "media-src 'self'",
   "object-src 'none'",
-  // No code (ours or Shikwasa) constructs a Worker, so this stays tight —
+  // Covers our same-origin Service Worker (`/sw.js`, loaded by
+  // client/swRegister.ts — see methodology.md → Offline / PWA). No code
+  // (ours or Shikwasa) constructs a dedicated Worker, so this stays tight —
   // no `blob:`. (Shikwasa's one `URL.createObjectURL(blob)` is ID3 cover-art,
   // an *image* governed by `img-src`; it's dormant because our ffmpeg mp3s
   // carry no embedded artwork. If that ever changes, add `blob:` to img-src,
