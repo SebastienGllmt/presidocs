@@ -2,11 +2,30 @@
    layer (box-sizing reset, --page-* tokens, html/body theme, article box and
    default heading typography) lives in base.css so every post — narration or
    opt-out — shares those defaults. This file owns the things only a narration
-   post needs: the player dock, the chapter strip, the .narration-active
-   highlight, and the bottom-padding reservation that keeps the article's last
-   block clear of the floating player. Wrapped in `@layer engine.components`
-   so it participates in the engine's cascade-layer ordering — see base.css
-   header for the layer contract. */
+   post needs: the player dock, the chapter strip, and the .narration-active
+   highlight. Wrapped in `@layer engine.components` so it participates in the
+   engine's cascade-layer ordering — see base.css header for the layer
+   contract. */
+
+/* Narration-only body padding override. Replaces base.css's 3rem
+   padding-block-end with a value that clears the floating player's 138px
+   bottom footprint (18px gap + 120px player) so the site-footer sits
+   comfortably above the dock instead of being hidden under it. Opt-out
+   posts (no narrator.css) keep base.css's smaller value — the player
+   isn't there to clear, so the extra whitespace would just look empty.
+
+   Written as an unlayered rule (no `@layer` wrapper, see the escape-hatch
+   note in base.css's header) so it beats base.css's layered declaration
+   regardless of cascade-layer order. We can't rely on engine.components
+   beating engine.layout here: the dev bundler can route Shikwasa's
+   stylesheet — pulled in via JS module import from narrator.ts — into the
+   document head ahead of base.css, pre-creating the `vendor` and
+   `engine.components` layers before base.css's named-list `@layer`
+   statement runs. Named-list statements can't reorder layers that have
+   already been declared, so engine.layout ends up appended after
+   engine.components and beats it. Unlayered sidesteps that entirely. */
+body { padding-block-end: 8rem; }
+
 @layer engine.components {
 :root {
   --narration-bg: rgba(255, 213, 79, 0.18);
@@ -16,11 +35,6 @@
      darker #0969da was getting lost on rgba(22,27,34,0.85). */
   --accent: #58a6ff;
 }
-
-/* Bottom padding leaves room for the fixed Shikwasa player. Engine.components
-   so a post can't shrink it away by accident, and only present on narration
-   posts (this file isn't loaded on opt-outs). */
-article { padding-bottom: 200px; }
 
 /* Section dividers. The plain `<hr class="section-divider" />` is the older
    unadorned form; the labeled variant (a `<div>` so it can hold text) draws

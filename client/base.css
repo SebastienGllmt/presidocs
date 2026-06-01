@@ -66,6 +66,17 @@
     font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   }
 
+  /* Scroll buffer below the document's last child (.site-footer on every
+     post; narrator.css adds its own buffer above this via the article's
+     padding-bottom on narration posts). Implemented as padding on the body
+     rather than margin-bottom on the footer because the footer's bottom
+     margin collapses through the body to the viewport and leaves the
+     privacy-policy line flush with the document edge — no visible
+     whitespace beneath it. Padding on a parent never collapses with a
+     child's bottom margin, so this also prevents .site-footer's own
+     margin-bottom from collapsing away. */
+  body { padding-block-end: 3rem; }
+
   /* Smooth-scroll any hash navigation (in-page deep-links into headings,
      chapter pills jumping by id, etc.) site-wide. Respects the user's
      prefers-reduced-motion via @media below — the browser honors that
@@ -80,18 +91,35 @@
      narrator.css) so every post gets the same column width and heading
      rhythm regardless of whether it loads the narration player — what's
      "shared across all posts" is owned at the page-global layer, not
-     duplicated per narration mode. The bottom padding that reserves room
-     for the floating player stays in narrator.css under engine.components,
-     since only narration posts need it.
+     duplicated per narration mode. The space that keeps the article's
+     last block clear of the floating-player footprint comes from the
+     site-footer's 4rem top margin plus the body's padding-block-end —
+     ~194px total, enough to clear the player and leave the closing line
+     comfortably visible above it. narration and opt-out posts share the
+     same below-article rhythm that way.
 
      A post can rebrand any of this from `@layer post` (post is declared
      after engine.layout, so a post sheet that wraps `.<slug> h1 { … }` in
      `@layer post` wins). The :has() collapse for the post-meta sits in
-     engine.components and beats both. */
+     engine.components and beats both.
+
+     Padding uses `padding-inline` (not the four-value `padding` shorthand)
+     to avoid emitting a `padding-bottom: 0` in engine.layout. The dev
+     bundler can route Shikwasa's stylesheet — pulled in via JS module
+     import from narrator.ts — into the document head ahead of base.css,
+     which pre-creates the `vendor` and `engine.components` layers before
+     base.css's named-list `@layer` statement runs. Named-list statements
+     only append new layer names to the end of the existing order; they
+     can't reorder layers that have already been declared, so engine.layout
+     ends up appended after engine.components and beats it. A four-value
+     `padding` here would emit `padding-bottom: 0` in engine.layout, and
+     under that flipped order it would override any future engine.components
+     article rule that wanted to set padding-bottom. Inline-only padding
+     keeps the rule cascade-order-agnostic. */
   article {
     max-width: 768px;
     margin: 64px auto 0;
-    padding: 0 24px;
+    padding-inline: 24px;
   }
   article h1 { font-size: 2rem; margin: 0 0 12px; }
   article h2 { margin: 2em 0 0.5em; }
