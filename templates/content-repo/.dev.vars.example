@@ -1,0 +1,21 @@
+# .dev.vars — secrets read by `wrangler dev` (i.e. `bun run dev:edge`).
+#
+# The Bun dev loop (`bun run dev`) auto-loads `.env` directly; wrangler does
+# NOT consult `.env`, it reads `.dev.vars`. Keep BOTH files in sync (same
+# keys, same values) so the same auth/session/comment flows work on either
+# inner loop. See presidocs/methodology.md → Deploy / Dev runtime.
+#
+# Copy to `.dev.vars` and fill in the same values your `.env` carries.
+
+SESSION_SECRET=
+
+# Override only if your dev:edge instance is not on http://localhost:3000.
+# OAUTH_REDIRECT_BASE=http://localhost:3000
+
+GOOGLE_OAUTH_CLIENT_ID=
+GOOGLE_OAUTH_CLIENT_SECRET=
+MICROSOFT_OAUTH_CLIENT_ID=
+MICROSOFT_OAUTH_CLIENT_SECRET=
+
+# Author moderation list (comma-separated <provider>:<sub>). Usually empty.
+BLOCKED_USERS=

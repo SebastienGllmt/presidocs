@@ -10,6 +10,7 @@
 // resolve the same URLs the same way.
 
 import { join, normalize } from "node:path";
+import { getPlatformProxy } from "wrangler";
 import {
   startGoogleAuth,
   startMicrosoftAuth,
@@ -20,7 +21,8 @@ import {
 } from "./auth/routes.ts";
 import { handleCommentsRequest } from "./comments/routes.ts";
 import { handleResolutionsRequest } from "./comments/resolutionsRoutes.ts";
-import { fsAdapter } from "./comments/fsAdapter.ts";
+import { r2Adapter } from "./comments/r2Adapter.ts";
+import type { Env } from "./env.ts";
 import { loadDevPostMetaIndex } from "./postMeta.dev.ts";
 import { loadDevPostVersionIndex } from "./postVersions.dev.ts";
 import { handlePostVersionRequest } from "./postVersionsRoute.ts";
@@ -31,11 +33,37 @@ import { withSecurityHeaders } from "../shared/securityHeaders.ts";
 import { buildAuthorMap } from "../shared/authorProfile.ts";
 import { buildPublicPostVersionsMap } from "../shared/publicPostVersions.ts";
 import type { BlogPaths } from "../shared/blogPaths.ts";
+import {
+  contentRangeHeader,
+  resolveRange,
+  unsatisfiedRangeHeader,
+} from "../shared/httpRange.ts";
 // Dev-only sound-test page. A static HTML bundle imported here (not in the
 // content repo's index.ts) because it's an engine surface, not blog content;
 // importing it from createDevServer keeps it out of the prod Worker bundle
 // (worker.ts → createWorker.ts never reaches this module).
 import soundTestPage from "../client/sound-test/index.html";
+
+// Register the Miniflare proxy's dispose() so the local R2 / Rate Limiter
+// subprocess is shut down cleanly when the dev server exits. Wired once per
+// process — a second createDevServer() call (we don't have one today) would
+// re-register harmlessly. SIGINT/SIGTERM are the two Bun's `--hot` and
+// scripts/dev.ts send.
+let disposeRegistered = false;
+function registerProxyDisposeOnExit(dispose: () => Promise<void>): void {
+  if (disposeRegistered) return;
+  disposeRegistered = true;
+  const shutdown = async (signal: NodeJS.Signals) => {
+    try {
+      await dispose();
+    } catch (err) {
+      console.warn(`[dev] proxy dispose failed: ${(err as Error).message}`);
+    }
+    process.exit(signal === "SIGTERM" ? 143 : 130);
+  };
+  process.once("SIGINT", () => void shutdown("SIGINT"));
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
+}
 
 export type DevServerOptions = {
   paths: BlogPaths;
@@ -63,10 +91,28 @@ export async function createDevServer(opts: DevServerOptions) {
   const priv = (h: DevHandler): DevHandler => async (req) =>
     withSecurityHeaders(await h(req), { private: true });
 
-  // Dev-mode CommentBlobStore: writes blobs to disk under the content repo's
-  // generated/ (already gitignored) so the same handlers exercised in prod
-  // (with R2) run unchanged here.
-  const commentsDevStore = fsAdapter(join(paths.generatedDir, ".comments-dev"));
+  // Dev-mode bindings: spin up a Miniflare-backed proxy that resolves the
+  // content repo's wrangler.toml. The same prod handlers (r2Adapter,
+  // handleCommentsRequest) then run in dev against real local R2 + the real
+  // Rate Limiting binding — closing the "two stores can silently disagree on
+  // semantics" gap (Proposal 13 §1 divergence 2) and the "dev never exercised
+  // the 429 path" gap (divergence 3). `dispose()` is wired below to shut the
+  // Miniflare subprocess down on signal.
+  //
+  // Failure to construct the proxy (malformed wrangler.toml, missing bindings)
+  // is loud at startup, not a silent fallback to a divergent in-memory shape.
+  //
+  // Note: `server/comments/fsAdapter.ts` is still kept for the offline author
+  // tooling (authoring/resolveThreads.ts, loadUnresolvedThreads.ts,
+  // exportAnnotations.ts, r2Sync.ts) that operates on the on-disk dev store
+  // outside this server. Dev-server writes now land in Miniflare R2
+  // (.wrangler/state/v3/r2/) instead — author flows that want them locally
+  // should run `bun run pull-comments` against prod R2 as before.
+  const proxy = await getPlatformProxy<Env>({
+    configPath: join(paths.contentRoot, "wrangler.toml"),
+  });
+  registerProxyDisposeOnExit(proxy.dispose);
+  const commentsDevStore = r2Adapter(proxy.env.COMMENTS);
 
   // Per-post author index — scans the content repo's posts/*.html at startup,
   // so a new post is picked up after a server restart (no build step required).
@@ -116,7 +162,8 @@ export async function createDevServer(opts: DevServerOptions) {
       // itself — the Workers `env.ASSETS` binding ignores `Range` and returns
       // the whole file, which breaks seeking; see `applyRangeSupport` in
       // createWorker.ts. Small files happened to work anyway because the
-      // browser buffers them whole.
+      // browser buffers them whole. The parser is shared with the prod path
+      // via shared/httpRange.ts.
       const isContentHashed = /(^|\/)full\.[0-9a-f]{16}\.[a-z0-9]+$/i.test(safe);
       const baseHeaders: Record<string, string> = {
         "Cache-Control": isContentHashed
@@ -124,30 +171,23 @@ export async function createDevServer(opts: DevServerOptions) {
           : "no-store",
         "Accept-Ranges": "bytes",
       };
-      const range = req.headers.get("range");
-      const m = range && /^bytes=(\d*)-(\d*)$/.exec(range.trim());
-      if (m && size > 0) {
-        let start = m[1] === "" ? NaN : Number(m[1]);
-        let end = m[2] === "" ? NaN : Number(m[2]);
-        if (Number.isNaN(start)) {
-          // suffix range `bytes=-N`: the last N bytes
-          start = Math.max(0, size - Number(m[2]));
-          end = size - 1;
-        } else if (Number.isNaN(end)) {
-          end = size - 1;
-        }
-        if (start > end || start >= size) {
-          return new Response("range not satisfiable", {
-            status: 416,
-            headers: { ...baseHeaders, "Content-Range": `bytes */${size}` },
-          });
-        }
-        end = Math.min(end, size - 1);
+      const outcome = resolveRange(req.headers.get("range"), size);
+      if (outcome.kind === "unsatisfiable") {
+        return new Response("range not satisfiable", {
+          status: 416,
+          headers: {
+            ...baseHeaders,
+            "Content-Range": unsatisfiedRangeHeader(outcome.size),
+          },
+        });
+      }
+      if (outcome.kind === "satisfiable") {
+        const { start, end } = outcome;
         return new Response(file.slice(start, end + 1), {
           status: 206,
           headers: {
             ...baseHeaders,
-            "Content-Range": `bytes ${start}-${end}/${size}`,
+            "Content-Range": contentRangeHeader(start, end, outcome.size),
             "Content-Length": String(end - start + 1),
           },
         });
@@ -219,13 +259,13 @@ export async function createDevServer(opts: DevServerOptions) {
       handleCommentsRequest(req, {
         store: commentsDevStore,
         postMeta: postMetaIndex,
-        rateLimiter: null,
+        rateLimiter: proxy.env.RATE_LIMITER,
       })),
     "/resolutions": priv((req) =>
       handleResolutionsRequest(req, {
         store: commentsDevStore,
         postMeta: postMetaIndex,
-        rateLimiter: null,
+        rateLimiter: proxy.env.RATE_LIMITER,
       })),
     "/post-version": priv((req) =>
       handlePostVersionRequest(req, {

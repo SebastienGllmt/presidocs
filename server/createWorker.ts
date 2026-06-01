@@ -35,6 +35,12 @@ import {
 import { handlePostVersionRequest } from "./postVersionsRoute.ts";
 import { handleAnalyticsRequest } from "./analyticsRoute.ts";
 import { withSecurityHeaders } from "../shared/securityHeaders.ts";
+import {
+  contentRangeHeader,
+  isResolvableRangeHeader,
+  resolveRange,
+  unsatisfiedRangeHeader,
+} from "../shared/httpRange.ts";
 
 // The two build-time maps, supplied by the content repo's `worker.ts` from its
 // own `.generated/` directory. Structural types (not the engine's `PostMeta` /
@@ -63,7 +69,8 @@ export type WorkerContent = {
 // slicing it. That re-reads the whole asset per range request, which is fine
 // at audio sizes and only happens when the client actually sends `Range`;
 // non-range requests pass straight through (we only add `Accept-Ranges` so
-// the media element knows it *may* seek). Mirrors the dev server's parser.
+// the media element knows it *may* seek). Range parsing lives in
+// shared/httpRange.ts, shared with the dev path.
 async function applyRangeSupport(req: Request, res: Response): Promise<Response> {
   // Only meaningful for a successful, bodied GET. ASSETS returns 200 for hits.
   if (res.status !== 200 || (req.method !== "GET" && req.method !== "HEAD")) {
@@ -80,29 +87,32 @@ async function applyRangeSupport(req: Request, res: Response): Promise<Response>
       headers,
     });
   }
-  const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
-  if (!m) return res; // Unparseable Range → let the full 200 stand.
+
+  // Skip buffering if the header is unparseable — same posture as before the
+  // shared-parser refactor: a request we can't slice gets the original 200
+  // back, body untouched.
+  if (!isResolvableRangeHeader(range)) return res;
 
   const buf = new Uint8Array(await res.arrayBuffer());
-  const size = buf.byteLength;
+  const outcome = resolveRange(range, buf.byteLength);
   const headers = new Headers(res.headers);
   headers.set("Accept-Ranges", "bytes");
 
-  let start = m[1] === "" ? NaN : Number(m[1]);
-  let end = m[2] === "" ? NaN : Number(m[2]);
-  if (Number.isNaN(start)) {
-    // suffix range `bytes=-N`: the last N bytes
-    start = Math.max(0, size - Number(m[2]));
-    end = size - 1;
-  } else if (Number.isNaN(end)) {
-    end = size - 1;
+  if (outcome.kind === "none") {
+    // Zero-size asset that nonetheless had a parseable Range — match the
+    // pre-refactor "let the full 200 stand" branch.
+    return new Response(buf, {
+      status: res.status,
+      statusText: res.statusText,
+      headers,
+    });
   }
-  if (start > end || start >= size) {
-    headers.set("Content-Range", `bytes */${size}`);
+  if (outcome.kind === "unsatisfiable") {
+    headers.set("Content-Range", unsatisfiedRangeHeader(outcome.size));
     return new Response("range not satisfiable", { status: 416, headers });
   }
-  end = Math.min(end, size - 1);
-  headers.set("Content-Range", `bytes ${start}-${end}/${size}`);
+  const { start, end, size } = outcome;
+  headers.set("Content-Range", contentRangeHeader(start, end, size));
   headers.set("Content-Length", String(end - start + 1));
   return new Response(buf.subarray(start, end + 1), {
     status: 206,

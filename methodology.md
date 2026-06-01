@@ -745,7 +745,7 @@ The core motivation of the whole auth-gated comment system — "the author wants
 
 **What it solves:** when a reader submits a comment, the author's browser (or installed PWA) gets an OS-level notification with the post title and a snippet, even if they're not currently on the site. Same architecture can later notify a commenter when the author replies to their thread; same plumbing, different sender/recipient direction.
 
-**Why Web Push fits the Cloudflare-only constraint.** The Web Push protocol ([RFC 8030](https://datatracker.ietf.org/doc/html/rfc8030)) is just HTTP. The "push services" are run by browser vendors (FCM for Chrome / Edge, Mozilla autopush for Firefox, Apple Push for Safari) — they're free, no signup, no API keys, and the only credentials we need are a self-generated **VAPID** key pair to authenticate the *sender* (us) to those services. Workers can speak this protocol directly via `crypto.subtle` (ECDSA P-256 for the VAPID JWT, AES-128-GCM + HKDF for the payload encryption). No SDK with transitive deps, no separate hosted service.
+**Why Web Push fits the Cloudflare-only constraint.** The Web Push protocol ([RFC 8030][WebPushProto]) is just HTTP. The "push services" are run by browser vendors (FCM for Chrome / Edge, Mozilla autopush for Firefox, Apple Push for Safari) — they're free, no signup, no API keys, and the only credentials we need are a self-generated **VAPID** key pair to authenticate the *sender* (us) to those services. Workers can speak this protocol directly via `crypto.subtle` (ECDSA P-256 for the VAPID JWT, AES-128-GCM + HKDF for the payload encryption). No SDK with transitive deps, no separate hosted service.
 
 **End-to-end shape:**
 
@@ -996,6 +996,10 @@ Per-file opt-in keeps happy-dom's blast radius scoped to exactly the files that 
 
 **No real-browser harness (today).** No Playwright, no WebdriverIO, no Puppeteer. The case-by-case analysis is in `scripts/release-check.md`; the short version is that real Chromium tests would either re-verify what happy-dom already covers (the JS-visible API surface) or test substrate behaviour that no Chromium-from-a-test can actually reach (the OS surface). When [proposal 6 (PWA + Service Worker)](./proposals/06-pwa-offline.md) ships, the SW lifecycle becomes the first feature where the marginal value of real-browser testing is high enough to revisit; until then, the manual release checklist plus the happy-dom + Tier-0 layers cover what's worth covering.
 
+**No workerd test pool (today), but the door is open.** Cloudflare's [`@cloudflare/vitest-pool-workers`][CFVitestPool] runs tests inside the same workerd runtime the prod Worker uses, with real binding emulation. It would be a natural fit for any future `worker.ts` logic that's hard to prove against a plain-Bun handler test — Service-Worker version-rollout fallback (proposal 6), Rate-Limiter edge cases, or any path where the workerd-vs-Bun runtime difference is itself the thing under test. We don't run it now because `worker.ts` is a thin route table over runtime-agnostic handlers that already get covered in plain-Bun tests, and the `dev:edge` smoke check exercises the workerd path end-to-end before deploy. First concrete regression that the plain-Bun harness can't catch motivates wiring it in.
+
+[CFVitestPool]: https://developers.cloudflare.com/workers/testing/vitest-integration/
+
 ## AI-assisted authoring (`authoring/` + the `process-comments` skill)
 
 The comment system isn't just a feedback channel — it's the authoring interface itself. The author opens their own post, highlights text, leaves comments like "rephrase this", "add a paragraph about edge cases", etc. — through exactly the same UI a reader uses. The loop:
@@ -1132,7 +1136,8 @@ This works until per-deploy total assets approach Cloudflare's Static Assets lim
 | HTTP server | `bun --hot index.ts` | Worker `fetch` handler (`worker.ts`) |
 | Frontend bundle | Bun's HTML import (`import index from "./index.html"`) | `bun build` → `dist/`, served by the `ASSETS` binding |
 | Auth routes | mounted in the `Bun.serve` routes object | same exported handlers from `server/auth/routes.ts`, mounted in the Worker `fetch` |
-| Comments | same `handleCommentsRequest` handler from `server/comments/routes.ts`, mounted on `Bun.serve` and backed by an fs-adapter under `generated/.comments-dev/` | same handler, mounted on the Worker `fetch` and backed by an R2 adapter, enforcing the [author-only visibility rules](#hardening) |
+| Comments | same `handleCommentsRequest` handler from `server/comments/routes.ts`, mounted on `Bun.serve` and backed by the **same `r2Adapter`** prod uses, over a local Miniflare R2 binding resolved from the content repo's `wrangler.toml` via `wrangler`'s `getPlatformProxy()`. State persists under `.wrangler/state/v3/r2/` | same handler, mounted on the Worker `fetch` and backed by `r2Adapter(env.COMMENTS)`, enforcing the [author-only visibility rules](#hardening) |
+| Rate limiter | `env.RATE_LIMITER` from the same `getPlatformProxy()` proxy — local sliding-window limiter; the 429 path executes in dev | Workers Rate Limiting binding declared in `wrangler.toml` |
 | Generated audio + manifest | served from `generated/` via `serveFromDir` | copied into `dist/generated/` by `generate/copy-static.ts`, served by the `ASSETS` binding |
 | Automerge WASM | served from `node_modules` via `/assets/automerge.wasm` route | copied into `dist/assets/automerge.wasm`, served by the `ASSETS` binding |
 | OAuth redirects | `http://localhost:3000/auth/<provider>/callback` | `https://<your-domain>/auth/<provider>/callback` — both URIs registered at each provider |
@@ -1145,6 +1150,21 @@ This works until per-deploy total assets approach Cloudflare's Static Assets lim
 - **New / renamed posts.** The dev route table is codegenned from `posts/` into `.generated/postRoutes.ts` once at startup. Dropping a post in didn't get mounted until you restarted *and* re-ran the codegen by hand.
 
 The wrapper folds both into one rule: watch `node_modules/presidocs/**`, `posts/**`, and `authors/**`; on any change, debounce 100 ms, re-run `engine/generate/post-routes.ts`, and respawn the server. In-project edits to `index.ts`/`worker.ts`/etc. still go through the child's fast HMR — the wrapper only handles the cross-boundary cases. Outputs like `.generated/` and `.comments-dev/` are excluded from the watch list so the codegen and the dev comment store don't trigger restart loops.
+
+**Bindings via `getPlatformProxy()`.** The dev factory (`createDevServer.ts`) doesn't reinvent the R2 / rate-limiter bindings — at boot it calls `wrangler`'s `getPlatformProxy()`, which spins up a Miniflare-backed local environment from the content repo's `wrangler.toml` (the engine discovers it by convention from the content root — *engine never names a post or reads a blog-specific value into its own code*; `wrangler.toml` is content-repo config like `posts/` or `authors/`). The same prod handlers run unchanged: `r2Adapter(proxy.env.COMMENTS)` over local R2, `proxy.env.RATE_LIMITER` instead of `null`. That closes two long-standing dev/prod gaps — the fs-vs-R2 store divergence (`listUsers` was `readdir` vs. delimiter-based `list`, etc.) and the never-exercised 429 path. The proxy's `dispose()` is wired to `SIGINT`/`SIGTERM` so the Miniflare child stops cleanly when dev shuts down. `server/comments/fsAdapter.ts` stays in the tree because the **offline author tooling** (`authoring/resolveThreads.ts`, `loadUnresolvedThreads.ts`, `exportAnnotations.ts`, `r2Sync.ts`) still reads/writes the on-disk `generated/.comments-dev/` shape — dev-server writes now land in Miniflare R2 under `.wrangler/state/`, so author flows that want a local replay run `bun run pull-comments` against prod R2 as before.
+
+**Two secret sources during dev.** `.env` is the canonical Bun-loop secret store (Bun autoloads it; `process.env` works in the auth handlers exactly as in prod). `getPlatformProxy()` reads `.dev.vars` (Miniflare's convention) — for the Bun loop that doesn't matter because the auth code uses `process.env`, not the proxy's vars; `.dev.vars` only becomes load-bearing for the `dev:edge` surface below. Keep the same values in both files (an `.env.example` + `.dev.vars.example` pair ships in each content repo).
+
+**`dev:edge` — the workerd smoke check.** Bun's `HTMLBundle` routes can't be wrapped with response headers (see [HTTP security headers](#http-security-headers-sharedsecurityheadersts)), so the document CSP is impossible to verify against the Bun inner loop. `bun run dev:edge` (`bun run build && wrangler dev --port 3000`) runs the prod Worker (`worker.ts`) against the freshly-built `dist/` under workerd, with the same R2 + rate-limiter bindings the deploy will use. It's deliberately **not** the inner loop (no HMR, no `/dev/*` subprocess tooling — those can't run on workerd) — it's the one local surface that exercises the document CSP, `run_worker_first`, the feed MIME override, and the rest of the asset-binding path before a deploy. Pinned to `:3000` so the OAuth localhost callbacks (`OAUTH_REDIRECT_BASE`) keep working.
+
+**Alternatives considered.** Cloudflare's canonical local-dev path is to run `wrangler dev` (or the [Cloudflare Vite plugin][CFViteAnnouncement]) as the *primary* loop, with bindings auto-simulated by Miniflare ([CF docs][CFLocalDev]). We deliberately don't:
+
+- **`wrangler dev` as the inner loop** — workerd cannot host the dev-only author surfaces that are the whole point of running on localhost: `/dev/regenerate` and `/dev/sound-test` shell out to the MOSS Python pipeline (no subprocess spawn in workerd), `/dev/sound-test` is itself a Bun-bundled `HTMLBundle`, and `/assets/authors.json` rebuilds per request from arbitrary `posts/` reads. These match what the runtime-split rule above calls "smart, fully-trusted localhost" tools — moving them to workerd would either lose them or force a two-process sidecar (one workerd, one Bun, with OAuth-callback routing between them), which is real operational complexity for what `dev:edge` already covers occasionally. So we use Miniflare's *bindings* inside Bun (via `getPlatformProxy()`) without moving the whole loop to workerd.
+- **Cloudflare Vite plugin** ([announcement][CFViteAnnouncement]) — closes the document-CSP-in-dev gap by running `worker.ts` in workerd alongside Vite-HMR'd frontend code, which would be a real win. But the build pipeline is deeply Bun-native (`Bun.build`, `Bun.serve`, `Bun.HTMLBundle`, the bundler plugin in [`bunFooterPlugin.ts`](#build-time-html-strip-generatestrip-served-htmlts)), so adopting it is a substantial migration; and it doesn't solve the `/dev/*` subprocess block — workerd still can't spawn MOSS, so a Vite-plugin world remains a hybrid with the same sidecar question. The right-sized move would be: if the project ever drops the offline MOSS surface (or externalises it behind a separate dev process the operator accepts running), the Vite plugin becomes the natural consolidation. Until then the `dev:edge` smoke + Bun inner loop is the cheaper cut.
+- **`remote: true` per binding** ([CF docs][CFLocalDev]) — lets a specific binding hit real Cloudflare resources during local dev. None of ours benefit: a dev-server write hitting prod R2 is the wrong default, the rate limiter would burn the prod 10/60s budget, and the analytics dataset would pollute by edit-and-refresh. If a Miniflare quirk ever needs verification against the real bucket, an ad-hoc `wrangler dev --remote` is the per-incident escape hatch rather than a permanent binding flag.
+
+[CFLocalDev]: https://developers.cloudflare.com/workers/local-development/
+[CFViteAnnouncement]: https://blog.cloudflare.com/introducing-the-cloudflare-vite-plugin/
 
 ### Deploy unit
 
@@ -1180,6 +1200,8 @@ The last step of `bun run build` rewrites every HTML file under `dist/` in place
 - `<script type="application/pls+xml">...</script>` — generation-only.
 
 **Dev doesn't strip.** `bun --hot index.ts` serves the full source HTML on localhost. Stripping in dev would require a Bun HTML-loader plugin; not worth the friction for content that no scraper sees.
+
+**Footer inject runs in the bundler now, with the strip pass as backstop.** `shared/injectFooter.ts` is wired through `engine/generate/build-html.ts`, a small `Bun.build({plugins:[siteFooterPlugin()]})` wrapper that the per-blog `bun run build` invokes in place of the bare `bun build ./index.html ...` CLI step. That way every entry HTML the bundler reads goes through `injectSiteFooter` with the `PRIVACY_POLICY_URL` env-gate exactly as it always did. `strip-served-html.ts`'s own `injectSiteFooter` call stays in place but short-circuits on the `class="site-footer"` marker the plugin already wrote — a belt-and-suspenders backstop that keeps prod HTML correct if anyone runs the post-build pass without the plugin. The Bun *runtime* plugin system (i.e. registering via `Bun.plugin(siteFooterPlugin())` at the dev server's entry) rejects `loader: "html"` as of Bun 1.3.14, so dev `HTMLBundle` routes can't run the plugin yet; pages that need a visible footer in dev (the landing, `/privacy`) cover themselves with a hand-authored `<footer class="site-footer">` in source HTML. When Bun's runtime plugin system gains html-loader support, registering the plugin from the content-repo `index.ts` closes the dev footer gap with no other code changes.
 
 ### Engagement analytics (Analytics Engine)
 
@@ -1446,13 +1468,13 @@ Three surfaces, one source of truth (the per-blog `privacy.html`):
 
 - **The policy page** — `<content-repo>/privacy.html`. Lives in the **content repo**, not the engine, because it makes operator-specific claims (controller identity, contact email, jurisdictions named, sub-processor list as of today). The engine ships no policy text — that would be a forged representation on behalf of the operator. A fresh content repo without `privacy.html` simply gets no footer link (the injector is env-gated, see below).
 
-- **The footer** — every served page carries a `<footer class="site-footer">` containing a "Privacy Policy" link, injected at build time by `shared/injectFooter.ts` (see [Build-time HTML strip](#build-time-html-strip-generatestrip-served-htmlts) — the footer inject runs in the same post-build pass as the strip / structured-data injects, mirroring their idempotent, env-gated, fail-silent posture). Configured by a single env var, `PRIVACY_POLICY_URL`, in the content repo's `.env`. Unset → no footer (same fail-silent pattern as `SITE_URL`). The injector's idempotency check looks for `class="site-footer"` and refuses to double-inject; a content page can hand-author its own footer (the policy page does, so it renders correctly in dev where the injector doesn't run) and the build pass leaves it alone.
+- **The footer** — every served page carries a `<footer class="site-footer">` containing a "Privacy Policy" link, produced by `shared/injectFooter.ts`. It runs at build time through two paths: the Bun bundler plugin `shared/bunFooterPlugin.ts`, wired into the bundle step in `engine/generate/build-html.ts`, and the post-build `strip-served-html.ts` sweep as a backstop (idempotent on the `class="site-footer"` marker). See [Build-time HTML strip](#build-time-html-strip-generatestrip-served-htmlts). Configured by a single env var, `PRIVACY_POLICY_URL`, in the content repo's `.env`. Unset → no footer (same fail-silent pattern as `SITE_URL`). A content page can hand-author its own footer (the policy page and the dev landing both do, because Bun's *runtime* plugin system doesn't yet accept the HTML loader, so neither path runs in `bun run dev`'s `HTMLBundle` routes — see "Dev visibility" below) and the build pass leaves it alone.
 
 - **The just-in-time notice** — a single `<p class="cmt-identity-privacy">` rendered by `client/comments.ts` directly under the OAuth login buttons, naming what's recorded and linking to `/privacy`. This is the *point of collection* — GDPR Art. 13 wants the legal basis (consent) and a pointer to the full notice surfaced at exactly the moment the user is about to give it. Built with `textContent` + a single anchor — no `innerHTML` splicing — matching the rest of the comments UI's XSS posture (every interpolation point is `textContent`; the CSP is the structural backstop, see [HTTP security headers](#http-security-headers-sharedsecurityheadersts)).
 
 **Why build-time injection, not a static `<footer>` in each post.** Hand-rolling the same footer into every post HTML would duplicate the markup, and a content repo author would have to remember to paste it into every new post they wrote. A client-side DOM injection would either flash the page without a footer before the script ran, or require adding script-driven content (breaking the "no extra runtime JS" posture). Build-time injection treats the footer as a deploy-time decoration, exactly like the analytics beacon and the structured-data block, with the same fail-silent posture if the env var is unset.
 
-**Dev visibility.** The injector doesn't run in dev (same posture as the strip/analytics/structured-data injects — localhost isn't where regulators look). The policy page's own static `<footer>` is the exception; it's hand-authored so the page renders complete in dev too, and the injector's marker-class check (`class="site-footer"`) prevents a double-footer in prod. For everything else, the source HTML is intentionally "clean" in dev; if a dev-mode footer ever becomes load-bearing, the same env var would work — the Bun dev server would need a small HTML transform plugin (same shape as the strip's "Dev doesn't strip" note).
+**Dev visibility.** The build-time injector now runs through a Bun bundler plugin (`shared/bunFooterPlugin.ts`), which `Bun.build` accepts but Bun's *runtime* plugin system (1.3.14) rejects — registering it from the dev server's entry crashes on `loader: "html"`. So `bun run dev` still doesn't get the inject on `HTMLBundle` routes. The pages that need a visible footer at localhost (the landing, `/privacy`) carry a hand-authored `<footer class="site-footer">` in source HTML; the marker-class check (`class="site-footer"`) in `injectSiteFooter` prevents a double-footer in prod. Posts inherit the build-time inject only — author-visible at `dev:edge` and on the deployed site. When Bun's runtime plugin system gains html-loader support, registering `siteFooterPlugin()` in each content-repo's `index.ts` will close the dev gap with no other code changes.
 
 **Dev routes for non-post pages.** `generate/post-routes.ts` (the dev-server route-table codegen) picks up any root-level `*.html` besides `index.html` and routes it to `/<basename>`, so `/privacy` works under `bun run dev` without a manual import. This is the general path for any future top-level legal/marketing page (`terms.html`, `accessibility.html`) — drop the file in the content repo, restart dev, the route is there.
 
@@ -1614,6 +1636,13 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 [CalOPPA]: https://oag.ca.gov/privacy/online-privacy
 [APPI]: https://www.ppc.go.jp/en/legal/
 [ISO29184]: https://www.iso.org/standard/70331.html
+[WebPushProto]: https://datatracker.ietf.org/doc/html/rfc8030
+[Notifications]: https://notifications.spec.whatwg.org/
+[PushAPI]: https://www.w3.org/TR/push-api/
+[ServiceWorkers]: https://www.w3.org/TR/service-workers/
+[AppManifest]: https://www.w3.org/TR/appmanifest/
+[BackgroundSync]: https://wicg.github.io/background-sync/spec/
+[PeriodicBackgroundSync]: https://wicg.github.io/background-sync/spec/PeriodicBackgroundSync-index.html
 
 <!-- For LLMs: local copies of the specs above. (No local copy of [TwitterCards]
 — developer.x.com renders it client-side as a JS app, so there is no static
@@ -1653,5 +1682,12 @@ the same site already mirrored at [SchemaOrg]/SchemaOrg-spec.html.)
 [Sitemaps]: ./specs/Sitemaps-spec.html
 [SitemapExt]: ./specs/Sitemaps-spec.html (section: extending)
 [LlmsTxt]: ./specs/LlmsTxt-spec.html
+[WebPushProto]: ./specs/WebPushProtocol-spec.html
+[Notifications]: ./specs/Notifications-spec.html
+[PushAPI]: ./specs/PushAPI-spec.html
+[ServiceWorkers]: ./specs/ServiceWorkers-spec.html
+[AppManifest]: ./specs/AppManifest-spec.html
+[BackgroundSync]: ./specs/BackgroundSync-spec.html
+[PeriodicBackgroundSync]: ./specs/PeriodicBackgroundSync-spec.html
 -->
 

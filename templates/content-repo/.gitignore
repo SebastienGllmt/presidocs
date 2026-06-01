@@ -12,7 +12,12 @@ generated
 .env
 .env.local
 
-# Cloudflare wrangler working directory
+# Wrangler dev secrets (counterpart of .env for the `dev:edge` loop —
+# keep `.dev.vars.example` committed, the real `.dev.vars` carries secrets).
+.dev.vars
+
+# Cloudflare wrangler working directory (also persists local Miniflare R2
+# state for the dev server's Miniflare-backed COMMENTS binding).
 .wrangler
 
 # Finder (macOS)
