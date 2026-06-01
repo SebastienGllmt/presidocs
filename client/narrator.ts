@@ -17,6 +17,8 @@ import "./shikwasa-vendor.css";
 import { Player, Chapter } from "shikwasa";
 import { asMs, msToSeconds, secondsToMs, asSeconds, type Milliseconds } from "../shared/time.ts";
 import { computeActiveMark, findActiveWord } from "../shared/narratorTiming.ts";
+import { emitNarrationPlay, emitNarrationQuartile } from "./analytics.ts";
+import { QUARTILES, type PlayTrigger, type Quartile } from "../shared/analyticsSchema.ts";
 import {
   SPOKEN_ID_PREFIX,
   spokenSegmentId,
@@ -114,6 +116,22 @@ class Narrator {
   // registration with the platform behaviour and keeps the lock
   // screen clean for talks that never start.
   private hasPlayed = false;
+  // What the user did to start playback, captured by the most-recent
+  // intent-bearing handler (Space, MediaSession `play`, chapter jump…)
+  // and consumed once by the first-play latch in `onPlay` to attribute the
+  // `narration_play` analytics event. Defaults to "button" because the
+  // Shikwasa dock play-button has no hook of its own — anything not
+  // explicitly attributed lands as the "in-dock click" case. Reset to
+  // "button" on every pause so a Space-pause followed by a dock-click
+  // doesn't carry the stale "space" attribution forward.
+  private lastPlayTrigger: PlayTrigger = "button";
+  // Quartiles (25 / 50 / 75 / 100 % of master-track duration) we've already
+  // emitted for this page session. The rAF tick consults this on every
+  // frame after `hasPlayed`; first cross of each threshold sends a beacon,
+  // every subsequent frame is a Set.has short-circuit. In-memory only —
+  // a reload starts fresh, which is the semantics we want (a re-listen
+  // is a separate session in the dataset).
+  private firedQuartiles: Set<Quartile> = new Set();
   // Whether the player captures the OS media-session surface (lock
   // screen, headset taps, hardware media keys). When false the
   // entire surface is released so the reader's own music gets those
@@ -281,7 +299,10 @@ class Narrator {
       }
     };
 
-    safeSet("play", () => this.player?.play());
+    safeSet("play", () => {
+      this.lastPlayTrigger = "media-key";
+      this.player?.play();
+    });
     safeSet("pause", () => this.player?.pause());
     // No real "stop" concept for a single track; pause matches user intent.
     safeSet("stop", () => this.player?.pause());
@@ -336,6 +357,7 @@ class Narrator {
     // us inside the new chapter for `chapterchange` (its check is t >=
     // startTime && t < endTime).
     this.seekToMs(asMs(chapter.startTime + 10));
+    this.lastPlayTrigger = "chapter";
     this.player.play();
   }
 
@@ -439,6 +461,7 @@ class Narrator {
         // focused chapter pill or the visibility toggle doesn't intercept
         // playback control. Buttons remain activatable via Enter.
         e.preventDefault();
+        this.lastPlayTrigger = "space";
         this.player.toggle();
         return;
       }
@@ -1082,6 +1105,13 @@ class Narrator {
       // Skipped entirely if the reader has previously released capture; the
       // toggle (or a re-toggle later this session) is what re-arms instead.
       this.hasPlayed = true;
+      if (this.manifest) {
+        emitNarrationPlay(this.postPath, this.lastPlayTrigger, this.manifest.duration);
+      }
+      // Reset to the default in case a future hypothetical reader of the
+      // field (today there is none — the latch above is one-way) gets
+      // accurate "no explicit intent" attribution.
+      this.lastPlayTrigger = "button";
       if (this.captureControls) this.setupMediaSession();
     }
     this.playing = true;
@@ -1092,6 +1122,11 @@ class Narrator {
   private onPause() {
     this.playing = false;
     this.stopTicker();
+    // A pause clears any intent left over from a Space/MediaSession/chapter
+    // path, so the next play attributes to "button" by default unless another
+    // handler has set the trigger first. Only matters between page load and
+    // the first-play latch firing — once `hasPlayed` is true, the field is dead.
+    this.lastPlayTrigger = "button";
     this.setPlaybackState("paused");
   }
   private onEnded() {
@@ -1100,6 +1135,27 @@ class Narrator {
     this.narrationRoot.classList.remove("narrating");
     this.setActive(null);
     this.setPlaybackState("none");
+  }
+
+  // Send a `narration_quartile` analytics beacon the first frame after the
+  // player crosses each 25/50/75/100 % threshold of the master track. Same
+  // tick that drives the highlight, so no new clock — the cost per frame is
+  // a Set.has check after the first cross. Gated on `hasPlayed` so a
+  // programmatic scrub-before-play (e.g. URL hash deep-link) can't emit a
+  // phantom quartile before any play has happened. See methodology.md →
+  // "Engagement analytics (Analytics Engine)".
+  private maybeEmitQuartile(tMs: number): void {
+    if (!this.hasPlayed || !this.manifest) return;
+    if (this.firedQuartiles.size >= QUARTILES.length) return; // all done
+    const duration = this.manifest.duration;
+    if (duration <= 0) return;
+    const pct = (tMs / duration) * 100;
+    for (const q of QUARTILES) {
+      if (pct >= q && !this.firedQuartiles.has(q)) {
+        this.firedQuartiles.add(q);
+        emitNarrationQuartile(this.postPath, q);
+      }
+    }
   }
 
   // rAF gives smoother highlight transitions than `timeupdate` (which only
@@ -1129,6 +1185,7 @@ class Narrator {
     const active = computeActiveMark(this.manifest.marks, tMs);
     this.setActive(active ? active.name : null);
     this.updateActiveWord(active?.name ?? null, tMs);
+    this.maybeEmitQuartile(tMs);
 
     // Drive the lock-screen / Now-Playing scrubber off the same canonical
     // clock. Coalesced internally by the UA, so rAF-rate calls are fine. The

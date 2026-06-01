@@ -35,14 +35,18 @@ const CSP_DIRECTIVES = [
   // for Safari's broader interpretation / a future POST form).
   "form-action 'self' https://accounts.google.com https://login.microsoftonline.com",
   "frame-ancestors 'none'",
-  "script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com",
+  "script-src 'self' 'wasm-unsafe-eval'",
   "style-src 'self'",
   // Both the bare host and the wildcard: a CSP wildcard `*.host` matches
   // subdomains but NOT the bare host, and Graph's photo endpoint is the
   // bare `graph.microsoft.com`.
   "img-src 'self' https://lh3.googleusercontent.com https://graph.microsoft.com https://*.graph.microsoft.com",
   "font-src 'self'",
-  "connect-src 'self' https://static.cloudflareinsights.com",
+  // Same-origin XHRs (`/comments`, `/auth/me`, manifests) and the same-origin
+  // analytics beacon (`navigator.sendBeacon('/_a', ...)`). No external
+  // analytics origin — engagement analytics post to our own Worker route,
+  // which writes to Cloudflare Analytics Engine server-side.
+  "connect-src 'self'",
   "media-src 'self'",
   "object-src 'none'",
   // No code (ours or Shikwasa) constructs a Worker, so this stays tight —

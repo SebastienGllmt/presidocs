@@ -6,6 +6,10 @@
 <title>My Blog</title>
 <!-- Engine-owned stylesheet, referenced through the `engine` symlink. -->
 <link rel="stylesheet" href="./engine/client/landing.css" />
+<!-- Page-view analytics beacon (anonymous, cookieless). Posts pick this up
+     transitively via narrator.ts; the landing has no narrator so it loads
+     analytics.ts directly. See engine methodology.md → "Engagement analytics". -->
+<script type="module" src="./engine/client/analytics.ts"></script>
 </head>
 <body>
   <main>

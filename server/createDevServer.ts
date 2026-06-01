@@ -24,6 +24,7 @@ import { fsAdapter } from "./comments/fsAdapter.ts";
 import { loadDevPostMetaIndex } from "./postMeta.dev.ts";
 import { loadDevPostVersionIndex } from "./postVersions.dev.ts";
 import { handlePostVersionRequest } from "./postVersionsRoute.ts";
+import { handleAnalyticsRequest } from "./analyticsRoute.ts";
 import { handleRegenerateRequest } from "./regenerate.dev.ts";
 import { handleSoundTestList, handleSoundTestRegenerate } from "./soundTest.dev.ts";
 import { withSecurityHeaders } from "../shared/securityHeaders.ts";
@@ -230,6 +231,16 @@ export async function createDevServer(opts: DevServerOptions) {
       handlePostVersionRequest(req, {
         postVersions: postVersionsIndex,
         postMeta: postMetaIndex,
+      })),
+    // Engagement-analytics sink. No-op in dev: `sink: null` means the route
+    // validates + 204s but never calls writeDataPoint, so a developer's clicks
+    // don't pollute the prod dataset. Same path as prod for parity (the
+    // client beacon target is identical in both runtimes).
+    "/_a": pub((req) =>
+      handleAnalyticsRequest(req, {
+        sink: null,
+        postMeta: postMetaIndex,
+        rateLimiter: null,
       })),
     // Dev-only, author-only: re-roll one segment's audio by shelling out to the
     // offline generate pipeline. Absent from the Worker (the prod edge server

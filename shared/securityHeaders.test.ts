@@ -79,10 +79,15 @@ test("img-src allows both the bare Graph host and the wildcard", () => {
   expect(imgSrc).toContain("https://lh3.googleusercontent.com");
 });
 
-test("analytics origin is allowed for both script-src and connect-src", () => {
+test("no cross-origin analytics endpoints in CSP (engagement analytics ride /_a same-origin)", () => {
+  // We dropped CF_ANALYTICS_TOKEN/static.cloudflareinsights.com when the
+  // engagement-analytics path moved server-side. Posting to a fresh external
+  // analytics origin would re-relax the structural check; assert the
+  // directives stay tight to 'self'.
   const csp = cspOf(securityHeaders());
-  expect(directive(csp, "script-src")).toContain("https://static.cloudflareinsights.com");
-  expect(directive(csp, "connect-src")).toContain("https://static.cloudflareinsights.com");
+  expect(csp).not.toContain("cloudflareinsights.com");
+  expect(directive(csp, "connect-src")).toBe("connect-src 'self'");
+  expect(directive(csp, "script-src")).toBe("script-src 'self' 'wasm-unsafe-eval'");
 });
 
 // ---- HSTS (prod-gated, bare max-age) -----------------------------------

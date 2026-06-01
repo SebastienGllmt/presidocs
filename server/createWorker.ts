@@ -33,6 +33,7 @@ import {
   type PostVersionRecord,
 } from "./postVersions.ts";
 import { handlePostVersionRequest } from "./postVersionsRoute.ts";
+import { handleAnalyticsRequest } from "./analyticsRoute.ts";
 import { withSecurityHeaders } from "../shared/securityHeaders.ts";
 
 // The two build-time maps, supplied by the content repo's `worker.ts` from its
@@ -152,6 +153,16 @@ export function createWorkerHandler(content: WorkerContent) {
       return handlePostVersionRequest(req, {
         postVersions: postVersionsIndex,
         postMeta: postMetaIndex,
+      });
+    }
+
+    // Engagement-analytics sink. POST-only; the handler 204s any other method.
+    // Anonymous, no session check, no R2 access — see server/analyticsRoute.ts.
+    if (path === "/_a") {
+      return handleAnalyticsRequest(req, {
+        sink: env.ANALYTICS ?? null,
+        postMeta: postMetaIndex,
+        rateLimiter: env.ANALYTICS_RATE_LIMITER ?? null,
       });
     }
 
