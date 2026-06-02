@@ -9,6 +9,7 @@
 // Mirrors the production route table (server/createWorker.ts) so dev and prod
 // resolve the same URLs the same way.
 
+import { StatusCodes } from "http-status-codes";
 import { join, normalize } from "node:path";
 import { getPlatformProxy } from "wrangler";
 import {
@@ -134,10 +135,10 @@ export async function createDevServer(opts: DevServerOptions) {
       const sub = decodeURIComponent(url.pathname.replace(`/${urlPrefix}/`, ""));
       const safe = normalize(sub);
       if (safe.startsWith("..") || safe.includes("\0")) {
-        return new Response("forbidden", { status: 403 });
+        return new Response("forbidden", { status: StatusCodes.FORBIDDEN });
       }
       const file = Bun.file(join(dir, safe));
-      if (!(await file.exists())) return new Response("not found", { status: 404 });
+      if (!(await file.exists())) return new Response("not found", { status: StatusCodes.NOT_FOUND });
       const size = file.size;
       // Cache policy is split by whether the filename is content-addressed.
       //
@@ -174,7 +175,7 @@ export async function createDevServer(opts: DevServerOptions) {
       const outcome = resolveRange(req.headers.get("range"), size);
       if (outcome.kind === "unsatisfiable") {
         return new Response("range not satisfiable", {
-          status: 416,
+          status: StatusCodes.REQUESTED_RANGE_NOT_SATISFIABLE,
           headers: {
             ...baseHeaders,
             "Content-Range": unsatisfiedRangeHeader(outcome.size),
@@ -184,7 +185,7 @@ export async function createDevServer(opts: DevServerOptions) {
       if (outcome.kind === "satisfiable") {
         const { start, end } = outcome;
         return new Response(file.slice(start, end + 1), {
-          status: 206,
+          status: StatusCodes.PARTIAL_CONTENT,
           headers: {
             ...baseHeaders,
             "Content-Range": contentRangeHeader(start, end, outcome.size),
@@ -231,7 +232,7 @@ export async function createDevServer(opts: DevServerOptions) {
     // registers) and offline still work, just no install affordance.
     "/manifest.webmanifest": pub(async () => {
       const file = Bun.file(join(paths.contentRoot, "manifest.webmanifest"));
-      if (!(await file.exists())) return new Response("not found", { status: 404 });
+      if (!(await file.exists())) return new Response("not found", { status: StatusCodes.NOT_FOUND });
       return new Response(file, {
         headers: { "Content-Type": "application/manifest+json" },
       });
@@ -275,7 +276,7 @@ export async function createDevServer(opts: DevServerOptions) {
       );
       const { avatars } = await buildAuthorMap(paths.postsDir, paths.contentRoot);
       const srcPath = avatars[file];
-      if (!srcPath) return new Response("not found", { status: 404 });
+      if (!srcPath) return new Response("not found", { status: StatusCodes.NOT_FOUND });
       return new Response(Bun.file(srcPath), {
         headers: { "Cache-Control": "no-store" },
       });
@@ -354,7 +355,7 @@ export async function createDevServer(opts: DevServerOptions) {
     routes: { ...staticRoutes, ...pageRoutes, ...apiRoutes },
     development: { hmr: true, console: true },
     fetch() {
-      return new Response("not found", { status: 404 });
+      return new Response("not found", { status: StatusCodes.NOT_FOUND });
     },
   };
 }
