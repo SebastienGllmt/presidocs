@@ -26,6 +26,7 @@ import type { Env } from "./env.ts";
 import { loadDevPostMetaIndex } from "./postMeta.dev.ts";
 import { loadDevPostVersionIndex } from "./postVersions.dev.ts";
 import { handlePostVersionRequest } from "./postVersionsRoute.ts";
+import { buildOpenApiDocument } from "./openapi.ts";
 import { handleAnalyticsRequest } from "./analyticsRoute.ts";
 import { handleRegenerateRequest } from "./regenerate.dev.ts";
 import { handleSoundTestList, handleSoundTestRegenerate } from "./soundTest.dev.ts";
@@ -285,6 +286,7 @@ export async function createDevServer(opts: DevServerOptions) {
     "/auth/microsoft/callback": priv(microsoftCallback),
     "/auth/me": priv(whoami),
     "/auth/logout": { POST: priv(logout) },
+    "/openapi.json": pub(() => Response.json(buildOpenApiDocument())),
     "/comments": priv((req) =>
       handleCommentsRequest(req, {
         store: commentsDevStore,
