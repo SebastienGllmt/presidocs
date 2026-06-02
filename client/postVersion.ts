@@ -8,23 +8,21 @@
 // might appear outdated or have been resolved.
 
 import { parseProblem } from "../shared/problemDetails.ts";
+import {
+  PostVersionResponse as PostVersionResponseSchema,
+  type PostVersionEntry as PostVersionEntryType,
+  type PostVersionResponse as PostVersionResponseType,
+} from "../shared/commentSchemas.ts";
 
-export type PostVersionEntry = {
-  hash: string;
-  builtAt: string; // ISO 8601
-};
-
-export type PostVersionResponse = {
-  currentHash: string;
-  // Server-computed authoritative author flag (TLS-verified session
-  // email vs. post's author-email meta tag). Use this instead of any
-  // DOM-based check — the served HTML's `<meta name="author-email">`
-  // tag is stripped in prod for spam reasons, so a client-side
-  // `document.querySelector` check returns false there.
-  isAuthor: boolean;
-  // Only present when isAuthor === true.
-  history?: PostVersionEntry[];
-};
+// Wire shapes, defined once in shared/commentSchemas.ts and re-exported here so
+// existing importers keep their path. `isAuthor` is the server-computed
+// authoritative author flag (TLS-verified session email vs. the post's
+// author-email meta tag) — use it instead of any DOM-based check, since the
+// served HTML's `<meta name="author-email">` is stripped in prod for spam
+// reasons and a client-side `document.querySelector` returns false there.
+// `history` is present only when isAuthor === true.
+export type PostVersionEntry = PostVersionEntryType;
+export type PostVersionResponse = PostVersionResponseType;
 
 const LAST_SEEN_PREFIX = "blog-doc-version:";
 
@@ -52,7 +50,10 @@ export async function fetchPostVersion(
       );
       return null;
     }
-    return (await res.json()) as PostVersionResponse;
+    // A malformed body degrades to the same null as a 404 / non-ok — the
+    // version banner just doesn't show. No new crash surface.
+    const parsed = PostVersionResponseSchema.safeParse(await res.json());
+    return parsed.success ? parsed.data : null;
   } catch (err) {
     console.warn("fetchPostVersion failed:", err);
     return null;

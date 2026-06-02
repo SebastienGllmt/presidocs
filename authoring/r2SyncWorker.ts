@@ -20,9 +20,23 @@
 // are immutable and reader-owned — this tool must never overwrite them.
 
 import type { R2Bucket, R2Objects } from "@cloudflare/workers-types";
+import { z } from "zod";
+import type { R2ListEntry } from "../shared/commentSchemas.ts";
 
 export interface Env {
   COMMENTS: R2Bucket;
+}
+
+// Shape-only query validation, same posture as the gated routes
+// (server/requestSchemas.ts): a present, non-empty `key` is the only rule;
+// the semantic PUT fence (`key.startsWith("resolutions/")`) stays in the
+// handler, never in the schema. Failures → 400, replacing the ad-hoc
+// `searchParams.get("key")` + `if (!key)` presence check.
+const KeyQuery = z.object({ key: z.string().min(1) });
+
+function parseKey(url: URL): string | null {
+  const parsed = KeyQuery.safeParse(Object.fromEntries(url.searchParams));
+  return parsed.success ? parsed.data.key : null;
 }
 
 export default {
@@ -31,7 +45,7 @@ export default {
 
     if (req.method === "GET" && url.pathname === "/list") {
       const prefix = url.searchParams.get("prefix") ?? "";
-      const keys: Array<{ key: string; size: number; uploaded: string }> = [];
+      const keys: R2ListEntry[] = [];
       let cursor: string | undefined = undefined;
       // Loop the paginated cursor (our buckets are tiny, but be correct).
       for (;;) {
@@ -54,7 +68,7 @@ export default {
     }
 
     if (req.method === "GET" && url.pathname === "/get") {
-      const key = url.searchParams.get("key");
+      const key = parseKey(url);
       if (!key) return new Response("missing key", { status: 400 });
       const obj = await env.COMMENTS.get(key);
       if (!obj) return new Response("not found", { status: 404 });
@@ -67,7 +81,7 @@ export default {
     }
 
     if (req.method === "PUT" && url.pathname === "/put") {
-      const key = url.searchParams.get("key");
+      const key = parseKey(url);
       if (!key) return new Response("missing key", { status: 400 });
       // Fence: only resolution envelopes are ever pushed from local.
       if (!key.startsWith("resolutions/")) {

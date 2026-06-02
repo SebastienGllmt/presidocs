@@ -32,6 +32,7 @@
 import type { PostMetaIndex } from "./postMeta.ts";
 import { StatusCodes } from "http-status-codes";
 import {
+  AnalyticsPayloadSchema,
   BLOB_COUNT,
   BLOB_POST,
   BLOB_QUALIFIER,
@@ -39,11 +40,7 @@ import {
   DOUBLE_DURATION_MS,
   DOUBLE_QUARTILE,
   MAX_PAYLOAD_BYTES,
-  isEventName,
-  isPlayTrigger,
-  isQuartile,
   type AnalyticsPayload,
-  type EventName,
 } from "../shared/analyticsSchema.ts";
 
 // Minimal binding shape — the Workers Analytics Engine binding matches it
@@ -133,35 +130,14 @@ async function readPayload(req: Request): Promise<AnalyticsPayload | null> {
   } catch {
     return null;
   }
-  if (!parsed || typeof parsed !== "object") return null;
-  const obj = parsed as Record<string, unknown>;
 
-  if (!isEventName(obj.event)) return null;
-  const event: EventName = obj.event;
-
-  // `post` is always required, and always validated against the allowlist
-  // (landing or known post path) before any write.
-  const post = typeof obj.post === "string" ? obj.post : null;
-  if (!post) return null;
-
-  if (event === "page_view") {
-    const referrerHost = typeof obj.referrerHost === "string" ? obj.referrerHost : "";
-    // Truncate defensively — a malformed/oversized hostname can't bloat the
-    // blob beyond a sane limit. The valid set is small (<=253 chars per
-    // RFC 1035); the cap below is a structural backstop.
-    return { event, post, referrerHost: referrerHost.slice(0, 253) };
-  }
-  if (event === "narration_play") {
-    if (!isPlayTrigger(obj.trigger)) return null;
-    const durationMs =
-      typeof obj.durationMs === "number" && Number.isFinite(obj.durationMs)
-        ? Math.max(0, Math.round(obj.durationMs))
-        : 0;
-    return { event, post, trigger: obj.trigger, durationMs };
-  }
-  // narration_quartile
-  if (!isQuartile(obj.quartile)) return null;
-  return { event, post, quartile: obj.quartile };
+  // One declarative parse replaces the per-event `if` ladder. The schema
+  // strips unknown keys, enforces the event ⇄ qualifier shape, and applies the
+  // same lenient coercion the route did by hand (see analyticsSchema.ts). The
+  // `post` allowlist (landing or known post path) stays a SEMANTIC guard in
+  // the handler — checked against postMeta after this returns.
+  const result = AnalyticsPayloadSchema.safeParse(parsed);
+  return result.success ? result.data : null;
 }
 
 // `post` must be either the landing ("/") OR a known post path. Anything

@@ -82,6 +82,16 @@ test("fetchPostVersion returns null on 404 (post deleted / not yet built)", asyn
   expect(await fetchPostVersion("/posts/missing")).toBeNull();
 });
 
+test("fetchPostVersion returns null on a malformed 200 body (degrade like 404)", async () => {
+  // A 200 whose JSON is the wrong shape (a meddling proxy, a server bug, an
+  // HTML page that parsed). The banner just won't show — no crash, no garbage
+  // currentHash flowing into the version compare.
+  installFetch(async () =>
+    new Response(JSON.stringify({ isAuthor: "yes" }), { status: 200 }),
+  );
+  expect(await fetchPostVersion("/posts/foo")).toBeNull();
+});
+
 test("fetchPostVersion returns null on 401 / 500 / other non-2xx (safe degrade)", async () => {
   installFetch(async () => new Response("nope", { status: 401 }));
   expect(await fetchPostVersion("/posts/foo")).toBeNull();

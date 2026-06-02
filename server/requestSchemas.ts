@@ -15,22 +15,20 @@
 import { z } from "zod";
 import { StatusCodes } from "http-status-codes";
 import { problem } from "../shared/problemDetails.ts";
+import {
+  ChangeHash,
+  PostPath,
+  ThreadId,
+  UserId,
+} from "../shared/commentSchemas.ts";
 
-// `post` is an opaque post path/key (e.g. "/posts/foo"); non-empty is the
-// only shape rule — the store treats it as an opaque key.
-export const PostParam = z.string().min(1);
-
-// Reader identity is "<provider>:<sub>"; providers are exactly google or
-// microsoft (see methodology → Reader identity). Validating the prefix also
-// keeps a malformed value from ever reaching a content-addressed store key.
-export const UserId = z.string().regex(/^(google|microsoft):.+$/);
-
-// Automerge change hash: lowercase hex sha-256, 64 chars. This is used as an
-// R2 object key, so pinning the shape is a small hardening win too.
-export const ChangeHash = z.string().regex(/^[0-9a-f]{64}$/);
-
-// Thread id is an opaque random string; non-empty is the only shape rule.
-export const ThreadId = z.string().min(1);
+// The field primitives now live in shared/commentSchemas.ts so the request
+// (query) side and the response/body side share one definition. The query
+// *objects* below — which are server-only — compose them. `PostParam` is kept
+// as a local alias for `PostPath` so this module's vocabulary ("the post query
+// param") reads naturally at the composition sites.
+export { ChangeHash, ThreadId, UserId } from "../shared/commentSchemas.ts";
+export const PostParam = PostPath;
 
 // GET /comments?post[&user[&change]] — presence of user/change selects the
 // shape (list users / list changes / get-or-put one change), so both are

@@ -9,21 +9,20 @@
 
 import { ApiError } from "./commentsApi.ts";
 import { parseProblem } from "../shared/problemDetails.ts";
+import {
+  ResolutionEnvelope as ResolutionEnvelopeSchema,
+  ResolutionList,
+  type ResolutionEnvelope as ResolutionEnvelopeType,
+  type ResolutionListEntry as ResolutionListEntryType,
+} from "../shared/commentSchemas.ts";
 
-export type ResolutionListEntry = {
-  threadId: string;
-  size: number;
-  uploaded: string; // ISO 8601
-};
-
-// The bytes-side shape we put / get. The server treats it as opaque,
-// so this type is purely a client-side contract.
-export type ResolutionEnvelope = {
-  threadId: string;
-  resolvedAt: number;
-  resolverId: string;   // <provider>:<sub>
-  resolverName: string; // for display ("Resolved by …")
-};
+// Wire shapes, defined once in shared/commentSchemas.ts and re-exported here so
+// existing importers keep their path. The envelope is the sharpest case for a
+// single schema: it's *written* by this client (putResolution) AND the CLI
+// (authoring/resolveThreads.ts), and *read* back here (getResolution) — one
+// schema makes those writers provably agree.
+export type ResolutionListEntry = ResolutionListEntryType;
+export type ResolutionEnvelope = ResolutionEnvelopeType;
 
 const ACCEPT = "application/json, application/problem+json";
 
@@ -45,7 +44,12 @@ export async function listResolutions(
     headers: { Accept: ACCEPT },
   });
   if (!res.ok) throw await apiError(res, "listResolutions");
-  return (await res.json()) as ResolutionListEntry[];
+  const parsed = ResolutionList.safeParse(await res.json());
+  // A malformed listing is surfaced as an ApiError (status 200 — the request
+  // worked, the body didn't), falling into ResolutionStore.hydrate's existing
+  // catch-and-skip rather than seeding the cache with garbage.
+  if (!parsed.success) throw new ApiError(200, null, "listResolutions (malformed response body)");
+  return parsed.data;
 }
 
 export async function getResolution(
@@ -58,7 +62,11 @@ export async function getResolution(
   });
   if (res.status === 404) return null;
   if (!res.ok) throw await apiError(res, "getResolution");
-  return (await res.json()) as ResolutionEnvelope;
+  // Treat a malformed envelope exactly like a missing one (404 → null): the
+  // caller already drops a null, so a corrupt body can't land a bad
+  // "Resolved by …" tag in the UI.
+  const parsed = ResolutionEnvelopeSchema.safeParse(await res.json());
+  return parsed.success ? parsed.data : null;
 }
 
 export async function putResolution(
@@ -66,11 +74,15 @@ export async function putResolution(
   threadId: string,
   envelope: ResolutionEnvelope,
 ): Promise<void> {
+  // Validate the envelope shape before it goes on the wire — a malformed
+  // write fails loudly here (the caller logs it) rather than persisting a bad
+  // blob the reader side would later have to defend against.
+  const body = ResolutionEnvelopeSchema.parse(envelope);
   const res = await fetch(resolutionsUrl(post, threadId), {
     method: "PUT",
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", Accept: ACCEPT },
-    body: JSON.stringify(envelope),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw await apiError(res, "putResolution");
 }

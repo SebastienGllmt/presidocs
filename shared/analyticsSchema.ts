@@ -19,6 +19,8 @@
 //   double1 = quartile number (25 | 50 | 75 | 100) for narration_quartile, else 0
 //   double2 = audio master-track duration in ms for narration_play, else 0
 
+import { z } from "zod";
+
 export const EVENT_NAMES = [
   "page_view",
   "narration_play",
@@ -88,9 +90,8 @@ export const DOUBLE_DURATION_MS = 1;
 export const BLOB_COUNT = 2;
 export const DOUBLE_COUNT = 2;
 
-// Type-guard helpers. The Worker route uses these to validate input — the
-// route is the one boundary between untrusted bytes and `writeDataPoint`,
-// so the guards are deliberately narrow.
+// Type-guard helpers. Standalone membership tests against the frozen sets
+// above — narrow predicates kept for direct use (and unit-tested in isolation).
 export function isEventName(s: unknown): s is EventName {
   return typeof s === "string" && EVENT_NAME_SET.has(s as EventName);
 }
@@ -100,3 +101,47 @@ export function isPlayTrigger(s: unknown): s is PlayTrigger {
 export function isQuartile(n: unknown): n is Quartile {
   return typeof n === "number" && QUARTILE_SET.has(n as Quartile);
 }
+
+// --- Wire-body schema (the JSON the `/_a` beacon POSTs) ---
+//
+// The single validator the Worker route runs against an untrusted beacon body
+// (proposal 29 — the JSON-body analog of the query-string validation in
+// server/requestSchemas.ts). A `z.discriminatedUnion("event", …)` expresses
+// the event ⇄ qualifier relationship directly, and `z.object` strips unknown
+// keys so a probe can't smuggle extra fields into a row.
+//
+// The enums are derived from the SAME frozen arrays the guards use, so there's
+// still one source of truth for the allowlists. The per-field `.catch()`
+// normalisations preserve the route's previous lenient coercion exactly:
+//   - referrerHost: non-string / missing → "", then capped at 253 chars.
+//   - durationMs:   non-finite / missing → 0, else max(0, round).
+// trigger and quartile are strict — an invalid value rejects the whole body
+// (the route then 204s), matching the old `isPlayTrigger` / `isQuartile` gates.
+const PostField = z.string().min(1);
+
+const PageViewSchema = z.object({
+  event: z.literal("page_view"),
+  post: PostField,
+  referrerHost: z.string().catch("").transform((h) => h.slice(0, 253)),
+});
+const NarrationPlaySchema = z.object({
+  event: z.literal("narration_play"),
+  post: PostField,
+  trigger: z.enum(PLAY_TRIGGERS),
+  durationMs: z
+    .number()
+    .refine((d) => Number.isFinite(d))
+    .transform((d) => Math.max(0, Math.round(d)))
+    .catch(0),
+});
+const NarrationQuartileSchema = z.object({
+  event: z.literal("narration_quartile"),
+  post: PostField,
+  quartile: z.literal(QUARTILES),
+});
+
+export const AnalyticsPayloadSchema = z.discriminatedUnion("event", [
+  PageViewSchema,
+  NarrationPlaySchema,
+  NarrationQuartileSchema,
+]);
