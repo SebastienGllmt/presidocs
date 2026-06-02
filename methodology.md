@@ -653,6 +653,10 @@ Per-user per-page-load cost: 1 LIST, plus 1 GET per new change for that user. **
 
 **Visibility-gated polling.** A `CommentPolling` controller wraps the boot-time hydrate/aggregate path and re-runs it on a 60-second cadence while the tab is `document.visibilityState === "visible"`. When the tab goes hidden the timer is cancelled outright — there's no point pulling fresh comments the user isn't looking at — and on becoming visible again we trigger an immediate poll if more than the interval has elapsed since the last one (so a user returning after a long absence doesn't have to wait for the next 60-second mark). The single-flight guard inside the controller coalesces overlapping requests, so a slow network can't stack concurrent hydrate sweeps.
 
+**Why no cross-tab live channel ([`BroadcastChannel`][BroadcastChannel]).** Within one browser, two tabs of the same post for the same user don't see each other's writes until the next 60-second poll — `persist()` writes the shared `localStorage` key, but the peer tab gets no in-memory signal. This staleness is left unsolved on purpose: correctness never depended on it (content addressing already makes concurrent multi-tab / multi-device pushes safe), the audience is narrow (mostly the author with a post tab and the aggregator open at once — ordinary readers rarely keep two tabs of one post open and write in one while watching the other), and the poll converges within a minute regardless. If it ever earns a fix, the mechanism is the `storage` event, not a new one: `persist()`'s `localStorage.setItem` *already* fires `storage` in every other tab, so a listener that reloads from disk and re-renders is a handful of lines with nothing to construct or tear down. `BroadcastChannel` is **not** used — its only edges over the `storage` event (carrying messages that don't correspond to a storage write, like a sign-out or the aggregator's foreign-reader bytes; in-tab sibling fan-out; surviving a quota-exceeded `setItem`) buy nothing for this surface, and it adds a long-lived per-`(post, user)` object to open and `close()` on teardown. The PWA service worker is not a cleaner coordinator either: it doesn't observe `localStorage`, so routing cross-tab freshness through it is *more* plumbing, not less. The deferred storage-event design lives in [proposals/28](./proposals/28-cross-tab-freshness-storage-event.md).
+
+**Why no [Web Locks][WebLocks].** The single-flight `pushing` flag above is a *politeness* measure — it coalesces a burst of writes into one batched push — not a correctness one; content addressing already makes two tabs pushing the same change harmless (same hash → same key → idempotent). `navigator.locks` would only deduplicate cross-tab network work — one tab wins the boot-time `LIST`, the others wait and read the now-updated `localStorage` — which is invisible to the user and a rounding error at single-digit readers per post. It also threads an async lock acquisition through the push/hydrate hot path whose failure mode (a holder tab killed mid-fetch) is real even though the browser auto-releases on close. Not worth it until cross-tab `LIST` volume is a measured problem, which at this scale it isn't.
+
 ### Author-resolution (`client/resolutionsStore.ts`, `server/comments/resolutionsRoutes.ts`)
 
 The blog author can mark *any* thread as resolved — including foreign threads written by other readers. This is structurally different from a commenter resolving their own thread:
@@ -1858,6 +1862,8 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 [APGFeed]: https://www.w3.org/WAI/ARIA/apg/patterns/feed/
 [APGDisclosure]: https://www.w3.org/WAI/ARIA/apg/patterns/disclosure/
 [APGToolbar]: https://www.w3.org/WAI/ARIA/apg/patterns/toolbar/
+[BroadcastChannel]: https://html.spec.whatwg.org/multipage/web-messaging.html
+[WebLocks]: https://www.w3.org/TR/web-locks/
 [CFRFC9457]: https://blog.cloudflare.com/rfc-9457-agent-error-pages/
 [RFC2606]: https://www.rfc-editor.org/rfc/rfc2606.html
 [RFC6749]: https://www.rfc-editor.org/rfc/rfc6749.html#section-4.1.2.1
@@ -1918,6 +1924,8 @@ the same site already mirrored at [SchemaOrg]/SchemaOrg-spec.html.)
 [APGFeed]: ./specs/APG-feed-spec.html
 [APGDisclosure]: ./specs/APG-disclosure-spec.html
 [APGToolbar]: ./specs/APG-toolbar-spec.html
+[BroadcastChannel]: ./specs/BroadcastChannel-spec.html
+[WebLocks]: ./specs/WebLocks-spec.html
 [RFC2606]: ./specs/ReservedDomains-spec.html
 [RFC6749]: ./specs/OAuth2-spec.html (section 4.1.2.1)
 [Webmention]: ./specs/Webmention-spec.html
