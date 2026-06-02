@@ -33,6 +33,7 @@ import {
   type PostVersionRecord,
 } from "./postVersions.ts";
 import { handlePostVersionRequest } from "./postVersionsRoute.ts";
+import { buildOpenApiDocument } from "./openapi.ts";
 import { handleAnalyticsRequest } from "./analyticsRoute.ts";
 import { withSecurityHeaders } from "../shared/securityHeaders.ts";
 import {
@@ -148,6 +149,9 @@ export function createWorkerHandler(content: WorkerContent) {
     if (path === "/auth/microsoft/callback") return microsoftCallback(req);
     if (path === "/auth/me") return whoami(req);
     if (path === "/auth/logout" && req.method === "POST") return logout(req);
+
+    // --- OpenAPI 3.1 document for the gated API (public — schema, not data). ---
+    if (path === "/openapi.json") return Response.json(buildOpenApiDocument());
 
     // --- Comments R2 proxy. ---
     if (path === "/comments") {
