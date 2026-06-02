@@ -24,6 +24,7 @@ import {
   RATE_LIMIT_WINDOW_SECONDS,
   type ProblemSlug,
 } from "../../shared/problemDetails.ts";
+import { CommentsQuery, zodBadRequest } from "../requestSchemas.ts";
 import type {
   ChangeListEntry,
   CommentChangeStore,
@@ -87,17 +88,12 @@ export async function handleCommentsRequest(
   if (!session) return unauthorized();
 
   const url = new URL(req.url);
-  const post = url.searchParams.get("post");
-  const user = url.searchParams.get("user");
-  const change = url.searchParams.get("change");
-  if (!post) {
-    return badRequest("request/missing-parameter", "missing 'post' query parameter", {
-      param: "post",
-    });
-  }
+  const parsed = CommentsQuery.safeParse(Object.fromEntries(url.searchParams));
+  if (!parsed.success) return zodBadRequest(parsed.error);
+  const { post, user, change } = parsed.data;
 
   // No `user` → list users (author only).
-  if (user === null) {
+  if (user === undefined) {
     if (req.method !== "GET") return methodNotAllowed();
     if (!isPostAuthor(session, deps.postMeta.get(post))) return forbidden();
     const users = await deps.store.listUsers(post);
@@ -107,7 +103,7 @@ export async function handleCommentsRequest(
   }
 
   // `user` but no `change` → list change hashes for that user.
-  if (change === null) {
+  if (change === undefined) {
     if (req.method !== "GET") return methodNotAllowed();
     if (
       session.userId !== user &&

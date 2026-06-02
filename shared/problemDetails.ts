@@ -12,6 +12,7 @@ export type ProblemSlug =
   | "auth/callback-invalid"
   | "auth/userinfo-unavailable"
   | "request/missing-parameter"
+  | "request/invalid-parameter"
   | "request/empty-body"
   | "rate-limit/exceeded"
   | "comments/change-too-large"
@@ -28,6 +29,7 @@ const TITLES: Record<ProblemSlug, string> = {
   "auth/callback-invalid": "OAuth callback was rejected",
   "auth/userinfo-unavailable": "Could not load user info from provider",
   "request/missing-parameter": "Missing required query parameter",
+  "request/invalid-parameter": "Invalid query parameter",
   "request/empty-body": "Request body required",
   "rate-limit/exceeded": "Rate limit exceeded",
   "comments/change-too-large": "Change object exceeds size limit",

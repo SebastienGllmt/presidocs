@@ -899,16 +899,18 @@ The base origin for those type URIs has a three-step resolution chain. `PROBLEM_
 
 ### The slug taxonomy
 
-Eleven project-specific slugs cover everything that has more semantics than the bare status code:
+Twelve project-specific slugs cover everything that has more semantics than the bare status code:
 
 ```
 auth/unauthenticated         auth/forbidden
 auth/misconfigured           auth/oauth-provider-error
 auth/callback-invalid        auth/userinfo-unavailable
-request/missing-parameter    request/empty-body
-rate-limit/exceeded
+request/missing-parameter    request/invalid-parameter
+request/empty-body           rate-limit/exceeded
 comments/change-too-large    resolutions/resolution-too-large
 ```
+
+Those `request/*` slugs back the query-validation layer. Each gated endpoint parses its query string against a zod schema in `server/requestSchemas.ts` — the source of truth for the contract (non-empty `post`, the `google|microsoft:` `user` prefix, the 64-hex change hash) — and one `zodBadRequest` adapter renders any failure through `problem()` as `request/invalid-parameter`, carrying the first offending field as a `param` extension. The schemas are OpenAPI-derivable: an [OpenAPI 3.1][OpenAPI31] document via `@asteasolutions/zod-to-openapi` is one transform away (see [proposal 26](./proposals/26-zod-http-validation-openapi.md)). The document isn't generated today — the only HTTP client is the in-page JS, which already carries TypeScript types — so it waits for an external consumer.
 
 Truly generic responses — every 404/405/416 in the gated set — use **`about:blank`**, the spec's sentinel for "no problem type beyond the status code" ([RFC 9457 §4][ProblemDetails]). The title in that case is the HTTP reason phrase ("Not Found", "Method Not Allowed"). Inventing `comments/change-not-found` for a 404 would be cargo-culting — the status code itself already conveys what the client needs to know.
 
@@ -1849,6 +1851,7 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 [HTMLDialog]: https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element
 [MediaQueries5]: https://www.w3.org/TR/mediaqueries-5/
 [ProblemDetails]: https://www.rfc-editor.org/rfc/rfc9457.html
+[OpenAPI31]: https://spec.openapis.org/oas/v3.1.0
 [CFRFC9457]: https://blog.cloudflare.com/rfc-9457-agent-error-pages/
 [RFC2606]: https://www.rfc-editor.org/rfc/rfc2606.html
 [RFC6749]: https://www.rfc-editor.org/rfc/rfc6749.html#section-4.1.2.1
@@ -1904,6 +1907,7 @@ the same site already mirrored at [SchemaOrg]/SchemaOrg-spec.html.)
 [HTMLDialog]: ./specs/HTMLDialog-spec.html
 [MediaQueries5]: ./specs/MediaQueries5-spec.html
 [ProblemDetails]: ./specs/ProblemDetails-spec.html
+[OpenAPI31]: ./specs/OpenAPI31-spec.html
 [RFC2606]: ./specs/ReservedDomains-spec.html
 [RFC6749]: ./specs/OAuth2-spec.html (section 4.1.2.1)
 [Webmention]: ./specs/Webmention-spec.html
