@@ -763,6 +763,8 @@ The dim → bright transition only pays off if the card is **still in view** whe
 
 **Reduced motion.** The comment layer honours the OS `prefers-reduced-motion: reduce` preference ([Media Queries 5][MediaQueries5]), matching the narrator. The two card-click pulses (`.cmt-anchor-pulse`, `.cmt-card-pulse`) and the slide a card makes when the anchored layout re-pins it (`.cmt-card`'s `top` transition) are silenced under the preference. Scrolling needs a second guard: the page-global `html { scroll-behavior: smooth }` in `base.css` already drops to `auto` under reduce-motion, but the comment layer also scrolls programmatically — clicking a highlight brings its card and the article anchor into view, and a freshly-created draft scrolls into the column — and an explicit `scrollIntoView({ behavior })` overrides that CSS rule, so each of those JS calls reads the preference at call time and passes `auto` when it's set (the narrator's drawer/segment scrolls do the same). The sub-200 ms colour and opacity micro-feedback on hover/focus is deliberately left untouched — it's a fade, not motion, and below what the preference is meant to silence.
 
+**ARIA semantics.** The comment surfaces were audited against [WAI-ARIA 1.2][WAIARIA] and the relevant APG patterns; the deliberate non-changes matter as much as the changes. The version-history panel is a native `<details>`/`<summary>` [disclosure][APGDisclosure] — it manages `aria-expanded` and Enter/Space itself, so it must not be "upgraded" into a hand-rolled `aria-expanded` button. The cards column stays `role="complementary"` (`aria-label="Comments"`): the [`feed`][APGFeed] role was **rejected** because WAI-ARIA defines it as "a scrollable list of articles where scrolling may cause articles to be added to or removed from either end of the list … loading more content as the user reads," whereas every thread for a post is loaded at once and anchor-positioned — `feed` would assert a scroll/incremental-load contract the UI does not honour, degrading the screen-reader experience rather than improving it. Each thread card is a semantic `<article>`; `aria-posinset`/`aria-setsize` are deliberately **not** set, because WAI-ARIA scopes them to `listitem`/`treeitem` members and states they are "not required if all elements in the set are present in the DOM" — which is exactly the case here. The selection action bar is a single labelled `<button>`, not a [`toolbar`][APGToolbar] (whose roving-tabindex contract is for multi-control containers). Two further candidates — an `aria-live` announcement on the reply list and `aria-describedby` anchor-context on the action-bar button — were evaluated and **deferred**: both hinge on screen-reader announcement through the card's wholesale re-render and (on mobile) the Popover, which a DOM-only test cannot observe, so they await a manual assistive-technology pass rather than shipping attributes that may silently do nothing.
+
 ### Future direction: Web Push notifications
 
 The core motivation of the whole auth-gated comment system — "the author wants to follow up on real questions" — currently terminates in the author's verified email and a polling viewer. There is no active notification to the author that a comment landed; they have to revisit posts or check the aggregator manually. Outbound email would close that loop but introduces a paid third-party dependency (Resend / Postmark / SES — Cloudflare has Email Routing for *receiving* mail but no outbound send API). **Web Push** is the Cloudflare-native alternative: the entire flow stays inside the Workers + R2 model already in use.
@@ -1852,6 +1854,10 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 [MediaQueries5]: https://www.w3.org/TR/mediaqueries-5/
 [ProblemDetails]: https://www.rfc-editor.org/rfc/rfc9457.html
 [OpenAPI31]: https://spec.openapis.org/oas/v3.1.0
+[WAIARIA]: https://www.w3.org/TR/wai-aria-1.2/
+[APGFeed]: https://www.w3.org/WAI/ARIA/apg/patterns/feed/
+[APGDisclosure]: https://www.w3.org/WAI/ARIA/apg/patterns/disclosure/
+[APGToolbar]: https://www.w3.org/WAI/ARIA/apg/patterns/toolbar/
 [CFRFC9457]: https://blog.cloudflare.com/rfc-9457-agent-error-pages/
 [RFC2606]: https://www.rfc-editor.org/rfc/rfc2606.html
 [RFC6749]: https://www.rfc-editor.org/rfc/rfc6749.html#section-4.1.2.1
@@ -1908,6 +1914,10 @@ the same site already mirrored at [SchemaOrg]/SchemaOrg-spec.html.)
 [MediaQueries5]: ./specs/MediaQueries5-spec.html
 [ProblemDetails]: ./specs/ProblemDetails-spec.html
 [OpenAPI31]: ./specs/OpenAPI31-spec.html
+[WAIARIA]: ./specs/WAIARIA-spec.html
+[APGFeed]: ./specs/APG-feed-spec.html
+[APGDisclosure]: ./specs/APG-disclosure-spec.html
+[APGToolbar]: ./specs/APG-toolbar-spec.html
 [RFC2606]: ./specs/ReservedDomains-spec.html
 [RFC6749]: ./specs/OAuth2-spec.html (section 4.1.2.1)
 [Webmention]: ./specs/Webmention-spec.html
