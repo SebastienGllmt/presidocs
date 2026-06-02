@@ -496,10 +496,12 @@ class CommentSystem {
     // `anchor()` on every scroll frame in C++, so cards stay aligned
     // to their anchors without JS layout work.
     window.addEventListener("resize", () => {
-      // Card placement is anchor-driven (CSS); only the bottom
-      // spacer's reservation depends on viewport math (dock-height +
-      // lowest-card position), so that's the only thing to recompute
-      // on resize. The action-bar follows its pending range below.
+      // Base card placement is anchor-driven (CSS, no JS), but a resize can
+      // reflow card heights (text re-wraps), which changes which cards overlap
+      // — so re-run the stack pass — and the bottom spacer's reservation
+      // depends on viewport math (dock-height + lowest-card position). The
+      // action-bar follows its pending range below.
+      this.adjustCardStacking();
       this.updateBottomSpacer();
       if (this.pendingRange && this.actionBar && !this.actionBar.hidden) {
         this.showActionBarFor(this.pendingRange);
@@ -823,7 +825,9 @@ class CommentSystem {
     card.showPopover();
     // Auto-focus the textarea so the user can start typing
     // immediately — matches the desktop draft-focus behavior.
-    card.querySelector<HTMLTextAreaElement>(".cmt-reply-input")?.focus();
+    // `preventScroll`: the card is a top-layer popover; focusing into it
+    // must not scroll the underlying document.
+    card.querySelector<HTMLTextAreaElement>(".cmt-reply-input")?.focus({ preventScroll: true });
   }
 
   private mountHideAllFab(): void {
@@ -902,12 +906,24 @@ class CommentSystem {
     document.body.appendChild(spacer);
     this.bottomSpacer = spacer;
 
-    // The identity header sits above the cards in the column flow.
-    // Cards are CSS-anchor-positioned to their highlights, so the
-    // header doesn't need to coordinate with their placement.
+    // Permanent "header" surfaces — the identity card, the version banner,
+    // the version-history disclosure, and the unresolved-count button — live
+    // in a rail pinned to the top of the gutter (desktop) so they hold their
+    // place as the article scrolls. The rail is the ONE positioned box here:
+    // cards must not share a positioned ancestor (they're abs-positioned and
+    // anchor to their highlights), so they hang off the unpositioned column
+    // directly, while the rail keeps the header surfaces out of the document
+    // flow that would otherwise drop them to the bottom of the page. The
+    // version/unresolved surfaces insert themselves after the identity header
+    // (see `renderVersionUI` / `renderUnresolvedCount`), so they land in the
+    // rail too.
+    const rail = document.createElement("div");
+    rail.className = "cmt-rail";
+    col.appendChild(rail);
+
     const header = document.createElement("div");
     header.className = "cmt-identity";
-    col.appendChild(header);
+    rail.appendChild(header);
     this.identityHeader = header;
   }
 
@@ -1051,10 +1067,16 @@ class CommentSystem {
 
     // Highlights: wipe and re-apply (only for non-stale, non-resolved
     // text threads — resolved threads must leave no visual trace).
+    // DRAFTS are included: a draft's card anchors to its highlight via
+    // `position-anchor` / `anchor(top)`, so without a highlight element the
+    // anchor can't resolve and the card falls to the top of the page — which
+    // is what made composing a new comment yank the viewport to the top. A
+    // fresh draft is never resolved and never stale (its hashes were just
+    // captured), so it passes both guards.
     document.querySelectorAll<HTMLElement>(".cmt-highlight").forEach((s) =>
       this.unwrap(s),
     );
-    for (const thread of this.snapshot) {
+    for (const thread of [...this.snapshot, ...this.drafts]) {
       if (this.threadIsResolved(thread)) continue;
       if (isTextTarget(thread.target) && !this.threadIsStale(thread)) {
         this.highlightTextThread(thread);
@@ -1072,6 +1094,14 @@ class CommentSystem {
     document.querySelectorAll<HTMLElement>(".cmt-highlight").forEach((span) => {
       const tid = span.dataset.threadId;
       if (!tid || anchoredThreads.has(tid)) return;
+      // Narration highlights live in the drawer, but their card anchors to the
+      // paired *article* element (stamped in `buildCard` via
+      // `narrationArticleAnchor`). Stamping the drawer span too would put the
+      // same `anchor-name` on two elements; the spec's "last in DOM order"
+      // tiebreak could then resolve `anchor()` to the drawer span — which is
+      // `display:none` while the drawer is closed, collapsing the card to the
+      // fallback. Leave drawer highlights visual-only.
+      if (span.closest(".narrate-drawer")) return;
       anchoredThreads.add(tid);
       span.style.setProperty("anchor-name", anchorNameForText(tid));
     });
@@ -1159,6 +1189,7 @@ class CommentSystem {
 
     this.updateGraphicIndicators();
     this.renderUnresolvedCount();
+    this.adjustCardStacking();
     this.updateBottomSpacer();
 
     this.restoreActiveComposer(activeComposer);
@@ -1240,7 +1271,7 @@ class CommentSystem {
     // resolver); graphic threads anchor to the graphic root
     // (stamped in `installGraphicTriggers`). The desktop CSS uses
     // this anchor for `top: anchor(top)`; the mobile popover uses
-    // it for `position-area: block-end span-inline`.
+    // it for `position-area: block-end span-all`.
     if (isTextTarget(thread.target)) {
       const anchorName = anchorNameForText(thread.id);
       card.style.setProperty("position-anchor", anchorName);
@@ -1683,6 +1714,55 @@ class CommentSystem {
     if (spacer !== spacerH) this.bottomSpacer.style.height = `${spacer}px`;
   }
 
+  // Collision handling for the desktop column. Cards CSS-anchor to their
+  // highlights (`top: anchor(top)`), so two comments on the same — or
+  // overlapping — text resolve to the same top and render on top of each
+  // other. This pass reads each card's BASE anchored position, walks them
+  // top-down, and pushes any card that would overlap the one above it down via
+  // `--cmt-stack-offset`, so they cascade like Google-Docs margin notes.
+  // Document-relative card positions don't change on scroll (cards scroll with
+  // the page, the anchor re-resolves in the compositor), so this only needs to
+  // run per render and on resize — never per scroll frame.
+  private adjustCardStacking(): void {
+    const cards = [...this.cardEls.values()];
+    // Mobile cards are top-layer popovers (one at a time) — never stacked in
+    // flow. Clear any offset a prior desktop render may have left behind.
+    if (this.isMobile || cards.length < 2) {
+      for (const card of cards) card.style.removeProperty("--cmt-stack-offset");
+      return;
+    }
+
+    // Measure each card's base (anchored, zero-offset) top. Suppress the `top`
+    // transition first so a synchronous read can't catch a mid-animation value,
+    // and zero any existing offset so we read the true anchored position.
+    const order = new Map(cards.map((c, i) => [c, i] as const));
+    for (const card of cards) {
+      card.style.transition = "none";
+      card.style.setProperty("--cmt-stack-offset", "0px");
+    }
+    const measured = cards.map((card) => {
+      const r = card.getBoundingClientRect();
+      return { card, top: r.top + window.scrollY, height: r.height };
+    });
+    // Top-to-bottom; ties broken by document order (cardEls insertion order).
+    measured.sort((a, b) => a.top - b.top || order.get(a.card)! - order.get(b.card)!);
+
+    const GAP_PX = 8;
+    let lastBottom = -Infinity;
+    for (const m of measured) {
+      const offset = m.top < lastBottom + GAP_PX ? lastBottom + GAP_PX - m.top : 0;
+      m.card.style.setProperty("--cmt-stack-offset", `${Math.round(offset)}px`);
+      lastBottom = m.top + offset + m.height;
+    }
+
+    // Restore the transition next frame so later position changes (a future
+    // render, an anchor shifting on reflow) animate, while this placement stays
+    // instant — no slide-in flicker on first paint.
+    requestAnimationFrame(() => {
+      for (const card of cards) card.style.removeProperty("transition");
+    });
+  }
+
   // The article element a narration comment refers to. A narration
   // segment's `<mark name="X"/>` pairs with an article `id="X"` (the same
   // mapping narrator.ts uses to highlight the article during playback), so
@@ -2059,7 +2139,10 @@ class CommentSystem {
     if (!card) return;
     card.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
     const ta = card.querySelector<HTMLTextAreaElement>(".cmt-reply-input");
-    ta?.focus();
+    // `preventScroll`: the card is already brought into view by the line
+    // above; without this, focus() does its own scroll-into-view and can
+    // fight/override that (and yank to the top if the card hasn't anchored).
+    ta?.focus({ preventScroll: true });
   }
 
   // ===== Stale detection =====

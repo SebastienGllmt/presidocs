@@ -1,6 +1,8 @@
 # Release checklist
 
-Five-minute manual sweep run on a real laptop + real phone before pushing a release. Covers the substrate behaviours `bun test` cannot — real audio playback, OS lock-screen widgets, real CSS layout under narrow viewports, OAuth redirects to live providers — that no automated harness (happy-dom or Playwright) can verify meaningfully today.
+Five-minute manual sweep run on a real laptop + real phone before pushing a release. Covers the substrate behaviours `bun test` cannot — real audio playback, OS lock-screen widgets, real CSS layout under narrow viewports, real `prefers-reduced-motion`, OAuth redirects to live providers, screen-reader semantics — that no automated harness (happy-dom or Playwright) can verify meaningfully today.
+
+Most items run **every release**; §8 (screen-reader smoke) runs **quarterly or when the comments UI changes**, and §9 (push) is **gated** — inert until Web Push ships. Items 2 and 8 need a real phone / a real screen reader, so "once per quarter" is the honest floor for those.
 
 This is the procedural complement to the [Testing layout](../methodology.md#testing-layout) section in `methodology.md`. Each item is a behaviour the methodology calls out as load-bearing; the test layer covers the JS surface, this list covers the integration. When an item here turns into "we've shipped a regression here twice in a row," that's the signal to lift it from manual to automated (and to revisit whether a real-browser harness is worth standing up — see the trigger in `methodology.md`'s "No real-browser harness (today)" paragraph).
 
@@ -48,6 +50,7 @@ The list is short on purpose. Adding a check that the automated layer already co
 - System Settings → Accessibility → Display → Reduce motion: ON (macOS) / equivalent (other OSes).
 - Reload a post with an animated figure. The figure renders the final frame directly (no scramble/pop-in).
 - Click a heading deep-link. Native instant-scroll (no smooth).
+- Open a post **with comments**. Click a highlight: the card and its article-side anchor get **no** ~1 s pulse (`.cmt-card-pulse` / `.cmt-anchor-pulse` are silenced), and they scroll into view **instantly**, not smoothly (`scrollBehavior()` in `client/comments.ts` reads `"auto"` under the OS pref — happy-dom's `matchMedia` returns `matches: false`, so this reduce branch is *only* exercisable here).
 
 ## 7. Audio cache freshness (the sticky-mp3-bug substrate)
 
@@ -55,13 +58,32 @@ The list is short on purpose. Adding a check that the automated layer already co
 - Reload the post in Chrome. The new audio is fetched — verifiable via DevTools → Network → click the `full.<hash>.mp3` request and confirm the hash matches the new manifest entry.
 - (The contract is enforced by `manifest.audio` carrying a content-hashed filename; the test for that contract lives in `generate/generate.test.ts`. This check exists to catch a hypothetical regression where the manifest hash is right but `copy-static` ships stale bytes under the same hash — vanishingly unlikely, but cheap to verify.)
 
+## 8. ARIA / screen-reader smoke (comments)
+
+Run quarterly, or whenever the comments UI structure changes — one screen reader is enough (VoiceOver on macOS). These are *announcement* and *computed-tree* properties: happy-dom builds no accessibility tree, so none of them is assertable in `bun test`.
+
+- The comments column is announced as a **complementary** region named "Comments" — *not* a `feed` (`role="complementary"` + `aria-label="Comments"`; the `feed` upgrade was audited and deliberately rejected). **Now also guarded automatically** by the Tier-1 real-browser test (`e2e/articleA11y.e2e.ts`, `bun run test:e2e` — see [methodology → Testing layout](../methodology.md#testing-layout)); the manual pass still confirms it's *spoken* correctly, which the tree snapshot can't.
+- Moving through cards, each is announced as an **article**; the reader is *not* told a misleading "item X of Y" (no `aria-posinset` / `aria-setsize` — the inert pagination hint the audit warned against).
+- The version-history control announces as **expandable** (collapsed/expanded) and toggles on Enter/Space (native `<details>` disclosure).
+- The hide-all button announces its **pressed** state (`aria-pressed`).
+- *(Only if the deferred `aria-live` reply announcement or `aria-describedby` action-bar context ever ship — see `methodology.md` → Comments UI — verify a newly-posted reply is actually **spoken**, and that focusing the action bar speaks the selection context. These announcement claims are the ones no DOM/tree snapshot can reach, which is why the audit deferred them pending exactly this manual pass.)*
+
+## 9. Push notification end-to-end (gated — only once Web Push ships)
+
+Not active yet: Web Push is deferred to [proposal 21](../proposals/21-pwa-offline-followups.md). When the `push` / `notificationclick` handlers land in `client/sw.js`, run this on a real device per browser (the fan-out is server-side and unit-testable; the notification *render* is OS surface — unobservable from any test, so this is manual or nothing):
+
+- Reader posts a comment from a logged-out tab.
+- Author tab (a different browser, on a different OS where possible) receives a notification *with the post title and a snippet*.
+- Tapping the notification opens the right post and scrolls to the right thread.
+- Repeat on Chrome desktop, Safari desktop, and the iOS Safari PWA (each implements Push differently; Safari ignores notification `actions`).
+
 ## Promotion criteria
 
 If any item here ever turns into "this is the third time we've shipped a regression here in this corner," lift it to the automated layer:
 
 - If the bug surface is the JS-visible API (state transitions, parsed responses, store wiring) → write a happy-dom test, even if it duplicates a manual check.
-- If the bug surface is *real browser behaviour* (audio decoding, real layout, lock-screen widget, OS clipboard) → that's the threshold for revisiting the "no real-browser harness today" decision. The Playwright wiring path is documented in `methodology.md`'s "Testing layout" section.
-- If a real-browser harness IS the answer, replace the manual item here with a one-line reference to the new test file.
+- If the bug surface is *real browser behaviour* that a headless Chromium **can** reach (real layout, the accessibility tree, the Service-Worker lifecycle, Popover/anchor placement) → add a test to the real-browser harness (`e2e/*.e2e.ts`, `bun run test:e2e` — see [methodology → Testing layout](../methodology.md#testing-layout)). Live today: layout, the a11y landmark, and the full comment-positioning set (cards/drafts/overlap/rail/mobile popover). Remaining tiers (comment-card accessibility-tree snapshot; Service-Worker lifecycle) are specified in [proposal 22](../proposals/22-real-browser-e2e-remaining.md).
+- When a harness test covers an item, replace the manual bullet here with a one-line reference to the new `e2e/*.e2e.ts` file.
 
 What does NOT belong in the automated lift:
 
