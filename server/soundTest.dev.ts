@@ -30,6 +30,7 @@ import { StatusCodes } from "http-status-codes";
 import { join } from "node:path";
 import { existsSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
+import { findManifestName } from "../shared/manifestFile.ts";
 import { getSessionFromRequest } from "./auth/routes.ts";
 import { isPostAuthor, type PostMetaIndex } from "./postMeta.ts";
 import { matchesAnyGrapheme, parseLexicon, type LexEntry } from "../generate/pronunciation.ts";
@@ -90,9 +91,10 @@ async function scanPostsForLexicon(
     // Flatten every chapter's segments into one list — we only care which
     // marks contain the lexeme, not which chapter they belong to.
     const segments = chapters.flatMap((ch) => splitChapter(ch.content));
-    const manifestPath = join(deps.contentRoot, "generated", slug, "manifest.json");
-    const manifestMtime = existsSync(manifestPath)
-      ? Math.floor(statSync(manifestPath).mtimeMs)
+    const manifestDir = join(deps.contentRoot, "generated", slug);
+    const manifestName = await findManifestName(manifestDir);
+    const manifestMtime = manifestName
+      ? Math.floor(statSync(join(manifestDir, manifestName)).mtimeMs)
       : 0;
     entries.forEach((entry, idx) => {
       const marks = new Set<string>();

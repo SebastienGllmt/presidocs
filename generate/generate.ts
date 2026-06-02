@@ -59,6 +59,7 @@ import { parseLexicon } from "./pronunciation.ts";
 import { normalizeChapterParents } from "./chapterParents.ts";
 import { asMs, msToSeconds, type Milliseconds } from "../shared/time.ts";
 import { resolveAuthorVoice } from "../shared/voiceResolution.ts";
+import { manifestFileName, MANIFEST_HASHED_RE } from "../shared/manifestFile.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 
 const argv = Bun.argv.slice(2);
@@ -800,7 +801,39 @@ const manifest = {
   chapters: manifestChapters,
   marks: manifestMarks,
 };
-await Bun.write(join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2));
+// Content-address the manifest filename (`manifest.<hash>.json`), mirroring the
+// `full.<hash>.mp3` scheme above. The manifest is the index the player fetches
+// to discover the current `full.<hash>` URL; served at a STABLE url it gets
+// pinned stale by any cache that ignores revalidation (the service worker's
+// cache-first store, the Cloudflare edge), and a stale manifest points at a
+// swept `full.<hash>` → NotSupportedError on play. Hashing the name makes it
+// immutable end-to-end. The hash covers only the narration-bearing fields (NOT
+// `generatedAt`/`slug`), so an unchanged regenerate keeps the same name and
+// stays cache-warm. The served HTML's `data-narration-src` is rewritten to this
+// name at build time (strip-served-html.ts); the dev server resolves a bare
+// `manifest.json` request to it (createDevServer.ts).
+const manifestJson = JSON.stringify(manifest, null, 2);
+const manifestHash = new Bun.CryptoHasher("sha256")
+  .update(JSON.stringify({
+    audio: manifest.audio,
+    duration: manifest.duration,
+    chapters: manifest.chapters,
+    marks: manifest.marks,
+  }))
+  .digest("hex")
+  .slice(0, 16);
+const manifestName = manifestFileName(manifestHash);
+await Bun.write(join(outDir, manifestName), manifestJson);
+
+// Sweep superseded manifests (the prior hash, plus any legacy unhashed
+// `manifest.json`) so stale indices don't accumulate or get shipped by
+// copy-static. Mirrors the full-track sweep above.
+for (const f of await readdir(outDir)) {
+  if (f === manifestName) continue;
+  if (f === "manifest.json" || MANIFEST_HASHED_RE.test(f)) {
+    await unlink(join(outDir, f)).catch(() => {});
+  }
+}
 
 // WebVTT sidecar — emit ONLY when alignment data is present, so pre-alignment
 // builds (no `--align=...`) keep their previous file set byte-for-byte. The

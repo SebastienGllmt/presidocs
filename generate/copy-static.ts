@@ -5,7 +5,8 @@
 // Truly dynamic content (user comments) lives in R2, not here.
 //
 // What we copy:
-//   - `generated/<slug>/manifest.json` — narration timing manifest
+//   - `generated/<slug>/manifest.<hash>.json` — narration timing manifest
+//     (content-addressed; see shared/manifestFile.ts)
 //   - `generated/<slug>/*.mp3`         — pre-rendered audio
 //   - `node_modules/@automerge/automerge/dist/automerge.wasm` — the
 //     Automerge WASM core the comments client lazy-loads.
@@ -25,11 +26,12 @@
 // Runs as part of `bun run build` (between `bun build` and the HTML
 // strip). Idempotent; safe to re-run.
 
-import { cp, mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { buildAuthorMap } from "../shared/authorProfile.ts";
 import { buildPublicPostVersionsMap } from "../shared/publicPostVersions.ts";
+import { MANIFEST_HASHED_RE } from "../shared/manifestFile.ts";
 
 const paths = resolveBlogPaths();
 const ROOT = paths.contentRoot;
@@ -59,6 +61,15 @@ async function copyGeneratedArtifacts(): Promise<number> {
     );
     return 0;
   }
+  // Mirror, don't merge: wipe the served tree first so artifacts from a PRIOR
+  // build can't linger in dist and get redeployed. This is load-bearing for
+  // cache correctness — `cp` only ever ADDS, so a superseded `manifest.json`
+  // (or an old `full.<hash>.mp3`) left behind stays live at its URL forever, and
+  // any cache holding that URL keeps serving the stale/short track (the 0:15
+  // bug). Hashing the manifest stops the CURRENT page from requesting it, but
+  // only deleting the file stops the server from answering it at all.
+  // `feeds.ts` re-writes each post's chapters.json into here after this step.
+  await rm(dst, { recursive: true, force: true });
   let copied = 0;
   const topEntries = await readdir(src, { withFileTypes: true });
   for (const top of topEntries) {
@@ -72,7 +83,14 @@ async function copyGeneratedArtifacts(): Promise<number> {
     let createdDst = false;
     for (const f of slugEntries) {
       if (!f.isFile()) continue;
-      const keep = f.name === "manifest.json" || f.name.endsWith(".mp3");
+      // Skip dotfiles — notably macOS AppleDouble sidecars (`._full.<hash>.mp3`),
+      // which match the `.mp3` keep-rule but are just resource-fork metadata, not
+      // audio. Shipping them is dead weight (and confusing breadcrumbs).
+      if (f.name.startsWith(".")) continue;
+      const keep =
+        MANIFEST_HASHED_RE.test(f.name) ||
+        f.name === "manifest.json" ||
+        f.name.endsWith(".mp3");
       if (!keep) continue;
       if (!createdDst) {
         await mkdir(slugDst, { recursive: true });

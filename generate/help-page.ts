@@ -41,6 +41,7 @@ import { resolveFeedConfig } from "../shared/feedConfig.ts";
 import { buildAuthorMap } from "../shared/authorProfile.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 import { decodeHtmlEntities } from "../shared/htmlEntities.ts";
+import { findManifestName } from "../shared/manifestFile.ts";
 import { injectSiteFooter } from "../shared/injectFooter.ts";
 import { injectPwaHead, type PwaHeadOptions } from "../shared/injectPwaHead.ts";
 import { readSiteMeta } from "./feeds.ts";
@@ -415,10 +416,10 @@ async function hasAnyNarration(generatedDir: string): Promise<boolean> {
   }
   for (const ent of entries) {
     if (!ent.isDirectory()) continue;
-    const manifestPath = join(generatedDir, ent.name, "manifest.json");
-    if (!existsSync(manifestPath)) continue;
+    const manifestName = await findManifestName(join(generatedDir, ent.name));
+    if (!manifestName) continue;
     try {
-      const m = (await Bun.file(manifestPath).json()) as { audio?: string };
+      const m = (await Bun.file(join(generatedDir, ent.name, manifestName)).json()) as { audio?: string };
       if (m.audio) return true;
     } catch {
       // malformed manifest → ignore
