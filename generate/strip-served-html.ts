@@ -26,6 +26,7 @@ import {
 } from "../shared/injectStructuredData.ts";
 import { buildAuthorMap, type PublicAuthorProfile } from "../shared/authorProfile.ts";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
+import { findManifestName } from "../shared/manifestFile.ts";
 
 const paths = resolveBlogPaths();
 const ROOT = paths.contentRoot;
@@ -60,10 +61,11 @@ async function readAudio(
   postPath: string,
 ): Promise<{ url: string; durationMs: number } | null> {
   const slug = postPath.replace(/^\/posts\//, "");
-  const manifestPath = join(paths.generatedDir, slug, "manifest.json");
-  if (!existsSync(manifestPath)) return null;
+  const dir = join(paths.generatedDir, slug);
+  const name = await findManifestName(dir);
+  if (!name) return null;
   try {
-    const m = (await Bun.file(manifestPath).json()) as {
+    const m = (await Bun.file(join(dir, name)).json()) as {
       audio?: string;
       duration?: number;
     };
@@ -125,6 +127,35 @@ function pickSiteAuthor(
   if (newest && authorMap[newest[0]]) return authorMap[newest[0]]!;
   const first = Object.values(authorMap)[0];
   return first ?? null;
+}
+
+// Point the player at the content-addressed manifest. The author writes a
+// stable `data-narration-src="/generated/<slug>/manifest.json"`; we rewrite it
+// to the `manifest.<hash>.json` actually on disk so the URL the browser fetches
+// changes whenever the narration changes — which is what lets the service
+// worker and the Cloudflare edge cache the manifest immutably without ever
+// pinning a stale copy that points the <audio> element at a swept `full.<hash>`
+// (the `NotSupportedError` failure). Posts with no manifest — or only a legacy
+// bare `manifest.json` — are left untouched. Idempotent: a second pass sees the
+// already-rewritten URL and returns the html unchanged.
+async function rewriteNarrationManifestSrc(
+  html: string,
+  postPath: string,
+  generatedDir: string = paths.generatedDir,
+): Promise<string> {
+  if (!postPath.startsWith("/posts/")) return html;
+  const slug = postPath.slice("/posts/".length);
+  const name = await findManifestName(join(generatedDir, slug));
+  if (!name || name === "manifest.json") return html;
+  const url = `/generated/${slug}/${name}`;
+  if (html.includes(`data-narration-src="${url}"`)) return html;
+  return new HTMLRewriter()
+    .on("[data-narration-src]", {
+      element(el) {
+        el.setAttribute("data-narration-src", url);
+      },
+    })
+    .transform(html);
 }
 
 async function walkHtml(dir: string): Promise<string[]> {
@@ -235,6 +266,11 @@ async function main(): Promise<void> {
     const before = await readFile(file, "utf8");
     let after = stripServedHtml(before);
 
+    // Content-address the narration manifest URL (independent of SITE_URL — the
+    // cache-correctness fix must apply to every deploy). No-op for non-posts and
+    // posts without a hashed manifest.
+    after = await rewriteNarrationManifestSrc(after, distFileToPostPath(file));
+
     // Structured data: real posts get BlogPosting; the landing page gets a
     // WebSite/Blog @graph; everything else short-circuits.
     if (siteUrl) {
@@ -312,4 +348,4 @@ if (import.meta.main) {
 }
 
 // Exported for tests.
-export { readSitePublisher };
+export { readSitePublisher, rewriteNarrationManifestSrc };

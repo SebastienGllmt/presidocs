@@ -10,7 +10,7 @@
 // resolve the same URLs the same way.
 
 import { StatusCodes } from "http-status-codes";
-import { join, normalize } from "node:path";
+import { basename, dirname, join, normalize } from "node:path";
 import { getPlatformProxy } from "wrangler";
 import {
   startGoogleAuth,
@@ -35,6 +35,7 @@ import { withSecurityHeaders } from "../shared/securityHeaders.ts";
 import { buildAuthorMap } from "../shared/authorProfile.ts";
 import { buildPublicPostVersionsMap } from "../shared/publicPostVersions.ts";
 import type { BlogPaths } from "../shared/blogPaths.ts";
+import { findManifestName } from "../shared/manifestFile.ts";
 import {
   contentRangeHeader,
   resolveRange,
@@ -137,8 +138,22 @@ export async function createDevServer(opts: DevServerOptions) {
       if (safe.startsWith("..") || safe.includes("\0")) {
         return new Response("forbidden", { status: StatusCodes.FORBIDDEN });
       }
-      const file = Bun.file(join(dir, safe));
-      if (!(await file.exists())) return new Response("not found", { status: StatusCodes.NOT_FOUND });
+      let file = Bun.file(join(dir, safe));
+      if (!(await file.exists())) {
+        // The played manifest is content-addressed (`manifest.<hash>.json`).
+        // Dev serves the AUTHORED HTML, whose `data-narration-src` still names
+        // the bare `manifest.json` (the hash rewrite is a prod-build step), so
+        // resolve a bare request to the hashed file on disk. Served no-store
+        // below since the request URL itself isn't hashed in dev (harmless —
+        // dev registers no service worker and sits behind no CDN).
+        const resolved = basename(safe) === "manifest.json"
+          ? await findManifestName(join(dir, dirname(safe)))
+          : null;
+        if (resolved && resolved !== "manifest.json") {
+          file = Bun.file(join(dir, dirname(safe), resolved));
+        }
+        if (!(await file.exists())) return new Response("not found", { status: StatusCodes.NOT_FOUND });
+      }
       const size = file.size;
       // Cache policy is split by whether the filename is content-addressed.
       //
@@ -165,7 +180,8 @@ export async function createDevServer(opts: DevServerOptions) {
       // createWorker.ts. Small files happened to work anyway because the
       // browser buffers them whole. The parser is shared with the prod path
       // via shared/httpRange.ts.
-      const isContentHashed = /(^|\/)full\.[0-9a-f]{16}\.[a-z0-9]+$/i.test(safe);
+      const isContentHashed =
+        /(^|\/)(full\.[0-9a-f]{16}\.[a-z0-9]+|manifest\.[0-9a-f]{16}\.json)$/i.test(safe);
       const baseHeaders: Record<string, string> = {
         "Cache-Control": isContentHashed
           ? "public, max-age=31536000, immutable"

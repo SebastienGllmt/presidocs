@@ -23,6 +23,7 @@ import {
   type AudioFormat,
 } from "./audio-pipeline.ts";
 import { asMs } from "../shared/time.ts";
+import { findManifestName } from "../shared/manifestFile.ts";
 
 const ENGINE_ROOT = resolve(import.meta.dir, "..");
 const GENERATE_SCRIPT = join(ENGINE_ROOT, "generate", "generate.ts");
@@ -108,7 +109,8 @@ test("end-to-end: manifest chapter offsets line up with the emitted MP3", async 
     if (exitCode !== 0) throw new Error(`generate.ts exited ${exitCode}:\n${stderr}`);
 
     const outDir = join(root, "generated", "test-post");
-    const manifest = (await Bun.file(join(outDir, "manifest.json")).json()) as {
+    const manifestName = (await findManifestName(outDir))!;
+    const manifest = (await Bun.file(join(outDir, manifestName)).json()) as {
       audio: string;
       duration: number;
       chapters: { id: string; startTime: number; endTime: number }[];
@@ -178,7 +180,9 @@ test("end-to-end: silent segments still have a valid Xing/Info MP3 header", asyn
     const { exitCode, stderr } = await runGenerate(root, postFile);
     if (exitCode !== 0) throw new Error(`generate.ts exited ${exitCode}:\n${stderr}`);
 
-    const manifest = (await Bun.file(join(root, "generated", "test-post", "manifest.json")).json()) as {
+    const outDir = join(root, "generated", "test-post");
+    const manifestName = (await findManifestName(outDir))!;
+    const manifest = (await Bun.file(join(outDir, manifestName)).json()) as {
       audio: string;
     };
     const mp3 = new Uint8Array(await Bun.file(join(root, manifest.audio)).arrayBuffer());

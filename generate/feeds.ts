@@ -31,6 +31,7 @@ import { resolveFeedConfig, type FeedConfig } from "../shared/feedConfig.ts";
 import { buildAuthorMap, type PublicAuthorProfile } from "../shared/authorProfile.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 import { decodeHtmlEntities } from "../shared/htmlEntities.ts";
+import { findManifestName } from "../shared/manifestFile.ts";
 import { createHash } from "node:crypto";
 
 const paths = resolveBlogPaths();
@@ -449,10 +450,11 @@ async function main(): Promise<void> {
 
     // Audio (+ chapters sidecar) only when the post has a narration manifest.
     let audio: FeedPost["audio"];
-    const manifestPath = join(paths.generatedDir, slug, "manifest.json");
-    if (existsSync(manifestPath)) {
+    const manifestDir = join(paths.generatedDir, slug);
+    const manifestName = await findManifestName(manifestDir);
+    if (manifestName) {
       try {
-        const m = (await Bun.file(manifestPath).json()) as Manifest;
+        const m = (await Bun.file(join(manifestDir, manifestName)).json()) as Manifest;
         if (m.audio && typeof m.duration === "number") {
           const distAudio = join(distDir, m.audio.replace(/^\//, ""));
           if (existsSync(distAudio)) {

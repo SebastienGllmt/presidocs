@@ -68,7 +68,7 @@ self.addEventListener("fetch", (e) => {
   // Cache-first: content-addressed or hash-named static. URL changes when
   // bytes change, so a cache hit is correctness-safe forever.
   if (
-    url.pathname.startsWith("/generated/") ||   // mp3 + manifest.json
+    url.pathname.startsWith("/generated/") ||   // content-hashed mp3 + manifest
     url.pathname.startsWith("/assets/") ||      // automerge.wasm, authors.json, og/, etc.
     /-[a-z0-9]{8}\.(?:js|css)$/.test(url.pathname)
   ) {
