@@ -918,7 +918,7 @@ request/empty-body           rate-limit/exceeded
 comments/change-too-large    resolutions/resolution-too-large
 ```
 
-Those `request/*` slugs back the query-validation layer. Each gated endpoint parses its query string against a zod schema in `server/requestSchemas.ts` — the source of truth for the contract (non-empty `post`, the `google|microsoft:` `user` prefix, the 64-hex change hash) — and one `zodBadRequest` adapter renders any failure through `problem()` as `request/invalid-parameter`, carrying the first offending field as a `param` extension. Those schemas are also the source of truth for an [OpenAPI 3.1][OpenAPI31] document: `server/openapi.ts` adds response component schemas and path registrations and emits the document via `@asteasolutions/zod-to-openapi` (using Zod 4's native `.meta({ id })`, so no global-registry mutation reaches `shared/time.ts`'s branded schemas), served at the public `GET /openapi.json`. The in-page JS doesn't consume it — it already carries TypeScript types — so the document is there for an external integrator (a CI contract-check, a Swagger/Scalar render, a future embed). The `/auth/*` routes are not in the document yet: their query parsing isn't schematized, and their `safeReturnTo` / RFC 6749 guards are semantic, not shape.
+Those `request/*` slugs back the query-validation layer. Each gated endpoint parses its query string against a zod schema in `server/requestSchemas.ts` — the source of truth for the contract (non-empty `post`, the `google|microsoft:` `user` prefix, the 64-hex change hash) — and one `zodBadRequest` adapter renders any failure through `problem()` as `request/invalid-parameter`, carrying the first offending field as a `param` extension. Those schemas are also the source of truth for an [OpenAPI 3.1][OpenAPI31] document: `server/openapi.ts` adds response component schemas and path registrations and emits the document via `@asteasolutions/zod-to-openapi` (using Zod 4's native `.meta({ id })`, so no global-registry mutation reaches `shared/time.ts`'s branded schemas), served at the public `GET /openapi.json`. Those response component schemas are [JSON Schema 2020-12][JSONSchemaCore] — the dialect OpenAPI 3.1's Schema Object defers to — so a generated keyword (`pattern` / `minLength` / `format` from [Validation][JSONSchemaValidation]; `anyOf` / `$ref` / `items` from [Core][JSONSchemaCore]) means exactly what that spec says; both are mirrored under `specs/`. The in-page JS doesn't consume it — it already carries TypeScript types — so the document is there for an external integrator (a CI contract-check, a Swagger/Scalar render, a future embed). The `/auth/*` routes are not in the document yet: their query parsing isn't schematized, and their `safeReturnTo` / RFC 6749 guards are semantic, not shape.
 
 Truly generic responses — every 404/405/416 in the gated set — use **`about:blank`**, the spec's sentinel for "no problem type beyond the status code" ([RFC 9457 §4][ProblemDetails]). The title in that case is the HTTP reason phrase ("Not Found", "Method Not Allowed"). Inventing `comments/change-not-found` for a 404 would be cargo-culting — the status code itself already conveys what the client needs to know.
 
@@ -1860,6 +1860,8 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 [MediaQueries5]: https://www.w3.org/TR/mediaqueries-5/
 [ProblemDetails]: https://www.rfc-editor.org/rfc/rfc9457.html
 [OpenAPI31]: https://spec.openapis.org/oas/v3.1.0
+[JSONSchemaCore]: https://json-schema.org/draft/2020-12/json-schema-core
+[JSONSchemaValidation]: https://json-schema.org/draft/2020-12/json-schema-validation
 [WAIARIA]: https://www.w3.org/TR/wai-aria-1.2/
 [APGFeed]: https://www.w3.org/WAI/ARIA/apg/patterns/feed/
 [APGDisclosure]: https://www.w3.org/WAI/ARIA/apg/patterns/disclosure/
@@ -1927,6 +1929,8 @@ the same site already mirrored at [SchemaOrg]/SchemaOrg-spec.html.)
 [MediaQueries5]: ./specs/MediaQueries5-spec.html
 [ProblemDetails]: ./specs/ProblemDetails-spec.html
 [OpenAPI31]: ./specs/OpenAPI31-spec.html
+[JSONSchemaCore]: ./specs/JSONSchemaCore-spec.html
+[JSONSchemaValidation]: ./specs/JSONSchemaValidation-spec.html
 [WAIARIA]: ./specs/WAIARIA-spec.html
 [APGFeed]: ./specs/APG-feed-spec.html
 [APGDisclosure]: ./specs/APG-disclosure-spec.html
