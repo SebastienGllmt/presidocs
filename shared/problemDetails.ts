@@ -4,6 +4,8 @@
 // handlers. See methodology.md → "HTTP error responses" and the local
 // RFC mirror at specs/ProblemDetails-spec.html.
 
+import { getReasonPhrase } from "http-status-codes";
+
 export type ProblemSlug =
   | "auth/unauthenticated"
   | "auth/forbidden"
@@ -119,13 +121,16 @@ export type ProblemDetails = {
 
 // `about:blank` is the spec's sentinel for "no problem type beyond the
 // status code" (§4.2.1). The title for about:blank SHOULD be the HTTP
-// reason phrase; the table covers the codes we actually emit.
-const STATUS_PHRASE: Record<number, string> = {
-  400: "Bad Request",
-  404: "Not Found",
-  405: "Method Not Allowed",
-  416: "Range Not Satisfiable",
-};
+// reason phrase — sourced from `http-status-codes` (`getReasonPhrase`) so we
+// never hand-maintain a partial table or guess a phrase. A genuinely
+// unassigned code (none we emit) falls back to `HTTP <n>`.
+function statusPhrase(status: number): string {
+  try {
+    return getReasonPhrase(status);
+  } catch {
+    return `HTTP ${status}`;
+  }
+}
 
 export function problem(
   status: number,
@@ -136,9 +141,7 @@ export function problem(
   if (slug !== "about:blank") warnFallbackOnce();
   const type = slug === "about:blank" ? "about:blank" : `${BASE}/${slug}`;
   const title =
-    slug === "about:blank"
-      ? STATUS_PHRASE[status] ?? `HTTP ${status}`
-      : TITLES[slug];
+    slug === "about:blank" ? statusPhrase(status) : TITLES[slug];
   // Spread extensions FIRST so the core members (type/title/status,
   // detail) always win. Without this, an extension like
   // `{ status: 999 }` would overwrite the body's status and violate

@@ -30,6 +30,7 @@
 // hold to "two characters + slash" rather than e.g. `/analytics`.
 
 import type { PostMetaIndex } from "./postMeta.ts";
+import { StatusCodes } from "http-status-codes";
 import {
   BLOB_COUNT,
   BLOB_POST,
@@ -195,7 +196,7 @@ function buildDataPoint(payload: AnalyticsPayload): {
 }
 
 // All paths through the handler return 204 — see the file header for why.
-const NO_CONTENT = (): Response => new Response(null, { status: 204 });
+const NO_CONTENT = (): Response => new Response(null, { status: StatusCodes.NO_CONTENT });
 
 export async function handleAnalyticsRequest(
   req: Request,
