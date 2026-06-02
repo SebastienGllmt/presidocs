@@ -372,6 +372,11 @@ body.cmt-identity-revealed .cmt-identity-loggedout {
 }
 @media (prefers-reduced-motion: reduce) {
   .cmt-identity-loggedout { opacity: 1; transition: none; }
+  /* Silence the card-click pulses and the anchored-layout re-pin slide for
+     readers who asked the OS to reduce motion (mirrors narrator.css). */
+  .cmt-anchor-pulse { animation: none; }
+  .cmt-card-pulse { animation: none; }
+  .cmt-card { transition: none; }
 }
 .cmt-identity-pitch {
   margin: 0;

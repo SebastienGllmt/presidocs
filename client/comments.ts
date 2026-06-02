@@ -103,6 +103,18 @@ const BOTTOM_CLEARANCE_PX = 24;
 // bottom-sheet fallback when the anchor's edges are cramped).
 const MOBILE_BREAKPOINT_PX = 1099;
 
+// Honour the OS "reduce motion" preference at the explicit-`smooth`
+// scrollIntoView sites. An explicit `behavior` overrides the
+// `html { scroll-behavior }` rule (and its reduce-motion override) in
+// base.css, so each JS call needs its own guard. Read at call time so a
+// mid-session OS toggle is respected; degrades to "smooth" where matchMedia
+// is unavailable (test/SSR DOM).
+const scrollBehavior = (): ScrollBehavior =>
+  typeof window.matchMedia === "function" &&
+  window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ? "auto"
+    : "smooth";
+
 function uid(): string {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 }
@@ -1764,7 +1776,7 @@ class CommentSystem {
       target = this.graphicsById.get(graphicTargetId(thread.target)) ?? null;
     }
     if (!target) return;
-    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
     target.classList.add("cmt-anchor-pulse");
     if (this.pulseTimer) clearTimeout(this.pulseTimer);
     this.pulseTimer = window.setTimeout(() => {
@@ -1778,7 +1790,7 @@ class CommentSystem {
   private scrollCardIntoView(threadId: string) {
     const card = this.cardEls.get(threadId);
     if (!card) return;
-    card.scrollIntoView({ behavior: "smooth", block: "center" });
+    card.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
     card.classList.add("cmt-card-pulse");
     if (this.pulseTimer) clearTimeout(this.pulseTimer);
     this.pulseTimer = window.setTimeout(() => {
@@ -2045,7 +2057,7 @@ class CommentSystem {
     }
     const card = this.cardEls.get(threadId);
     if (!card) return;
-    card.scrollIntoView({ behavior: "smooth", block: "center" });
+    card.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
     const ta = card.querySelector<HTMLTextAreaElement>(".cmt-reply-input");
     ta?.focus();
   }

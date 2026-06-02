@@ -761,6 +761,8 @@ Two notes on what's deferred:
 
 The dim → bright transition only pays off if the card is **still in view** when the threshold fires. On desktop the `.cmt-column` is `position: absolute` with no defined height (cards inside are themselves absolutely-positioned, so they don't contribute to its intrinsic height), which means a child sitting at the top of the column scrolls away with the document — by `scrollY=200` the identity card is already ~136px off the top of the viewport and brightening it lights up nothing. The fix is to pin the desktop identity card from the start with `position: fixed; top: 64px; right: 24px; width: 320px` (inside the `min-width: 1100px` block), where `top: 64px` matches the column's original top so the card occupies the same on-screen slot at `scrollY=0` and there is *no position swap* across the threshold — only the opacity changes. An earlier iteration only swapped to `position: fixed` *on* the threshold (gated on `body.cmt-identity-revealed`); that produced a visible teleport, since at the moment of swap the card jumped from its document position (off-screen above) to its viewport position (`top: 16px`). Mirroring mobile's pre-existing always-fixed rule sidesteps that. The trade-off it introduces: a comment card anchored very near the top of the article scrolls *under* the pinned identity card and is occluded by it — the standard cost of any pinned UI, and one we're accepting because the identity card is small (one short flex column), starts dim, and is easy to mouse over to its dismiss × if it really is in the way.
 
+**Reduced motion.** The comment layer honours the OS `prefers-reduced-motion: reduce` preference ([Media Queries 5][MediaQueries5]), matching the narrator. The two card-click pulses (`.cmt-anchor-pulse`, `.cmt-card-pulse`) and the slide a card makes when the anchored layout re-pins it (`.cmt-card`'s `top` transition) are silenced under the preference. Scrolling needs a second guard: the page-global `html { scroll-behavior: smooth }` in `base.css` already drops to `auto` under reduce-motion, but the comment layer also scrolls programmatically — clicking a highlight brings its card and the article anchor into view, and a freshly-created draft scrolls into the column — and an explicit `scrollIntoView({ behavior })` overrides that CSS rule, so each of those JS calls reads the preference at call time and passes `auto` when it's set (the narrator's drawer/segment scrolls do the same). The sub-200 ms colour and opacity micro-feedback on hover/focus is deliberately left untouched — it's a fade, not motion, and below what the preference is meant to silence.
+
 ### Future direction: Web Push notifications
 
 The core motivation of the whole auth-gated comment system — "the author wants to follow up on real questions" — currently terminates in the author's verified email and a polling viewer. There is no active notification to the author that a comment landed; they have to revisit posts or check the aggregator manually. Outbound email would close that loop but introduces a paid third-party dependency (Resend / Postmark / SES — Cloudflare has Email Routing for *receiving* mail but no outbound send API). **Web Push** is the Cloudflare-native alternative: the entire flow stays inside the Workers + R2 model already in use.
@@ -1845,6 +1847,7 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 [CSSAnchorPos2]: https://drafts.csswg.org/css-anchor-position-2/
 [Popover]: https://html.spec.whatwg.org/multipage/popover.html
 [HTMLDialog]: https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element
+[MediaQueries5]: https://www.w3.org/TR/mediaqueries-5/
 [ProblemDetails]: https://www.rfc-editor.org/rfc/rfc9457.html
 [CFRFC9457]: https://blog.cloudflare.com/rfc-9457-agent-error-pages/
 [RFC2606]: https://www.rfc-editor.org/rfc/rfc2606.html
@@ -1899,6 +1902,7 @@ the same site already mirrored at [SchemaOrg]/SchemaOrg-spec.html.)
 [CSSAnchorPos1]: ./specs/CSSAnchorPosition1-spec.html
 [CSSAnchorPos2]: ./specs/CSSAnchorPosition2-spec.html
 [HTMLDialog]: ./specs/HTMLDialog-spec.html
+[MediaQueries5]: ./specs/MediaQueries5-spec.html
 [ProblemDetails]: ./specs/ProblemDetails-spec.html
 [RFC2606]: ./specs/ReservedDomains-spec.html
 [RFC6749]: ./specs/OAuth2-spec.html (section 4.1.2.1)

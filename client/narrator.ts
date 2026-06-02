@@ -1222,6 +1222,7 @@ class Narrator {
 
   private setActive(id: string | null) {
     if (id === this.activeId) return;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     // The previous .narration-active removal is unconditional — it's a
     // no-op if the class isn't applied (which is the case while
     // highlighting is disabled), and we want it to actually take effect
@@ -1241,7 +1242,7 @@ class Narrator {
           // Only auto-scroll while playing AND highlighting is enabled;
           // unsolicited scroll defeats the screenshot-friendly mode.
           if (this.playing) {
-            el.scrollIntoView({ behavior: "smooth", block: "center" });
+            el.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
           }
         }
       } else {
@@ -1256,7 +1257,7 @@ class Narrator {
       if (seg) {
         seg.classList.add("narration-active");
         if (this.drawerOpen) {
-          seg.scrollIntoView({ behavior: "smooth", block: "center" });
+          seg.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
         }
       }
     }
@@ -1511,10 +1512,11 @@ class Narrator {
     // user doesn't have to hunt.
     if (open && this.activeId) {
       const seg = this.segmentEls.get(this.activeId);
+      const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       // Defer past the open-transition's first frame so layout has settled
       // and `scrollIntoView` finds non-zero dimensions.
       requestAnimationFrame(() => {
-        seg?.scrollIntoView({ behavior: "smooth", block: "center" });
+        seg?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
       });
     }
   }
@@ -1534,8 +1536,9 @@ class Narrator {
     // Highlight briefly so it's easy to spot when arrived from a link.
     seg.classList.add("anchor-flash");
     setTimeout(() => seg.classList.remove("anchor-flash"), 1500);
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     requestAnimationFrame(() => {
-      seg.scrollIntoView({ behavior: "smooth", block: "center" });
+      seg.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
       seg.focus({ preventScroll: true });
     });
   }
