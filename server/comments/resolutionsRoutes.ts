@@ -23,12 +23,10 @@ import { StatusCodes } from "http-status-codes";
 import { isPostAuthor, type PostMetaIndex } from "../postMeta.ts";
 import {
   problem,
-  RATE_LIMIT_WINDOW_SECONDS,
   type ProblemSlug,
 } from "../../shared/problemDetails.ts";
 import { ResolutionsQuery, zodBadRequest } from "../requestSchemas.ts";
 import type { CommentChangeStore } from "./store.ts";
-import type { RateLimiter } from "./routes.ts";
 
 // Per-resolution upload byte cap. Resolution envelopes contain a
 // threadId, a timestamp, a resolverId, and a display name —
@@ -39,7 +37,6 @@ export const MAX_RESOLUTION_BYTES = 2 * 1024;
 export type ResolutionsDeps = {
   store: CommentChangeStore;
   postMeta: PostMetaIndex;
-  rateLimiter: RateLimiter | null;
 };
 
 function unauthorized(): Response {
@@ -99,18 +96,14 @@ export async function handleResolutionsRequest(
       });
     }
     case "PUT": {
+      // PUT is post-author-only (the hard gate below). The author is the
+      // trusted blog owner, so resolution writes are deliberately NOT
+      // rate-limited — the limiter exists to throttle external commenters on
+      // /comments, and the only identity that could ever reach here is the
+      // author themselves. See server/comments/routes.ts and methodology →
+      // Hardening.
       if (!isPostAuthor(session, deps.postMeta.get(post))) {
         return forbidden();
-      }
-      if (deps.rateLimiter) {
-        const { success } = await deps.rateLimiter.limit({
-          key: session.userId,
-        });
-        if (!success) {
-          return problem(StatusCodes.TOO_MANY_REQUESTS, "rate-limit/exceeded", undefined, {
-            retryAfter: RATE_LIMIT_WINDOW_SECONDS,
-          });
-        }
       }
       const body = await req.arrayBuffer();
       if (body.byteLength > MAX_RESOLUTION_BYTES) {

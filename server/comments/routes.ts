@@ -176,7 +176,15 @@ async function handlePutChange(
     return new Response(null, { status: StatusCodes.OK });
   }
 
-  if (deps.rateLimiter) {
+  // Rate limiting targets external commenters only. The post author is the
+  // trusted owner of the blog (and the sole writer of resolutions); throttling
+  // their own writes protects nothing and breaks legitimate bulk work (e.g.
+  // resolving a backlog of threads). The threat the limiter exists for — a
+  // logged-in *commenter* spamming PUTs to force-fire author pushes (see
+  // methodology → Hardening / Push) — is unchanged, since non-authors are still
+  // limited. The author writes only to their own folder (enforced above), so
+  // exempting them here can't be abused to write on someone else's behalf.
+  if (deps.rateLimiter && !isPostAuthor(session, deps.postMeta.get(post))) {
     const { success } = await deps.rateLimiter.limit({ key: session.userId });
     if (!success) {
       return problem(StatusCodes.TOO_MANY_REQUESTS, "rate-limit/exceeded", undefined, {

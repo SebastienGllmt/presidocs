@@ -110,8 +110,18 @@ export async function createDevServer(opts: DevServerOptions) {
   // outside this server. Dev-server writes now land in Miniflare R2
   // (.wrangler/state/v3/r2/) instead — author flows that want them locally
   // should run `bun run pull-comments` against prod R2 as before.
+  // PRESIDOCS_DEV_STATE_DIR overrides where Miniflare persists its local
+  // bindings (R2 comment store, rate limiter). Unset in normal dev → the
+  // wrangler default (`.wrangler/state/v3`), shared with `dev:edge` so a
+  // developer's writes survive restarts. The e2e harness sets it to a fresh
+  // throwaway temp dir per run (see e2e/harness.ts) so seeded comments are
+  // isolated by construction — they never land in the interactive dev store
+  // (where the author aggregator would surface them) and never accumulate
+  // across runs. See methodology.md → Dev server wrapper.
+  const stateDir = process.env.PRESIDOCS_DEV_STATE_DIR;
   const proxy = await getPlatformProxy<Env>({
     configPath: join(paths.contentRoot, "wrangler.toml"),
+    ...(stateDir ? { persist: { path: stateDir } } : {}),
   });
   registerProxyDisposeOnExit(proxy.dispose);
   const commentsDevStore = r2Adapter(proxy.env.COMMENTS);
@@ -314,7 +324,6 @@ export async function createDevServer(opts: DevServerOptions) {
       handleResolutionsRequest(req, {
         store: commentsDevStore,
         postMeta: postMetaIndex,
-        rateLimiter: proxy.env.RATE_LIMITER,
       })),
     "/post-version": priv((req) =>
       handlePostVersionRequest(req, {

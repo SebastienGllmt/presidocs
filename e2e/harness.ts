@@ -25,6 +25,8 @@
 import { spawn, type Subprocess } from "bun";
 import { chromium, type Browser, type BrowserType } from "playwright";
 import { existsSync, readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { resolve, dirname } from "node:path";
 import { createSessionToken } from "../server/auth/session.ts";
 
@@ -38,12 +40,15 @@ import { createSessionToken } from "../server/auth/session.ts";
  * `process.env.SESSION_SECRET` as a side
  * effect so `createSessionToken` (which reads it) signs with the right key.
  *
- * Test isolation: the dev comment store (Miniflare R2) PERSISTS across runs,
- * and threads are keyed per (post, user). A fresh, unique `userId` each call
- * means each test sees only its own freshly-seeded threads — no accumulation,
- * no cross-engine contamination. The user is deliberately NOT the post author,
- * so the author-aggregator (which would surface every user's threads) doesn't
- * kick in. `uniq` lets a caller force a distinct identity per engine/run.
+ * Test isolation works on two axes. Across runs: `startBlogServer` points the
+ * dev server at a throwaway Miniflare state dir (PRESIDOCS_DEV_STATE_DIR), so
+ * the comment store starts empty every run and nothing accumulates or leaks
+ * into the developer's interactive store. Within a run: threads are keyed per
+ * (post, user), so a fresh, unique `userId` each call keeps concurrent
+ * tests/engines sharing that one server from seeing each other's threads
+ * (`uniq` forces a distinct identity per engine/run). The user is deliberately
+ * NOT the post author, so the author-aggregator (which would surface every
+ * user's threads) doesn't kick in.
  */
 export async function mintSessionCookie(
   blogDir: string,
@@ -161,9 +166,17 @@ export async function startBlogServer(): Promise<BlogServer> {
   const port = await freePort();
   const baseURL = `http://localhost:${port}`;
 
+  // Throwaway Miniflare state dir for this run. The dev server (via
+  // PRESIDOCS_DEV_STATE_DIR → getPlatformProxy persist path) backs its local
+  // R2 comment store here instead of the content repo's shared
+  // `.wrangler/state/`, so UI-seeded comments are isolated from the
+  // developer's interactive `bun run dev` store and don't accumulate across
+  // runs. Removed on stop(). See methodology.md → Dev server wrapper.
+  const stateDir = await mkdtemp(resolve(tmpdir(), "presidocs-e2e-"));
+
   const proc: Subprocess = spawn(["bun", "run", "dev"], {
     cwd: blogDir,
-    env: { ...process.env, PORT: String(port) },
+    env: { ...process.env, PORT: String(port), PRESIDOCS_DEV_STATE_DIR: stateDir },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -189,6 +202,9 @@ export async function startBlogServer(): Promise<BlogServer> {
       // SIGTERM the wrapper; its shutdown handler kills the --hot child.
       proc.kill("SIGTERM");
       await proc.exited;
+      // Drop this run's throwaway Miniflare state. `force` so a never-written
+      // dir (server failed to boot) doesn't turn teardown into a failure.
+      await rm(stateDir, { recursive: true, force: true });
     },
   };
 }

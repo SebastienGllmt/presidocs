@@ -166,7 +166,6 @@ export function createWorkerHandler(content: WorkerContent) {
       return handleResolutionsRequest(req, {
         store: r2Adapter(env.COMMENTS),
         postMeta: postMetaIndex,
-        rateLimiter: env.RATE_LIMITER,
       });
     }
     if (path === "/post-version") {

@@ -144,7 +144,6 @@ registry.registerPath({
     [StatusCodes.UNAUTHORIZED]: problem("Not logged in."),
     [StatusCodes.FORBIDDEN]: problem("Not the post author."),
     [StatusCodes.REQUEST_TOO_LONG]: problem("Resolution body exceeds the size limit."),
-    [StatusCodes.TOO_MANY_REQUESTS]: problem("Rate limit exceeded."),
   },
 });
 

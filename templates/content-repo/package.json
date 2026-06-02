@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "bun engine/scripts/dev.ts",
     "dev:edge": "bun run build && wrangler dev --port 3000",
+    "dev:reset-comments": "bun engine/scripts/clean-dev-comments.ts",
     "start": "bun engine/generate/post-routes.ts && bun index.ts",
     "generate": "bun engine/generate/generate.ts",
     "generate:prod": "bun engine/generate/generate.ts --tts=moss",
