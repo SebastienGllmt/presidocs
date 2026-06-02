@@ -9,8 +9,9 @@
 // caps on PUT bodies, the block-list, and the rate limiter are semantic
 // guards, not shape guards, and a schema must not stand in for them.
 //
-// (Phase 2 — deriving an OpenAPI 3.1 document from these via
-// @asteasolutions/zod-to-openapi — is deferred; see proposals/26.)
+// The OpenAPI 3.1 document derived from these schemas (via
+// @asteasolutions/zod-to-openapi) lives in `server/openapi.ts`; see
+// methodology.md → HTTP error responses.
 
 import { z } from "zod";
 import { StatusCodes } from "http-status-codes";

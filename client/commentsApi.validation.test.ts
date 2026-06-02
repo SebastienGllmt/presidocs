@@ -1,4 +1,4 @@
-// Boundary validation for the client fetch wrappers (proposal 29). Each
+// Boundary validation for the client fetch wrappers. Each
 // wrapper now `safeParse`s the response instead of trusting it via a blind
 // `as` cast; a 2xx whose body isn't the expected shape degrades into the
 // caller's *existing* failure path (ApiError → backoff, or null → "missing"),

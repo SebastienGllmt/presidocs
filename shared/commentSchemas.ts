@@ -6,7 +6,7 @@
 // Before this module each shape was either trusted via an unchecked `as` cast
 // at the boundary or re-stated by hand in two or three places that could drift
 // independently. Here a shape is declared ONCE; each consumer validates at its
-// own edge (see proposal 29). zod is already in the client bundle
+// own edge. zod is already in the client bundle
 // (shared/time.ts pulls it in), so client-side validation costs no bundle
 // weight — only code.
 //

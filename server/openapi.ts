@@ -1,12 +1,14 @@
-// OpenAPI 3.1 document derived from the zod request schemas (proposal 26
-// Phase 2). The query schemas in `requestSchemas.ts` are the source of truth
-// for the request side; this module adds response component schemas + path
-// registrations and emits the document served at GET /openapi.json.
+// OpenAPI 3.1 document derived from the zod schemas. The query schemas in
+// `requestSchemas.ts` are the source of truth for the request side and the
+// wire shapes in `shared/commentSchemas.ts` for the response/body side; this
+// module tags them with component ids, adds path registrations, and emits the
+// document served at GET /openapi.json. See methodology.md → HTTP error
+// responses for how the schemas underpin both validation and this document.
 //
 // Uses Zod 4's native `.meta({ id })` for component names, so it needs no
 // `extendZodWithOpenApi(z)` global mutation (which would otherwise reach the
 // branded schemas in shared/time.ts). Auth routes (/auth/*) are intentionally
-// not documented yet — their query parsing wasn't schematized in Phase 1.
+// not documented yet — their query parsing isn't schematized.
 
 import { StatusCodes } from "http-status-codes";
 import { z } from "zod";
@@ -20,9 +22,9 @@ import {
   ResolutionListEntry,
 } from "../shared/commentSchemas.ts";
 
-// Response component schemas come from the one shared module (proposal 29), so
-// the OpenAPI document and the runtime client validators can no longer
-// disagree about a wire shape. `.meta({ id })` (Zod 4 native) names each
+// Response component schemas come from the one shared module
+// (shared/commentSchemas.ts), so the OpenAPI document and the runtime client
+// validators can no longer disagree about a wire shape. `.meta({ id })` (Zod 4 native) names each
 // component; we don't mutate the shared schemas in place, we tag local
 // `.meta()`-wrapped views of them.
 const CommentUsersResponse = CommentUsers.meta({ id: "CommentUsersResponse" });
@@ -127,7 +129,7 @@ registry.registerPath({
   path: "/resolutions",
   summary: "Write one resolution envelope (post author only).",
   description:
-    "Body is a small JSON resolution envelope (≤ 2 KB). The edge server stores it as opaque bytes; the shape is the client/CLI contract (proposal 29).",
+    "Body is a small JSON resolution envelope (≤ 2 KB). The edge server stores it as opaque bytes; the shape is the client/CLI contract.",
   request: {
     query: ResolutionsQuery,
     body: {

@@ -105,8 +105,8 @@ export function isQuartile(n: unknown): n is Quartile {
 // --- Wire-body schema (the JSON the `/_a` beacon POSTs) ---
 //
 // The single validator the Worker route runs against an untrusted beacon body
-// (proposal 29 — the JSON-body analog of the query-string validation in
-// server/requestSchemas.ts). A `z.discriminatedUnion("event", …)` expresses
+// — the JSON-body analog of the query-string validation in
+// server/requestSchemas.ts. A `z.discriminatedUnion("event", …)` expresses
 // the event ⇄ qualifier relationship directly, and `z.object` strips unknown
 // keys so a probe can't smuggle extra fields into a row.
 //
