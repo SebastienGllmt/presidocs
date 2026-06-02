@@ -26,6 +26,7 @@
 // strings encode dynamic shape hints (valid `?index` range, per-post auth
 // failures listing the failing posts) that don't fit a closed slug set.
 
+import { StatusCodes } from "http-status-codes";
 import { join } from "node:path";
 import { existsSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
@@ -307,17 +308,17 @@ export async function handleSoundTestRegenerate(
   if (req.method === "GET") {
     return Response.json(jobStatus(), { headers: { "Cache-Control": "no-store" } });
   }
-  if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
+  if (req.method !== "POST") return new Response("method not allowed", { status: StatusCodes.METHOD_NOT_ALLOWED });
 
   // Regeneration loads the multi-GB model — gate every action behind a logged-
   // in session so a stray request to a dev box doesn't kick one off. The
   // in-posts action additionally requires being the author of EVERY affected
   // post (checked once we know which posts, below).
   const session = await getSessionFromRequest(req);
-  if (!session) return new Response("unauthorized", { status: 401 });
+  if (!session) return new Response("unauthorized", { status: StatusCodes.UNAUTHORIZED });
 
   const plsPath = plsPathFor(deps);
-  if (!existsSync(plsPath)) return new Response("no posts/common-terms.pls", { status: 404 });
+  if (!existsSync(plsPath)) return new Response("no posts/common-terms.pls", { status: StatusCodes.NOT_FOUND });
   // Voice checks are action-specific. The audition actions key on ONE voice
   // (the page's audition store); the in-posts sweep resolves voice PER POST
   // (so multi-author blogs render each post in its own author's clone).
@@ -330,16 +331,16 @@ export async function handleSoundTestRegenerate(
   const indexParam = url.searchParams.get("index");
   const hasIndex = indexParam !== null && /^\d+$/.test(indexParam);
   if (!all && !hasIndex) {
-    return new Response("provide ?all=1 or ?index=<n>[&inPosts=1]", { status: 400 });
+    return new Response("provide ?all=1 or ?index=<n>[&inPosts=1]", { status: StatusCodes.BAD_REQUEST });
   }
   if (inPosts && all) {
-    return new Response("?inPosts=1 is per-lexeme; combine with ?index=N, not ?all=1", { status: 400 });
+    return new Response("?inPosts=1 is per-lexeme; combine with ?index=N, not ?all=1", { status: StatusCodes.BAD_REQUEST });
   }
 
   if (job?.running) {
     return Response.json(
       { running: true, error: "a sound-test regeneration is already in progress" },
-      { status: 409 },
+      { status: StatusCodes.CONFLICT },
     );
   }
 
@@ -348,12 +349,12 @@ export async function handleSoundTestRegenerate(
     const idx = Number(indexParam);
     const entries = parseLexicon(await Bun.file(plsPath).text());
     if (idx < 0 || idx >= entries.length) {
-      return new Response(`?index=${idx} is out of range (0..${entries.length - 1})`, { status: 400 });
+      return new Response(`?index=${idx} is out of range (0..${entries.length - 1})`, { status: StatusCodes.BAD_REQUEST });
     }
     const affectedByIndex = await scanPostsForLexicon(deps, entries);
     const affected = affectedByIndex.get(idx) ?? [];
     if (affected.length === 0) {
-      return new Response("this lexeme doesn't occur in any post's narration", { status: 400 });
+      return new Response("this lexeme doesn't occur in any post's narration", { status: StatusCodes.BAD_REQUEST });
     }
     // Author every affected post; refuse on any mismatch rather than silently
     // skip — the user should know which posts they don't own.
@@ -363,7 +364,7 @@ export async function handleSoundTestRegenerate(
     if (notOwned.length > 0) {
       return new Response(
         `forbidden: you don't author these post(s): ${notOwned.join(", ")}`,
-        { status: 403 },
+        { status: StatusCodes.FORBIDDEN },
       );
     }
     // Resolve a voice clip per post BEFORE starting. Each post must render in
@@ -387,7 +388,7 @@ export async function handleSoundTestRegenerate(
       return new Response(
         `cannot resolve a MOSS voice clip for these post(s):\n${lines}\n` +
           `Add the missing authors/<author-email>.wav file(s).`,
-        { status: 400 },
+        { status: StatusCodes.BAD_REQUEST },
       );
     }
 
@@ -415,7 +416,7 @@ export async function handleSoundTestRegenerate(
         current.error = err instanceof Error ? err.message : String(err);
       }
     })();
-    return Response.json({ running: true, target, posts: current.posts }, { status: 202 });
+    return Response.json({ running: true, target, posts: current.posts }, { status: StatusCodes.ACCEPTED });
   }
 
   // --- audition-clip action (existing): one shell-out, one child -------------
@@ -428,7 +429,7 @@ export async function handleSoundTestRegenerate(
     return new Response(
       `cannot resolve your voice clip (authors/${session.email.toLowerCase()}.wav). ` +
         `Add it to audition. Per-post voice resolution for ?inPosts=1 is separate.`,
-      { status: 400 },
+      { status: StatusCodes.BAD_REQUEST },
     );
   }
   const target = all ? "all" : `#${indexParam}`;
@@ -472,5 +473,5 @@ export async function handleSoundTestRegenerate(
     }
   })();
 
-  return Response.json({ running: true, target }, { status: 202 });
+  return Response.json({ running: true, target }, { status: StatusCodes.ACCEPTED });
 }

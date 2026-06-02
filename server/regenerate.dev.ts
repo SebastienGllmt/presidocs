@@ -25,6 +25,7 @@
 // encode dynamic shape hints (allowed `?tts` set, valid `?index` range) that
 // don't fit a closed problem-type slug taxonomy.
 
+import { StatusCodes } from "http-status-codes";
 import { getSessionFromRequest } from "./auth/routes.ts";
 import { isPostAuthor, type PostMetaIndex } from "./postMeta.ts";
 import { resolveAuthorVoice } from "../shared/voiceResolution.ts";
@@ -72,11 +73,11 @@ export async function handleRegenerateRequest(
   // Both verbs require a logged-in session; POST additionally requires being
   // the post's author (checked below, once we know which post).
   const session = await getSessionFromRequest(req);
-  if (!session) return new Response("unauthorized", { status: 401 });
+  if (!session) return new Response("unauthorized", { status: StatusCodes.UNAUTHORIZED });
 
   // GET = poll the current job's status.
   if (req.method === "GET") return statusResponse();
-  if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
+  if (req.method !== "POST") return new Response("method not allowed", { status: StatusCodes.METHOD_NOT_ALLOWED });
 
   const url = new URL(req.url);
   // `post` is the post's URL PATH (e.g. "/posts/hash-functions") — the key the
@@ -86,13 +87,13 @@ export async function handleRegenerateRequest(
   const mark = url.searchParams.get("mark");
   const tts = url.searchParams.get("tts") ?? "moss";
 
-  if (!post) return new Response("missing ?post", { status: 400 });
+  if (!post) return new Response("missing ?post", { status: StatusCodes.BAD_REQUEST });
   if (!mark || !ID_RE.test(mark)) {
-    return new Response("bad or missing ?mark", { status: 400 });
+    return new Response("bad or missing ?mark", { status: StatusCodes.BAD_REQUEST });
   }
   if (!ALLOWED_TTS.has(tts)) {
     return new Response(`unsupported ?tts (allowed: ${[...ALLOWED_TTS].join(", ")})`, {
-      status: 400,
+      status: StatusCodes.BAD_REQUEST,
     });
   }
 
@@ -100,18 +101,18 @@ export async function handleRegenerateRequest(
   // slug). Same server-authoritative check the version endpoint uses.
   const meta = deps.postMeta.get(post);
   if (!isPostAuthor(session, meta)) {
-    return new Response("forbidden", { status: 403 });
+    return new Response("forbidden", { status: StatusCodes.FORBIDDEN });
   }
 
   // Reduce the post path to a flat slug for the source file + the generate CLI.
   // ID_RE keeps it a single safe path segment (no traversal, no nested posts).
   const slug = post.startsWith("/posts/") ? post.slice("/posts/".length) : post;
   if (!ID_RE.test(slug)) {
-    return new Response("post must be /posts/<slug>", { status: 400 });
+    return new Response("post must be /posts/<slug>", { status: StatusCodes.BAD_REQUEST });
   }
   const postFile = join(deps.contentRoot, "posts", `${slug}.html`);
   if (!(await Bun.file(postFile).exists())) {
-    return new Response("post not found", { status: 404 });
+    return new Response("post not found", { status: StatusCodes.NOT_FOUND });
   }
 
   // Resolve the MOSS voice for THIS post's author and pass it explicitly to
@@ -129,7 +130,7 @@ export async function handleRegenerateRequest(
       return new Response(
         `cannot resolve a MOSS voice clip for ${slug}: ${voiceRes.reason}. ` +
           `Add authors/<author-email>.wav.`,
-        { status: 400 },
+        { status: StatusCodes.BAD_REQUEST },
       );
     }
     voiceArg = voiceRes.clipPath;
@@ -138,7 +139,7 @@ export async function handleRegenerateRequest(
   if (job?.running) {
     return Response.json(
       { running: true, error: "a regeneration is already in progress" },
-      { status: 409 },
+      { status: StatusCodes.CONFLICT },
     );
   }
 
@@ -186,5 +187,5 @@ export async function handleRegenerateRequest(
     }
   })();
 
-  return Response.json({ running: true, post, mark }, { status: 202 });
+  return Response.json({ running: true, post, mark }, { status: StatusCodes.ACCEPTED });
 }

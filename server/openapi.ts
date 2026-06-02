@@ -8,6 +8,7 @@
 // branded schemas in shared/time.ts). Auth routes (/auth/*) are intentionally
 // not documented yet — their query parsing wasn't schematized in Phase 1.
 
+import { StatusCodes } from "http-status-codes";
 import { z } from "zod";
 import { OpenAPIRegistry, OpenApiGeneratorV31 } from "@asteasolutions/zod-to-openapi";
 import { CommentsQuery, ResolutionsQuery, PostVersionQuery } from "./requestSchemas.ts";
@@ -76,7 +77,7 @@ registry.registerPath({
     "Shape is selected by query params: `post` only → array of userIds (post author only); `post`+`user` → that user's change list; `post`+`user`+`change` → the raw change bytes (application/octet-stream).",
   request: { query: CommentsQuery },
   responses: {
-    200: {
+    [StatusCodes.OK]: {
       description:
         "Users list / change list (application/json), or one change's bytes (application/octet-stream).",
       content: {
@@ -86,10 +87,10 @@ registry.registerPath({
         "application/octet-stream": { schema: OctetStream },
       },
     },
-    400: problem("Invalid query parameter."),
-    401: problem("Not logged in."),
-    403: problem("Not authorized for this user or post."),
-    404: problem("Change not found."),
+    [StatusCodes.BAD_REQUEST]: problem("Invalid query parameter."),
+    [StatusCodes.UNAUTHORIZED]: problem("Not logged in."),
+    [StatusCodes.FORBIDDEN]: problem("Not authorized for this user or post."),
+    [StatusCodes.NOT_FOUND]: problem("Change not found."),
   },
 });
 
@@ -101,12 +102,12 @@ registry.registerPath({
     "Body is the raw change bytes (application/octet-stream, ≤ 8 KB). Idempotent — a re-PUT of identical bytes succeeds.",
   request: { query: CommentsQuery },
   responses: {
-    200: { description: "Stored (or already present)." },
-    400: problem("Invalid query parameter or empty body."),
-    401: problem("Not logged in."),
-    403: problem("Not the owning user."),
-    413: problem("Change exceeds the size limit."),
-    429: problem("Rate limit exceeded."),
+    [StatusCodes.OK]: { description: "Stored (or already present)." },
+    [StatusCodes.BAD_REQUEST]: problem("Invalid query parameter or empty body."),
+    [StatusCodes.UNAUTHORIZED]: problem("Not logged in."),
+    [StatusCodes.FORBIDDEN]: problem("Not the owning user."),
+    [StatusCodes.REQUEST_TOO_LONG]: problem("Change exceeds the size limit."),
+    [StatusCodes.TOO_MANY_REQUESTS]: problem("Rate limit exceeded."),
   },
 });
 
@@ -118,12 +119,12 @@ registry.registerPath({
     "`post` only → list of resolved threadIds; `post`+`thread` → that resolution's opaque JSON envelope.",
   request: { query: ResolutionsQuery },
   responses: {
-    200: {
+    [StatusCodes.OK]: {
       description: "Resolution list, or one opaque resolution envelope.",
       content: { "application/json": { schema: ResolutionsListResponse } },
     },
-    401: problem("Not logged in."),
-    404: problem("Resolution not found."),
+    [StatusCodes.UNAUTHORIZED]: problem("Not logged in."),
+    [StatusCodes.NOT_FOUND]: problem("Resolution not found."),
   },
 });
 
@@ -134,12 +135,12 @@ registry.registerPath({
   description: "Body is a small opaque JSON envelope (≤ 2 KB).",
   request: { query: ResolutionsQuery },
   responses: {
-    200: { description: "Stored." },
-    400: problem("Invalid query parameter or empty body."),
-    401: problem("Not logged in."),
-    403: problem("Not the post author."),
-    413: problem("Resolution body exceeds the size limit."),
-    429: problem("Rate limit exceeded."),
+    [StatusCodes.OK]: { description: "Stored." },
+    [StatusCodes.BAD_REQUEST]: problem("Invalid query parameter or empty body."),
+    [StatusCodes.UNAUTHORIZED]: problem("Not logged in."),
+    [StatusCodes.FORBIDDEN]: problem("Not the post author."),
+    [StatusCodes.REQUEST_TOO_LONG]: problem("Resolution body exceeds the size limit."),
+    [StatusCodes.TOO_MANY_REQUESTS]: problem("Rate limit exceeded."),
   },
 });
 
@@ -149,13 +150,13 @@ registry.registerPath({
   summary: "Current post version hash (and history for the author).",
   request: { query: PostVersionQuery },
   responses: {
-    200: {
+    [StatusCodes.OK]: {
       description:
         "Current hash + isAuthor; history is included only for the post author.",
       content: { "application/json": { schema: PostVersionResponse } },
     },
-    401: problem("Not logged in."),
-    404: problem("Unknown post."),
+    [StatusCodes.UNAUTHORIZED]: problem("Not logged in."),
+    [StatusCodes.NOT_FOUND]: problem("Unknown post."),
   },
 });
 
