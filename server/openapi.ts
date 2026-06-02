@@ -12,38 +12,32 @@ import { StatusCodes } from "http-status-codes";
 import { z } from "zod";
 import { OpenAPIRegistry, OpenApiGeneratorV31 } from "@asteasolutions/zod-to-openapi";
 import { CommentsQuery, ResolutionsQuery, PostVersionQuery } from "./requestSchemas.ts";
+import {
+  ChangeListEntry,
+  CommentUsers,
+  PostVersionResponse as PostVersionResponseShape,
+  ResolutionEnvelope,
+  ResolutionListEntry,
+} from "../shared/commentSchemas.ts";
 
-// `uploaded` / `builtAt` are Date / ISO values serialized to ISO-8601 strings
-// by Response.json — modelled as strings on the wire.
-const ChangeListEntry = z.object({
-  hash: z.string().regex(/^[0-9a-f]{64}$/),
-  size: z.number().int(),
-  uploaded: z.string(),
-});
-const ResolutionListEntry = z.object({
-  threadId: z.string(),
-  size: z.number().int(),
-  uploaded: z.string(),
-});
-
-const CommentUsersResponse = z
-  .array(z.string())
-  .meta({ id: "CommentUsersResponse" });
+// Response component schemas come from the one shared module (proposal 29), so
+// the OpenAPI document and the runtime client validators can no longer
+// disagree about a wire shape. `.meta({ id })` (Zod 4 native) names each
+// component; we don't mutate the shared schemas in place, we tag local
+// `.meta()`-wrapped views of them.
+const CommentUsersResponse = CommentUsers.meta({ id: "CommentUsersResponse" });
 const CommentChangesResponse = z
   .array(ChangeListEntry)
   .meta({ id: "CommentChangesResponse" });
 const ResolutionsListResponse = z
   .array(ResolutionListEntry)
   .meta({ id: "ResolutionsListResponse" });
-const PostVersionResponse = z
-  .object({
-    currentHash: z.string(),
-    isAuthor: z.boolean(),
-    history: z
-      .array(z.object({ hash: z.string(), builtAt: z.string() }))
-      .optional(),
-  })
-  .meta({ id: "PostVersionResponse" });
+const ResolutionEnvelopeBody = ResolutionEnvelope.meta({
+  id: "ResolutionEnvelope",
+});
+const PostVersionResponse = PostVersionResponseShape.meta({
+  id: "PostVersionResponse",
+});
 
 // RFC 9457 problem body (shared/problemDetails.ts). Core members documented;
 // extensions (param, retryAfter, maxBytes, …) may also appear per §3.2.
@@ -132,8 +126,16 @@ registry.registerPath({
   method: "put",
   path: "/resolutions",
   summary: "Write one resolution envelope (post author only).",
-  description: "Body is a small opaque JSON envelope (≤ 2 KB).",
-  request: { query: ResolutionsQuery },
+  description:
+    "Body is a small JSON resolution envelope (≤ 2 KB). The edge server stores it as opaque bytes; the shape is the client/CLI contract (proposal 29).",
+  request: {
+    query: ResolutionsQuery,
+    body: {
+      content: {
+        "application/json": { schema: ResolutionEnvelopeBody },
+      },
+    },
+  },
   responses: {
     [StatusCodes.OK]: { description: "Stored." },
     [StatusCodes.BAD_REQUEST]: problem("Invalid query parameter or empty body."),

@@ -28,12 +28,19 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname, join, normalize } from "node:path";
 import { tmpdir } from "node:os";
+import { z } from "zod";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import {
   postPrefix,
   resolutionKey,
   resolutionPrefix,
 } from "../server/comments/store.ts";
+import {
+  R2ListEntry,
+  type R2ListEntry as ListEntry,
+} from "../shared/commentSchemas.ts";
+
+const R2List = z.array(R2ListEntry);
 
 const WORKER = join(import.meta.dir, "r2SyncWorker.ts");
 
@@ -52,7 +59,8 @@ function parseArgs(argv: string[]): { mode: Mode; slug: string } {
   return { mode, slug };
 }
 
-type ListEntry = { key: string; size: number; uploaded: string };
+// `ListEntry` is the inferred `R2ListEntry` shape (imported above) — the
+// single source of truth shared with the worker that emits the listing.
 
 // --- Read the content repo's R2 binding out of its wrangler config. ----
 // We don't hardcode the bucket name; it's per-blog. The binding *name* we
@@ -194,7 +202,15 @@ async function mkdtempConfig(
 async function listPrefix(base: string, prefix: string): Promise<ListEntry[]> {
   const r = await fetch(`${base}/list?prefix=${encodeURIComponent(prefix)}`);
   if (!r.ok) throw new Error(`list ${prefix} failed: ${r.status}`);
-  return (await r.json()) as ListEntry[];
+  // Validate the listing rather than trusting it: a wrangler/edge hiccup that
+  // returns an error page (or any non-array) is caught here instead of being
+  // read as an empty bucket — which would look like "no comments" and
+  // silently skip the mirror.
+  const parsed = R2List.safeParse(await r.json());
+  if (!parsed.success) {
+    throw new Error(`list ${prefix} returned an unexpected shape: ${parsed.error.message}`);
+  }
+  return parsed.data;
 }
 
 async function pull(slug: string): Promise<void> {

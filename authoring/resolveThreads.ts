@@ -27,6 +27,7 @@
 import { join } from "node:path";
 import { fsAdapter } from "../server/comments/fsAdapter.ts";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
+import { ResolutionEnvelope } from "../shared/commentSchemas.ts";
 
 const paths = resolveBlogPaths();
 
@@ -56,7 +57,11 @@ async function main(): Promise<void> {
   const now = Date.now();
 
   for (const threadId of threadIds) {
-    const envelope = {
+    // Build through the shared schema (the same one the browser's
+    // putResolution validates against) so the CLI and client provably write
+    // the same envelope shape, and a malformed write fails here at the CLI
+    // rather than landing a bad blob in .comments-dev (and then in R2).
+    const envelope = ResolutionEnvelope.parse({
       threadId,
       resolvedAt: now,
       // `ai-applied` keeps every AI-driven resolution greppable under one
@@ -64,7 +69,7 @@ async function main(): Promise<void> {
       // the resolverName records that the in-session skill wrote it.
       resolverId: "ai-applied",
       resolverName: "AI (process-comments skill)",
-    };
+    });
     await store.putResolution(
       postPath,
       threadId,

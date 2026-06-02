@@ -136,6 +136,58 @@ test("readPayload accepts a well-formed narration_quartile", async () => {
   });
 });
 
+test("readPayload rejects an invalid trigger / quartile (strict fields)", async () => {
+  expect(
+    await readPayload(
+      postReq({ event: "narration_play", post: "/posts/known", trigger: "dock" }),
+    ),
+  ).toBeNull();
+  expect(
+    await readPayload(
+      postReq({ event: "narration_quartile", post: "/posts/known", quartile: 33 }),
+    ),
+  ).toBeNull();
+});
+
+test("readPayload strips unknown keys and the discriminated qualifier set", async () => {
+  // Extra keys can't smuggle into a row; a narration_quartile body carries
+  // only {event, post, quartile} even if the client sends more.
+  const got = await readPayload(
+    postReq({
+      event: "narration_quartile",
+      post: "/posts/known",
+      quartile: 50,
+      trigger: "space", // wrong-event field — must be dropped
+      evil: "x",
+    }),
+  );
+  expect(got).toEqual({ event: "narration_quartile", post: "/posts/known", quartile: 50 });
+});
+
+test("readPayload preserves the lenient coercion of the old hand-rolled path", async () => {
+  // referrerHost: non-string → "" (the MAX_PAYLOAD_BYTES cap, checked earlier
+  // in readPayload, makes the 253-char slice an unreachable backstop here, so
+  // we exercise the type-coercion half).
+  const pv = await readPayload(
+    postReq({ event: "page_view", post: "/", referrerHost: 123 }),
+  );
+  expect(pv).toEqual({ event: "page_view", post: "/", referrerHost: "" });
+
+  // durationMs: non-finite / missing → 0, else max(0, round).
+  const np = await readPayload(
+    postReq({ event: "narration_play", post: "/", trigger: "space", durationMs: -5.7 }),
+  );
+  expect(np).toEqual({ event: "narration_play", post: "/", trigger: "space", durationMs: 0 });
+  const np2 = await readPayload(
+    postReq({ event: "narration_play", post: "/", trigger: "space" }), // missing durationMs
+  );
+  expect((np2 as { durationMs: number }).durationMs).toBe(0);
+  const np3 = await readPayload(
+    postReq({ event: "narration_play", post: "/", trigger: "space", durationMs: 1830.4 }),
+  );
+  expect((np3 as { durationMs: number }).durationMs).toBe(1830);
+});
+
 // ---- post allowlist ------------------------------------------------------
 
 test("isKnownPost accepts the landing and known posts only", () => {

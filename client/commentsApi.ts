@@ -16,12 +16,15 @@
 // commentsSync.ts to back off the push loop.
 
 import { parseProblem, type ProblemDetails } from "../shared/problemDetails.ts";
+import {
+  ChangeList,
+  type ChangeListEntry as ChangeListEntryType,
+  CommentUsers,
+} from "../shared/commentSchemas.ts";
 
-export type ChangeListEntry = {
-  hash: string;
-  size: number;
-  uploaded: string; // ISO 8601 (Date.toJSON())
-};
+// Wire shape, defined once in shared/commentSchemas.ts and re-exported here so
+// existing importers keep their path.
+export type ChangeListEntry = ChangeListEntryType;
 
 // Sentinel thrown by every wrapper on non-2xx. Carries the parsed
 // problem-details body when the server sent one, or null for non-
@@ -103,6 +106,16 @@ async function apiError(res: Response, op: string): Promise<ApiError> {
   return new ApiError(res.status, await parseProblem(res), op, retryAfter);
 }
 
+// A 2xx whose body isn't the shape we expect (a server bug, a captive-portal
+// HTML page, a meddling proxy) is NOT trusted into the CRDT/UI — it's surfaced
+// as an ApiError so it falls into the *same* backoff path commentsSync already
+// uses for a transport failure. A blind `as` couldn't tell a real list from an
+// error page that happened to JSON-parse.
+function invalidShape(op: string): ApiError {
+  // Status 200 — the request itself succeeded; only the body was wrong.
+  return new ApiError(200, null, `${op} (malformed response body)`);
+}
+
 // Author-only — server returns 403 for non-authors.
 export async function listUsers(post: string): Promise<string[]> {
   const res = await fetch(commentsUrl(post), {
@@ -110,7 +123,9 @@ export async function listUsers(post: string): Promise<string[]> {
     headers: { Accept: ACCEPT },
   });
   if (!res.ok) throw await apiError(res, "listUsers");
-  return (await res.json()) as string[];
+  const parsed = CommentUsers.safeParse(await res.json());
+  if (!parsed.success) throw invalidShape("listUsers");
+  return parsed.data;
 }
 
 export async function listChanges(
@@ -122,7 +137,9 @@ export async function listChanges(
     headers: { Accept: ACCEPT },
   });
   if (!res.ok) throw await apiError(res, "listChanges");
-  return (await res.json()) as ChangeListEntry[];
+  const parsed = ChangeList.safeParse(await res.json());
+  if (!parsed.success) throw invalidShape("listChanges");
+  return parsed.data;
 }
 
 export async function getChange(
