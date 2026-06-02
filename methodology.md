@@ -1108,6 +1108,28 @@ The suite splits into three layers by what each test needs from the runtime:
 - **Client (DOM) — per-file opt-in happy-dom** — see [DOM testing harness](#dom-testing-harness-clientts) below.
 - **Tier-0 pure extractions** — math/string functions lifted *out* of DOM-coupled client modules into `shared/` so they can be tested without happy-dom. `shared/narratorTiming.ts` (mark + word bisect) is the canonical example; `client/commentsStale.ts` (segment-hash drift check), `client/narratorDom.ts` (hash parsing, capture-controls localStorage, keyboard-shortcut guard, top-level chapter resolver), and `client/commentsDom.ts` (block walker, hash-stability normalization, hide-all storage) follow the same pattern. The rule: anything testable as `(input) → output` lives outside the class, gets a dedicated `.test.ts`, and runs without any DOM. The DOM-coupled wrappers in `narrator.ts` / `comments.ts` then call into these helpers, so a regression in the math is caught at the pure-test layer before it can reach a DOM test.
 
+### happy-dom or e2e? (the decision rubric)
+
+happy-dom is a JS reimplementation of the DOM, not a browser: it parses markup, matches selectors, dispatches events, and resolves *plain* computed style — but it has no layout engine, no rendering, no a11y tree, no audio decoder, and an incomplete CSS model. The split below follows directly from that. **Default to happy-dom; escalate to e2e only when the thing under test is something happy-dom provably cannot model.** When in doubt, the fast check is: write the one-line probe and read what `getComputedStyle`/`getBoundingClientRect`/`getByRole` actually returns under happy-dom — if it returns empty/zero/nothing for the property you're asserting, that's your answer.
+
+**happy-dom is enough when the assertion is structural or logical:**
+
+- **DOM construction** — element/attribute/text shape after a render or enhancement (byline placement, anchor injection, drawer markup).
+- **State-machine / pure logic** — resolvers, parsers, guards, slugify/dedupe, localStorage round-trips.
+- **Event wiring** — click/keydown handlers fire and mutate state (focus moves, classes toggle, storage writes).
+- **Selector matching + *unlayered* specificity** — `getComputedStyle` does resolve which plain rule wins by specificity, so a non-`@layer` style conflict is assertable here.
+
+**Reach for e2e (real browser, `e2e/*.e2e.ts`) when correctness lives in something happy-dom doesn't implement:**
+
+- **Cascade layers (`@layer`)** — happy-dom ignores `@layer` entirely: `getComputedStyle` returns `""` for *any* property set inside a `@layer {}` block (verified — an unlayered conflict resolves, the identical layered conflict returns empty). So any bug whose mechanism is layer *ordering* beating specificity is invisible to happy-dom and a DOM test would pass regardless of the bug. Example: the drawer's spoken-segment `<article>` inheriting base.css's `engine-layout` `article { margin: 64px }` over its own `engine-components` rule — the only honest guard is real-browser `getComputedStyle(segment).marginTop`.
+- **Real CSS layout / geometry** — anything reading `getBoundingClientRect()` (dock clearance, bottom spacer), CSS anchor positioning, `position: sticky`, `:popover-open` placement, light-dismiss. happy-dom returns zeros unless you hand-mock each rect, which only tests the mock.
+- **Accessibility tree** — landmark role/name (`complementary` named "Comments", never `feed`), `aria-pressed`, `posinset`/`setsize`, the article/`<details>` snapshot. happy-dom builds no a11y tree, so `getByRole`-style assertions need a real engine.
+- **End-to-end stateful flows with validation** — flows where the assertion depends on the whole pipeline running for real: the comment selection → compose → submit → CRDT → anchoring → upload path, asserting cards track highlights, drafts don't scroll-to-top, below-fold cards persist, overlaps cascade. The reusable session-minting + UI-driven seeding "comment fixture" lives here.
+- **Real audio playback** — the rAF tick, `timeupdate`, active-mark application, Shikwasa chapter-strip render. happy-dom's `<audio>` has no decoder, so `play()` never advances time. (Today this is manual via `scripts/release-check.md`; e2e would be its natural home.)
+- **Substrate the browser owns** — Service Worker lifecycle, push delivery, OAuth redirects, OS clipboard. e2e (with a `dev:edge` target for the SW) or manual; never happy-dom.
+
+The cost asymmetry behind the default: a happy-dom test runs Chrome-free in the unit pass; an e2e test boots system Chrome + a dev server and runs on-demand (`bun run test:e2e`). So a bug that *can* be pinned at the pure or DOM layer should be — escalate only when the rubric above says happy-dom literally cannot see the failure.
+
 ### DOM testing harness (`client/*.ts`)
 
 Client modules target the browser, not the Bun runtime, so testing them needs `document` / `window` / `localStorage`-as-Storage. We use **happy-dom**, registered per-file rather than via a global Bun preload.
@@ -1889,8 +1911,12 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 document to mirror; use the web link. The Twitter Card vocabulary we emit also
 falls back to Open Graph, which IS mirrored. No local copies of the
 Schema.org per-type pages [SchemaSpeakable]/[SchemaSearchAction]/
-[SchemaBreadcrumb]/[SchemaTechArticle] — they are vocabulary references on
-the same site already mirrored at [SchemaOrg]/SchemaOrg-spec.html.)
+[SchemaBreadcrumb]/[SchemaTechArticle]/[SchemaFAQPage] — schema.org is
+already represented in this mirror set via [SchemaOrg]/SchemaOrg-spec.html,
+and each per-type page is just a vocabulary stub whose substance lives in
+the types it cross-references (e.g. [SchemaFAQPage]'s mainEntity → Question →
+acceptedAnswer), so mirroring one leaf without its referents only adds a
+dangling partial. How we actually use each type is documented in prose above.)
 [EPUB]: ./specs/EPUB3-spec.html
 [SMIL3]: ./specs/SMIL3-spec.html
 [SyncMedia]: ./specs/SyncMediaLite-spec.html

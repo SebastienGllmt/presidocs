@@ -127,7 +127,17 @@
      under that flipped order it would override any future engine-components
      article rule that wanted to set padding-bottom. Inline-only padding
      keeps the rule cascade-order-agnostic. */
-  article {
+  /* Scoped to the page's top-level article (`body > article`), not bare
+     `article`. The engine renders semantic sub-`<article>`s nested inside the
+     page — each spoken-script drawer segment is an `<article class="spoken-
+     segment">`, and comment threads may add more. A bare `article` selector
+     leaks this post-container box (the 64px top margin especially) onto every
+     one of them: because engine-layout is the last/winning cascade layer (see
+     the layer-order note above), it beats those components' own
+     engine-components box rules regardless of specificity, opening a 64px gap
+     above each drawer line. The post container is always a direct child of
+     <body>, so `body > article` targets exactly it and nothing nested. */
+  body > article {
     max-width: 768px;
     margin: 64px auto 0;
     padding-inline: 24px;
