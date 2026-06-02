@@ -1785,6 +1785,7 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 - **Schema.org `BreadcrumbList`** ([spec][SchemaBreadcrumb]): would convey `Home → <post>` site structure to crawlers and LLMs. The site is only two levels deep with no intermediate `/posts` index, so the breadcrumb would be a single-step `Home → <post>` — too thin to be worth the JSON-LD weight. Reconsider if a `/posts` listing is ever added.
 - **Schema.org `TechArticle`** ([spec][SchemaTechArticle]) instead of `BlogPosting`: technically the more precise type for technical explainers, but its extra value-adds (`proficiencyLevel`, `dependencies`) need per-post authoring channels the engine doesn't have today. `BlogPosting` is not wrong, and switching gains little without the extra fields populated. Revisit if a per-post metadata channel ever lands (the same one that would feed `keywords`/`about` — see [proposal 16 §8](./proposals/16-seo-llm-discoverability.md)).
 - **Sitemap image / video / news extensions** ([sitemap.org extensions][SitemapExt]): not applicable — this is a content-agnostic article blog, not an image gallery or news outlet. Plain `<urlset>` carries everything crawlers need.
+- **Webmention** ([spec][Webmention]): the IndieWeb cross-site notification protocol (W3C Rec). A received Webmention carries only a `source` URL and a `target` URL; the receiver GET-fetches `source` and verifies the link to `target` literally exists, then may lift self-asserted h-card/h-entry author claims out of that page. It carries **no verified, deliverable email** — the protocol has no field for one, and any address in the source's h-card is self-asserted, not issued by a trusted party (the spec even rejects a `mailto:` source). That breaks the core "author follows up by email" loop the comment system is built around (see [Auth & login](#auth--login-serverauth)) — it fails the deliverable-email bar by a wider margin than the already-rejected GitHub no-reply address. It also has no place in the per-`(post, userId)` content-addressed store (a Webmention has no logged-in `userId`), and standing up a receiver means owning an SSRF-shaped fetch of attacker-supplied URLs plus spam filtering the OAuth gate currently sidesteps. Rejected by design, not oversight. If a separate "public discussion" surface that doesn't expect author follow-up is ever wanted, Webmention fits *that* surface — alongside, not replacing, the OAuth path.
 
 ---
 
@@ -1845,6 +1846,7 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 [CFRFC9457]: https://blog.cloudflare.com/rfc-9457-agent-error-pages/
 [RFC2606]: https://www.rfc-editor.org/rfc/rfc2606.html
 [RFC6749]: https://www.rfc-editor.org/rfc/rfc6749.html#section-4.1.2.1
+[Webmention]: https://www.w3.org/TR/webmention/
 
 <!-- For LLMs: local copies of the specs above. (No local copy of [TwitterCards]
 — developer.x.com renders it client-side as a JS app, so there is no static
@@ -1896,5 +1898,6 @@ the same site already mirrored at [SchemaOrg]/SchemaOrg-spec.html.)
 [ProblemDetails]: ./specs/ProblemDetails-spec.html
 [RFC2606]: ./specs/ReservedDomains-spec.html
 [RFC6749]: ./specs/OAuth2-spec.html (section 4.1.2.1)
+[Webmention]: ./specs/Webmention-spec.html
 -->
 
