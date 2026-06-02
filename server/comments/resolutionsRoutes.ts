@@ -25,6 +25,7 @@ import {
   RATE_LIMIT_WINDOW_SECONDS,
   type ProblemSlug,
 } from "../../shared/problemDetails.ts";
+import { ResolutionsQuery, zodBadRequest } from "../requestSchemas.ts";
 import type { CommentChangeStore } from "./store.ts";
 import type { RateLimiter } from "./routes.ts";
 
@@ -68,16 +69,12 @@ export async function handleResolutionsRequest(
   if (!session) return unauthorized();
 
   const url = new URL(req.url);
-  const post = url.searchParams.get("post");
-  const thread = url.searchParams.get("thread");
-  if (!post) {
-    return badRequest("request/missing-parameter", "missing 'post' query parameter", {
-      param: "post",
-    });
-  }
+  const parsed = ResolutionsQuery.safeParse(Object.fromEntries(url.searchParams));
+  if (!parsed.success) return zodBadRequest(parsed.error);
+  const { post, thread } = parsed.data;
 
   // LIST: any logged-in user.
-  if (thread === null) {
+  if (thread === undefined) {
     if (req.method !== "GET") return methodNotAllowed();
     const entries = await deps.store.listResolutions(post);
     return Response.json(entries, {

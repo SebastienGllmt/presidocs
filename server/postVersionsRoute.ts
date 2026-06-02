@@ -14,6 +14,7 @@
 import { getSessionFromRequest } from "./auth/routes.ts";
 import { isPostAuthor, type PostMetaIndex } from "./postMeta.ts";
 import { problem } from "../shared/problemDetails.ts";
+import { PostVersionQuery, zodBadRequest } from "./requestSchemas.ts";
 import type { PostVersionIndex } from "./postVersions.ts";
 
 export type PostVersionDeps = {
@@ -31,12 +32,9 @@ export async function handlePostVersionRequest(
   if (req.method !== "GET") return problem(405, "about:blank");
 
   const url = new URL(req.url);
-  const post = url.searchParams.get("post");
-  if (!post) {
-    return problem(400, "request/missing-parameter", "missing 'post' query parameter", {
-      param: "post",
-    });
-  }
+  const parsed = PostVersionQuery.safeParse(Object.fromEntries(url.searchParams));
+  if (!parsed.success) return zodBadRequest(parsed.error);
+  const { post } = parsed.data;
 
   const record = deps.postVersions.get(post);
   if (!record) return problem(404, "about:blank");
