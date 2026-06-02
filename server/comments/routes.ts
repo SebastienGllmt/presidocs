@@ -17,6 +17,7 @@
 // server/postMeta.ts).
 
 import { getSessionFromRequest } from "../auth/routes.ts";
+import { StatusCodes } from "http-status-codes";
 import type { Session } from "../auth/session.ts";
 import { isPostAuthor, type PostMetaIndex } from "../postMeta.ts";
 import {
@@ -49,23 +50,23 @@ export type CommentsDeps = {
 };
 
 function unauthorized(): Response {
-  return problem(401, "auth/unauthenticated");
+  return problem(StatusCodes.UNAUTHORIZED, "auth/unauthenticated");
 }
 function forbidden(): Response {
-  return problem(403, "auth/forbidden");
+  return problem(StatusCodes.FORBIDDEN, "auth/forbidden");
 }
 function badRequest(
   slug: Extract<ProblemSlug, `request/${string}`>,
   detail: string,
   extensions?: Record<string, unknown>,
 ): Response {
-  return problem(400, slug, detail, extensions);
+  return problem(StatusCodes.BAD_REQUEST, slug, detail, extensions);
 }
 function methodNotAllowed(): Response {
-  return problem(405, "about:blank");
+  return problem(StatusCodes.METHOD_NOT_ALLOWED, "about:blank");
 }
 function notFound(): Response {
-  return problem(404, "about:blank");
+  return problem(StatusCodes.NOT_FOUND, "about:blank");
 }
 
 // Author moderation list: comma-separated `<provider>:<sub>` userIds
@@ -144,7 +145,7 @@ async function handleGetChange(
   const bytes = await deps.store.getChange(post, user, changeHash);
   if (!bytes) return notFound();
   return new Response(bytes as BodyInit, {
-    status: 200,
+    status: StatusCodes.OK,
     headers: {
       "Content-Type": "application/octet-stream",
       // Changes are content-addressed and immutable — safe to cache
@@ -172,13 +173,13 @@ async function handlePutChange(
   // success response, no R2 op, no rate-limit budget burned.
   if (isBlockedUser(session.userId)) {
     await req.arrayBuffer();
-    return new Response(null, { status: 200 });
+    return new Response(null, { status: StatusCodes.OK });
   }
 
   if (deps.rateLimiter) {
     const { success } = await deps.rateLimiter.limit({ key: session.userId });
     if (!success) {
-      return problem(429, "rate-limit/exceeded", undefined, {
+      return problem(StatusCodes.TOO_MANY_REQUESTS, "rate-limit/exceeded", undefined, {
         retryAfter: RATE_LIMIT_WINDOW_SECONDS,
       });
     }
@@ -186,7 +187,7 @@ async function handlePutChange(
 
   const body = await req.arrayBuffer();
   if (body.byteLength > MAX_CHANGE_BYTES) {
-    return problem(413, "comments/change-too-large", undefined, {
+    return problem(StatusCodes.REQUEST_TOO_LONG, "comments/change-too-large", undefined, {
       maxBytes: MAX_CHANGE_BYTES,
       actualBytes: body.byteLength,
     });
@@ -196,5 +197,5 @@ async function handlePutChange(
   }
 
   await deps.store.putChange(post, user, changeHash, new Uint8Array(body));
-  return new Response(null, { status: 200 });
+  return new Response(null, { status: StatusCodes.OK });
 }

@@ -15,6 +15,7 @@
 // as dev.
 
 import type { ExecutionContext } from "@cloudflare/workers-types";
+import { StatusCodes } from "http-status-codes";
 import type { Env } from "./env.ts";
 import {
   startGoogleAuth,
@@ -113,7 +114,7 @@ async function applyRangeSupport(req: Request, res: Response): Promise<Response>
     // Per RFC 9110 §15.5.17, the 416 SHOULD carry Content-Range with
     // the selected representation's size. The body is `about:blank`
     // (problem details §4: generic status-code-only).
-    const res = problem(416, "about:blank");
+    const res = problem(StatusCodes.REQUESTED_RANGE_NOT_SATISFIABLE, "about:blank");
     res.headers.set("Content-Range", unsatisfiedRangeHeader(outcome.size));
     return res;
   }
@@ -121,7 +122,7 @@ async function applyRangeSupport(req: Request, res: Response): Promise<Response>
   headers.set("Content-Range", contentRangeHeader(start, end, size));
   headers.set("Content-Length", String(end - start + 1));
   return new Response(buf.subarray(start, end + 1), {
-    status: 206,
+    status: StatusCodes.PARTIAL_CONTENT,
     statusText: "Partial Content",
     headers,
   });

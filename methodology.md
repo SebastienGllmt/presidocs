@@ -901,6 +901,8 @@ Retry-After: 60
 
 One helper (`shared/problemDetails.ts`) owns the format. Every error site calls `problem(status, slug, detail?, ext?)`; the helper resolves the slug to a stable type URI under `PROBLEM_BASE_URL`, looks up the per-slug title constant, sets the right content-type, and (for `rate-limit/exceeded` only) pairs the body with the standard `Retry-After` header — value sourced from a shared `RATE_LIMIT_WINDOW_SECONDS` constant so the header and body's `retryAfter` extension can't disagree, and so any future re-tune of the limiter window stays in one place. The slug union is a closed enum — adding a new error class is a one-file change.
 
+**Status codes are named, never magic numbers.** Every status the HTTP API emits comes from the `http-status-codes` enum — `problem(StatusCodes.BAD_REQUEST, …)`, `new Response(null, { status: StatusCodes.OK })` — so a growing set of error types can't drift into a hallucinated or redundant code, and a reviewer reads intent (`TOO_MANY_REQUESTS`) instead of a bare `429`. The `about:blank` title is the canonical reason phrase from the same library (`getReasonPhrase(status)`), so there is no hand-maintained phrase table to fall out of date — a code with no assigned phrase falls back to `HTTP <n>`. The library covers the status codes defined across [HTTP/1.0][RFC1945], [HTTP/1.1][RFC2616], [WebDAV][RFC2518], [Additional HTTP Status Codes][RFC6585], and [Permanent Redirect][RFC7538], all mirrored under `specs/` for when the right code for a new case isn't obvious. (Dev-only `*.dev.ts` localhost tooling still uses plain numeric statuses — it's on the same convention incrementally, not part of the gated API surface.)
+
 The base origin for those type URIs has a three-step resolution chain. `PROBLEM_BASE_URL` takes priority if set (the explicit override, for the rare case where problem docs live on a different origin than the site). Otherwise `SITE_URL` — which a content repo already configures for feeds + Open Graph + structured-data injection — is reused as `${SITE_URL}/probs`, so one origin var anchors both the site and its error URIs without drift. The third-step fallback is a documentation-reserved [RFC 2606][RFC2606] domain that is NOT under our control; the helper warns once on first use of it, so a deploy that set *neither* of the two preceding vars is loud at boot rather than silently shipping spec-incompliant type URIs. See `.env.example` for the wiring template.
 
 ### The slug taxonomy
@@ -1864,6 +1866,11 @@ The word **chunk** is deliberately *not* used as a user-facing concept (it's too
 [APGToolbar]: https://www.w3.org/WAI/ARIA/apg/patterns/toolbar/
 [BroadcastChannel]: https://html.spec.whatwg.org/multipage/web-messaging.html
 [WebLocks]: https://www.w3.org/TR/web-locks/
+[RFC1945]: https://www.rfc-editor.org/rfc/rfc1945.html
+[RFC2616]: https://www.rfc-editor.org/rfc/rfc2616.html
+[RFC2518]: https://www.rfc-editor.org/rfc/rfc2518.html
+[RFC6585]: https://www.rfc-editor.org/rfc/rfc6585.html
+[RFC7538]: https://www.rfc-editor.org/rfc/rfc7538.html
 [CFRFC9457]: https://blog.cloudflare.com/rfc-9457-agent-error-pages/
 [RFC2606]: https://www.rfc-editor.org/rfc/rfc2606.html
 [RFC6749]: https://www.rfc-editor.org/rfc/rfc6749.html#section-4.1.2.1
@@ -1926,6 +1933,11 @@ the same site already mirrored at [SchemaOrg]/SchemaOrg-spec.html.)
 [APGToolbar]: ./specs/APG-toolbar-spec.html
 [BroadcastChannel]: ./specs/BroadcastChannel-spec.html
 [WebLocks]: ./specs/WebLocks-spec.html
+[RFC1945]: ./specs/HTTP10-spec.html
+[RFC2616]: ./specs/HTTP11-spec.html
+[RFC2518]: ./specs/WebDAV-spec.html
+[RFC6585]: ./specs/AdditionalHTTPStatusCodes-spec.html
+[RFC7538]: ./specs/PermanentRedirect-spec.html
 [RFC2606]: ./specs/ReservedDomains-spec.html
 [RFC6749]: ./specs/OAuth2-spec.html (section 4.1.2.1)
 [Webmention]: ./specs/Webmention-spec.html

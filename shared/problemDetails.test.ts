@@ -27,10 +27,16 @@ test("about:blank → type stays literal, title = HTTP reason phrase", async () 
   expect(body.status).toBe(405);
 });
 
-test("about:blank for an unknown-to-table status falls back to `HTTP <n>`", async () => {
-  const res = problem(418, "about:blank");
+test("about:blank uses the library reason phrase, even for codes no hand-table had", async () => {
+  // 409 was never in the old hand-maintained table; http-status-codes has it.
+  const body = await problem(409, "about:blank").json();
+  expect(body.title).toBe("Conflict");
+});
+
+test("about:blank for a genuinely unassigned status falls back to `HTTP <n>`", async () => {
+  const res = problem(799, "about:blank");
   const body = await res.json();
-  expect(body.title).toBe("HTTP 418");
+  expect(body.title).toBe("HTTP 799");
 });
 
 test("detail is included when provided, omitted when not", async () => {

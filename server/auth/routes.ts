@@ -13,6 +13,7 @@
 // callback from one provider can't be replayed against the other's
 // in-flight flow. Both are HttpOnly with a 10-minute TTL.
 
+import { StatusCodes } from "http-status-codes";
 import {
   generateState,
   generateCodeVerifier,
@@ -140,7 +141,7 @@ function startAuth(provider: ProviderName, req: Request): Response {
     // implementation details. Log for the operator; respond with the
     // static problem-type title.
     console.warn(`auth misconfigured (${provider}):`, err);
-    return problem(500, "auth/misconfigured");
+    return problem(StatusCodes.INTERNAL_SERVER_ERROR, "auth/misconfigured");
   }
 
   const headers = new Headers({ Location: url.toString() });
@@ -164,7 +165,7 @@ function startAuth(provider: ProviderName, req: Request): Response {
       tempCookieOpts(),
     ),
   );
-  return new Response(null, { status: 302, headers });
+  return new Response(null, { status: StatusCodes.MOVED_TEMPORARILY, headers });
 }
 
 // ===== Callback =====
@@ -196,12 +197,12 @@ async function handleCallback(
     if (providerError === "unknown") {
       console.warn(`${provider} callback: unknown oauth error code:`, oauthError);
     }
-    return problem(400, "auth/oauth-provider-error", undefined, {
+    return problem(StatusCodes.BAD_REQUEST, "auth/oauth-provider-error", undefined, {
       providerError,
     });
   }
   if (!code || !state) {
-    return problem(400, "auth/callback-invalid");
+    return problem(StatusCodes.BAD_REQUEST, "auth/callback-invalid");
   }
   const cookies = parseCookies(req.headers.get("cookie"));
   const expectedState = cookies[`${STATE_COOKIE_PREFIX}${provider}`];
@@ -209,7 +210,7 @@ async function handleCallback(
   if (!expectedState || !verifier || state !== expectedState) {
     // CSRF surface — do NOT leak which of the three checks failed.
     // Same slug as the missing-code/state branch above.
-    return problem(400, "auth/callback-invalid");
+    return problem(StatusCodes.BAD_REQUEST, "auth/callback-invalid");
   }
 
   let tokens: OAuth2Tokens;
@@ -219,7 +220,7 @@ async function handleCallback(
       : await microsoftProvider().validateAuthorizationCode(code, verifier);
   } catch (err) {
     console.warn(`${provider} code exchange failed:`, err);
-    return problem(400, "auth/callback-invalid");
+    return problem(StatusCodes.BAD_REQUEST, "auth/callback-invalid");
   }
 
   let userInfo: UserInfo;
@@ -229,7 +230,7 @@ async function handleCallback(
       : await fetchMicrosoftUserInfo(tokens.accessToken());
   } catch (err) {
     console.warn(`${provider} userinfo failed:`, err);
-    return problem(502, "auth/userinfo-unavailable");
+    return problem(StatusCodes.BAD_GATEWAY, "auth/userinfo-unavailable");
   }
 
   const sessionToken = await createSessionToken({
@@ -262,7 +263,7 @@ async function handleCallback(
     "Set-Cookie",
     clearCookie(`${RETURN_TO_COOKIE_PREFIX}${provider}`),
   );
-  return new Response(null, { status: 302, headers });
+  return new Response(null, { status: StatusCodes.MOVED_TEMPORARILY, headers });
 }
 
 // ===== Session inspection / logout =====
@@ -290,7 +291,7 @@ export async function whoami(req: Request): Promise<Response> {
   const noStore = { "Cache-Control": "private, no-store" };
   if (!session) {
     return new Response("null", {
-      status: 200,
+      status: StatusCodes.OK,
       headers: { "Content-Type": "application/json", ...noStore },
     });
   }
@@ -316,5 +317,5 @@ export function logout(_req: Request): Response {
     "Set-Cookie",
     clearCookie(sessionCookieName(), { secure: isProd(), path: "/" }),
   );
-  return new Response("null", { status: 200, headers });
+  return new Response("null", { status: StatusCodes.OK, headers });
 }

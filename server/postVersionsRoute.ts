@@ -12,6 +12,7 @@
 // scraped by drive-bys.
 
 import { getSessionFromRequest } from "./auth/routes.ts";
+import { StatusCodes } from "http-status-codes";
 import { isPostAuthor, type PostMetaIndex } from "./postMeta.ts";
 import { problem } from "../shared/problemDetails.ts";
 import { PostVersionQuery, zodBadRequest } from "./requestSchemas.ts";
@@ -27,9 +28,9 @@ export async function handlePostVersionRequest(
   deps: PostVersionDeps,
 ): Promise<Response> {
   const session = await getSessionFromRequest(req);
-  if (!session) return problem(401, "auth/unauthenticated");
+  if (!session) return problem(StatusCodes.UNAUTHORIZED, "auth/unauthenticated");
 
-  if (req.method !== "GET") return problem(405, "about:blank");
+  if (req.method !== "GET") return problem(StatusCodes.METHOD_NOT_ALLOWED, "about:blank");
 
   const url = new URL(req.url);
   const parsed = PostVersionQuery.safeParse(Object.fromEntries(url.searchParams));
@@ -37,7 +38,7 @@ export async function handlePostVersionRequest(
   const { post } = parsed.data;
 
   const record = deps.postVersions.get(post);
-  if (!record) return problem(404, "about:blank");
+  if (!record) return problem(StatusCodes.NOT_FOUND, "about:blank");
 
   // Server-computed `isAuthor` for the current session. Authoritative
   // — the client can't be trusted to know this (the source-only

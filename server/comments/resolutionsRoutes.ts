@@ -19,6 +19,7 @@
 // presence-of-fields client-side.
 
 import { getSessionFromRequest } from "../auth/routes.ts";
+import { StatusCodes } from "http-status-codes";
 import { isPostAuthor, type PostMetaIndex } from "../postMeta.ts";
 import {
   problem,
@@ -42,23 +43,23 @@ export type ResolutionsDeps = {
 };
 
 function unauthorized(): Response {
-  return problem(401, "auth/unauthenticated");
+  return problem(StatusCodes.UNAUTHORIZED, "auth/unauthenticated");
 }
 function forbidden(): Response {
-  return problem(403, "auth/forbidden");
+  return problem(StatusCodes.FORBIDDEN, "auth/forbidden");
 }
 function badRequest(
   slug: Extract<ProblemSlug, `request/${string}`>,
   detail: string,
   extensions?: Record<string, unknown>,
 ): Response {
-  return problem(400, slug, detail, extensions);
+  return problem(StatusCodes.BAD_REQUEST, slug, detail, extensions);
 }
 function methodNotAllowed(): Response {
-  return problem(405, "about:blank");
+  return problem(StatusCodes.METHOD_NOT_ALLOWED, "about:blank");
 }
 function notFound(): Response {
-  return problem(404, "about:blank");
+  return problem(StatusCodes.NOT_FOUND, "about:blank");
 }
 
 export async function handleResolutionsRequest(
@@ -87,7 +88,7 @@ export async function handleResolutionsRequest(
       const bytes = await deps.store.getResolution(post, thread);
       if (!bytes) return notFound();
       return new Response(bytes as BodyInit, {
-        status: 200,
+        status: StatusCodes.OK,
         headers: {
           "Content-Type": "application/json",
           // Resolutions are mutable — no immutable cache. Short
@@ -106,14 +107,14 @@ export async function handleResolutionsRequest(
           key: session.userId,
         });
         if (!success) {
-          return problem(429, "rate-limit/exceeded", undefined, {
+          return problem(StatusCodes.TOO_MANY_REQUESTS, "rate-limit/exceeded", undefined, {
             retryAfter: RATE_LIMIT_WINDOW_SECONDS,
           });
         }
       }
       const body = await req.arrayBuffer();
       if (body.byteLength > MAX_RESOLUTION_BYTES) {
-        return problem(413, "resolutions/resolution-too-large", undefined, {
+        return problem(StatusCodes.REQUEST_TOO_LONG, "resolutions/resolution-too-large", undefined, {
           maxBytes: MAX_RESOLUTION_BYTES,
           actualBytes: body.byteLength,
         });
@@ -122,7 +123,7 @@ export async function handleResolutionsRequest(
         return badRequest("request/empty-body", "request body is required");
       }
       await deps.store.putResolution(post, thread, new Uint8Array(body));
-      return new Response(null, { status: 200 });
+      return new Response(null, { status: StatusCodes.OK });
     }
     default:
       return methodNotAllowed();

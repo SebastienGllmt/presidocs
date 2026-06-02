@@ -13,6 +13,7 @@
 // @asteasolutions/zod-to-openapi — is deferred; see proposals/26.)
 
 import { z } from "zod";
+import { StatusCodes } from "http-status-codes";
 import { problem } from "../shared/problemDetails.ts";
 
 // `post` is an opaque post path/key (e.g. "/posts/foo"); non-empty is the
@@ -59,7 +60,7 @@ export function zodBadRequest(err: z.ZodError): Response {
   const first = err.issues[0];
   const param =
     first && first.path.length > 0 ? first.path.join(".") : undefined;
-  return problem(400, "request/invalid-parameter", first?.message, {
+  return problem(StatusCodes.BAD_REQUEST, "request/invalid-parameter", first?.message, {
     ...(param !== undefined && { param }),
     issues: err.issues.map((i) => ({ path: i.path, code: i.code })),
   });
