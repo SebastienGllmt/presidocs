@@ -1,6 +1,7 @@
 // Tier 1.1 — happy-dom coverage of the narrator helpers that don't live
 // inside the Shikwasa wrapper. The Player itself isn't testable without a
-// real browser (no `<audio>` decoding under happy-dom — see proposal 19),
+// real browser (no `<audio>` decoding under happy-dom — see methodology →
+// Testing layout),
 // but the math + DOM-resolution pieces around it absolutely are, and most
 // historic narrator regressions have lived in those pieces.
 //

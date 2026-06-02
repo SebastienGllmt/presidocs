@@ -92,27 +92,57 @@
    column-Y conversion natively, on every scroll frame, in C++).
    ============================================================================ */
 .cmt-column {
-  position: absolute;
-  top: 64px; /* match article top margin */
-  right: 24px;
-  width: 320px;
-  /* No fixed height — cards are absolutely positioned inside; the column
-     just provides the right-anchored coordinate space. */
+  /* `position: static` is LOAD-BEARING — do not give this a positioned value.
+     Cards anchor to their highlights with `top: anchor(top)` (below), and CSS
+     Anchor Positioning only resolves an anchor that lives in the positioned
+     element's CONTAINING BLOCK. A positioned column (the old `absolute`)
+     becomes the cards' containing block, which does NOT contain the article
+     highlights, so every `anchor()` returns its `0px` fallback and the cards
+     pile up at the top. Keeping the column (and everything up to <body>)
+     unpositioned makes the cards' containing block the initial one, which
+     DOES contain the highlights. The column draws nothing and has no in-flow
+     children on desktop (cards are abs-positioned; the identity header is
+     `position: fixed`), so it occupies no space — it exists only to host the
+     cards under the `complementary` "Comments" landmark. The mobile block
+     below re-establishes a fixed box for its own (popover) layout. */
+  position: static;
   pointer-events: none;
-  z-index: var(--cmt-z-card);
 }
 
 .cmt-card {
   position: absolute;
-  left: 0;
-  right: 0;
-  /* `position-anchor` is set inline per-card in `buildCard` (the value
-     varies by thread shape — text / graphic / narration). The `anchor()`
-     fallback handles stale or off-screen anchors: a 0 falls into the
-     `--cmt-pin-to-column-top` fallback below when overflow detection
-     would otherwise leave the card invisible. */
-  top: anchor(top, 0px);
-  position-try-fallbacks: --cmt-pin-to-column-top;
+  /* Right-margin geometry. The column no longer provides this (it's no longer
+     a positioned box), so each card carries it directly. */
+  right: 24px;
+  left: auto;
+  width: 320px;
+  /* `position-anchor` is set inline per-card in `buildCard` (the value varies
+     by thread shape — text / graphic / narration). `top: anchor(top)` aligns
+     the card with its highlight; the `0px` arg is the fallback when the anchor
+     is missing/stale (a card whose text was edited away drops to the top
+     rather than vanishing).
+
+     Deliberately NO `position-try-fallbacks` here. A `{ top: 0 }` try-fallback
+     fires whenever the anchored position is below the visible scrollport —
+     i.e. for EVERY comment below the fold — pinning them all to the top. That
+     was the "all comments stack at the top" bug. Without it, a below-fold card
+     simply sits beside its text and scrolls into view with it (the intended
+     margin-note behaviour). The mobile popover sets its own, separate
+     `position-try-fallbacks` under `:popover-open`.
+
+     `--cmt-stack-offset` is a per-card downward nudge set by JS
+     (`adjustCardStacking`) so cards whose anchors land within a card-height of
+     each other (comments on the same / overlapping text) cascade down instead
+     of rendering on top of one another. It defaults to 0 (no collision). */
+  top: calc(anchor(top, 0px) + var(--cmt-stack-offset, 0px));
+  /* Decouple the card's visibility from its anchor's. This is LOAD-BEARING:
+     the `position-visibility` initial value is `anchors-visible`, which
+     force-hides an anchored element the moment its anchor is scrolled out of
+     view / clipped. We explicitly DON'T want that — the card is glued to its
+     anchor's document position and should simply scroll off with the text
+     (Google-Docs margin notes), staying visible until its OWN position leaves
+     the viewport. `always` opts out of the auto-hide entirely. */
+  position-visibility: always;
   pointer-events: auto;
   background: var(--cmt-bg);
   color: var(--cmt-fg);
@@ -126,9 +156,6 @@
               border-color 160ms ease;
 }
 
-@position-try --cmt-pin-to-column-top {
-  top: 0;
-}
 .cmt-card:hover {
   box-shadow: var(--cmt-shadow);
 }
@@ -751,25 +778,25 @@ body.cmt-highlights-hidden .cmt-action-bar { display: none; }
   /* Desktop hides the FAB — the column itself is the affordance. */
   .cmt-hide-all-fab { display: none; }
 
-  /* Pin the identity card to the viewport from the start so it follows
-     the reader down the page — without this the card sits in the
-     .cmt-column (position: absolute, no defined height) and scrolls
-     away with the document, defeating the scroll-to-brighten signal
-     because the card would already be off-screen by the time it
-     brightened. `top: 64px` matches the column's original top so the
-     card occupies the same on-screen slot at scroll=0; readers see no
-     position change as they scroll, only the opacity transition on
-     `.cmt-identity-loggedout` triggered by `body.cmt-identity-revealed`
-     (see comments.ts). Geometry mirrors the column (right 24px / width
-     320px); comment cards keep their absolute positioning and pass
-     under the pinned card as the reader scrolls. Mobile uses its own
-     fixed-position rule below. */
-  .cmt-identity {
+  /* The header rail (identity card + version banner / history + unresolved
+     count) is pinned to the viewport so it holds its place as the reader
+     scrolls — without this it sits in the now-unpositioned `.cmt-column` (see
+     the `position: static` note on `.cmt-column`) and, having no positioned
+     box to live in, the in-flow header surfaces drop to the bottom of the
+     page. Pinning also keeps the identity card on-screen so its
+     scroll-to-brighten signal (`body.cmt-identity-revealed`, see comments.ts)
+     still works. `top: 64px` matches the article's top margin so the rail
+     occupies the same slot at scroll=0; geometry (right 24px / width 320px)
+     mirrors the gutter. Comment cards are NOT in the rail — they keep their
+     own absolute, anchor-driven positioning off the column and pass under the
+     rail as the reader scrolls. Mobile hides the version surfaces and gives
+     the identity card its own fixed pill (below), so the rail needs no box
+     there. */
+  .cmt-rail {
     position: fixed;
     top: 64px;
     right: 24px;
     width: 320px;
-    margin: 0;
     z-index: var(--cmt-z-card);
   }
 }
@@ -844,7 +871,15 @@ body.cmt-highlights-hidden .cmt-action-bar { display: none; }
     max-width: 520px;
     max-height: 60vh;
     overflow-y: auto;
-    position-area: block-end span-inline;
+    /* Reset the desktop `.cmt-card` insets (it sets `top: calc(anchor(top)…)`
+       and `right: 24px`) so the popover is placed purely by `position-area`.
+       Without this the leftover `top` offsets the popover down inside the area
+       and fights the flip / bottom-sheet fallbacks. */
+    inset: auto;
+    /* `span-all` = full inline extent (centered below the anchor). NOT
+       `span-inline`, which is not a real keyword — the only inline span
+       values are span-inline-start / span-inline-end / span-all. */
+    position-area: block-end span-all;
     position-try-fallbacks: flip-block, --cmt-bottom-sheet;
     margin-block: 8px;
   }
