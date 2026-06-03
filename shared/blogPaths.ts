@@ -31,6 +31,9 @@ export type BlogPaths = {
   generatedMapsDir: string;
   postMetaMap: string;
   postVersionsMap: string;
+  /** Slug → current content-addressed audio URL; the Worker resolves the
+   *  stable `/generated/<slug>/episode.<ext>` URL against it. */
+  episodeAudioMap: string;
   /** Dev-only static route table for the Bun dev server. */
   postRoutesFile: string;
   /** Vendored Automerge WASM — served in dev, copied into dist. Engine-owned. */
@@ -70,6 +73,7 @@ export function resolveBlogPaths(): BlogPaths {
     generatedMapsDir,
     postMetaMap: join(generatedMapsDir, "postMeta.ts"),
     postVersionsMap: join(generatedMapsDir, "postVersions.ts"),
+    episodeAudioMap: join(generatedMapsDir, "episodeAudio.ts"),
     postRoutesFile: join(generatedMapsDir, "postRoutes.ts"),
     automergeWasm: resolveAutomergeWasm(engineRoot),
   };

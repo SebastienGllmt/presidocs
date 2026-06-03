@@ -38,6 +38,7 @@ import faChevron from "@fortawesome/fontawesome-free/svgs/solid/chevron-down.svg
 import faExternal from "@fortawesome/fontawesome-free/svgs/solid/up-right-from-square.svg" with { type: "text" };
 
 import { copyToClipboard } from "./clipboard.ts";
+import { stableEpisodePath } from "../shared/stableAudio.ts";
 
 // How long the "Copied!" state stays after a successful copy (matches copy-md).
 const FEEDBACK_MS = 1600;
@@ -446,9 +447,17 @@ export function mountSubscribeControls(
   else article.prepend(row);
 }
 
-// Resolve the episode MP3 from the narration manifest the player points at.
-// `null` when there's no manifest, the fetch fails, or it carries no audio —
-// i.e. the post has no podcast episode, so the podcast control is suppressed.
+// Resolve the STABLE, shareable episode-audio URL from the narration manifest
+// the player points at. `null` when there's no manifest, the fetch fails, or it
+// carries no audio — i.e. the post has no podcast episode, so the podcast
+// control is suppressed.
+//
+// The manifest's `audio` is the content-addressed `…/full.<hash>.<ext>` the
+// PLAYER uses; we map it to the stable `…/episode.<ext>` so a copied link (or a
+// feed enclosure) survives the next regeneration when the hash rotates. The
+// stable URL is served with revalidation, not staleness (see the server's
+// stableAudio handling). If the path isn't the expected shape, fall back to the
+// raw audio URL rather than hand out nothing.
 async function resolveAudioUrl(article: HTMLElement, origin: string): Promise<string | null> {
   const src = article.getAttribute("data-narration-src");
   if (!src) return null;
@@ -457,7 +466,8 @@ async function resolveAudioUrl(article: HTMLElement, origin: string): Promise<st
     if (!res.ok) return null;
     const m = (await res.json()) as { audio?: unknown };
     if (typeof m.audio !== "string" || !m.audio) return null;
-    return new URL(m.audio, origin).href;
+    // `/generated/<slug>/full.<hash>.mp3` (or legacy bare `full.mp3`) → `…/episode.mp3`.
+    return new URL(stableEpisodePath(m.audio), origin).href;
   } catch {
     return null;
   }

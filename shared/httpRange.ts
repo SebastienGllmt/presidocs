@@ -32,7 +32,11 @@ const SINGLE_RANGE_RE = /^bytes=(\d*)-(\d*)$/;
 // `await res.arrayBuffer()` for requests it can't slice anyway.
 export function isResolvableRangeHeader(header: string | null): boolean {
   if (!header) return false;
-  return SINGLE_RANGE_RE.test(header.trim());
+  const m = SINGLE_RANGE_RE.exec(header.trim());
+  // `bytes=-` (no first-pos AND no suffix-length) is syntactically invalid per
+  // RFC 9110 §14.1.2 (suffix-length = 1*DIGIT); treat it as not-resolvable so
+  // the caller serves the full 200 rather than buffering to produce a 416.
+  return m !== null && !(m[1] === "" && m[2] === "");
 }
 
 export function resolveRange(
@@ -42,6 +46,12 @@ export function resolveRange(
   if (!rangeHeader || size <= 0) return { kind: "none" };
   const m = SINGLE_RANGE_RE.exec(rangeHeader.trim());
   if (!m) return { kind: "none" };
+  // `bytes=-` (empty first-pos AND empty suffix-length) is syntactically INVALID
+  // per the RFC 9110 §14.1.1 ABNF (suffix-length = 1*DIGIT); an invalid range may
+  // be ignored → full 200 (§14.2). This is distinct from a VALID-but-unsatisfiable
+  // range like `bytes=-0`, which falls through to the suffix branch below and 416s
+  // (§14.1.2: a suffix range needs a non-zero length; §14.2: unsatisfiable → 416).
+  if (m[1] === "" && m[2] === "") return { kind: "none" };
   let start = m[1] === "" ? NaN : Number(m[1]);
   let end = m[2] === "" ? NaN : Number(m[2]);
   if (Number.isNaN(start)) {

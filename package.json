@@ -5,7 +5,8 @@
   "//": "This is the reusable blog ENGINE, consumed by content repos via a `file:` dependency (see methodology.md → Repository layout, and templates/content-repo/ for the starter). It is not a deployable blog itself; the dev/build/deploy/generate scripts live in each content repo's package.json.",
   "scripts": {
     "test": "bun test",
-    "test:e2e": "bun test ./e2e/*.e2e.ts"
+    "test:e2e": "for f in ./e2e/*.e2e.ts; do echo \"=== $f ===\"; bun test \"$f\" || exit 1; done",
+    "test:e2e:prod": "bun test ./e2e/prodAudioSmoke.ts"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.3",

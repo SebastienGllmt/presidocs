@@ -40,8 +40,38 @@ export type FeedConfig = {
   hubUrl: string | null;
 };
 
+/** Loopback origins where plain `http:` is fine (local dev, never published). */
+function isLoopbackOrigin(url: string): boolean {
+  try {
+    const h = new URL(url).hostname.replace(/^\[|\]$/g, ""); // strip IPv6 brackets
+    return (
+      h === "localhost" ||
+      h.endsWith(".localhost") || // RFC 6761: the whole .localhost TLD is loopback
+      /^127(\.\d{1,3}){3}$/.test(h) || // entire 127.0.0.0/8, not just 127.0.0.1
+      h === "::1"
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function resolveFeedConfig(env: Record<string, string | undefined> = process.env): FeedConfig {
   const raw = (env.SITE_URL ?? "").trim().replace(/\/+$/, "");
+  // Deployment policy (not a local-spec MUST): a published feed must use https.
+  // `baseUrl` prefixes every <enclosure>/<podcast:source> URL, and a plain-http
+  // origin yields http: feed URLs that podcast directories (Apple, Spotify)
+  // reject. It also aligns with the Podcasting 2.0 namespace's "hyper-text
+  // resource URLs must be https" guidance — but that rule lives in the UPSTREAM
+  // namespace intro (podcastindex.org/namespace/1.0), NOT in our tag-subset
+  // `specs/PodcastNamespace-spec.md`, so we enforce it as policy here rather than
+  // cite the mirror for it. Loopback http is allowed — local dev never publishes.
+  if (raw && /^http:\/\//i.test(raw) && !isLoopbackOrigin(raw)) {
+    throw new Error(
+      `SITE_URL must use https:// for a published build (got "${raw}"): feed ` +
+        `enclosure URLs must be https for podcast directories. ` +
+        `http://localhost (or any 127.0.0.0/8 / ::1) is allowed for local dev.`,
+    );
+  }
   return {
     baseUrl: raw || null,
     language: (env.FEED_LANGUAGE ?? "").trim() || "en-US",

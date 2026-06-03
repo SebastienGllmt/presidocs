@@ -10,7 +10,7 @@
 // resolve the same URLs the same way.
 
 import { StatusCodes } from "http-status-codes";
-import { basename, dirname, join, normalize } from "node:path";
+import { basename, dirname, extname, join, normalize } from "node:path";
 import { getPlatformProxy } from "wrangler";
 import {
   startGoogleAuth,
@@ -36,7 +36,28 @@ import { buildAuthorMap } from "../shared/authorProfile.ts";
 import { buildPublicPostVersionsMap } from "../shared/publicPostVersions.ts";
 import { htmlToMarkdown, renderMarkdownDocument, type FrontMatter } from "../shared/htmlToMarkdown.ts";
 import type { BlogPaths } from "../shared/blogPaths.ts";
-import { findManifestName } from "../shared/manifestFile.ts";
+import { findFullAudioName, findManifestName } from "../shared/manifestFile.ts";
+import {
+  audioEtag,
+  ifNoneMatchSatisfied,
+  rangeHonored,
+  stableAudioHeaders,
+} from "../shared/stableAudio.ts";
+import { isSha256Hex, reprDigestSha256 } from "../shared/audioDigest.ts";
+
+/** Read a post's full audio SHA-256 (for Repr-Digest) from its manifest, or null. */
+async function readEpisodeDigest(dir: string): Promise<string | null> {
+  const name = await findManifestName(dir);
+  if (!name) return null;
+  try {
+    const m = (await Bun.file(join(dir, name)).json()) as { audioDigest?: unknown };
+    return typeof m.audioDigest === "string" && isSha256Hex(m.audioDigest)
+      ? m.audioDigest
+      : null;
+  } catch {
+    return null;
+  }
+}
 import {
   contentRangeHeader,
   resolveRange,
@@ -149,21 +170,31 @@ export async function createDevServer(opts: DevServerOptions) {
       if (safe.startsWith("..") || safe.includes("\0")) {
         return new Response("forbidden", { status: StatusCodes.FORBIDDEN });
       }
+      // Stable AUTHORED names resolve to the current content-addressed file on
+      // disk (dev serves the authored tree; the hash rewrite is a prod-build
+      // step). Two such names: the player's bare `manifest.json` →
+      // `manifest.<hash>.json`, and the shareable `episode.<ext>` →
+      // `full.<hash>.<ext>` (the stable URL — see shared/stableAudio.ts). The
+      // resolved episode carries a strong ETag so dev mirrors prod's revalidation.
+      const base = basename(safe);
+      const isEpisode = /^episode\.[a-z0-9]+$/i.test(base);
+      let episodeEtag: string | null = null;
+      let episodeDigest: string | null = null;
       let file = Bun.file(join(dir, safe));
       if (!(await file.exists())) {
-        // The played manifest is content-addressed (`manifest.<hash>.json`).
-        // Dev serves the AUTHORED HTML, whose `data-narration-src` still names
-        // the bare `manifest.json` (the hash rewrite is a prod-build step), so
-        // resolve a bare request to the hashed file on disk. Served no-store
-        // below since the request URL itself isn't hashed in dev (harmless —
-        // dev registers no service worker and sits behind no CDN).
-        const resolved = basename(safe) === "manifest.json"
-          ? await findManifestName(join(dir, dirname(safe)))
-          : null;
-        if (resolved && resolved !== "manifest.json") {
-          file = Bun.file(join(dir, dirname(safe), resolved));
+        let resolved: string | null = null;
+        if (base === "manifest.json") {
+          resolved = await findManifestName(join(dir, dirname(safe)));
+          if (resolved === "manifest.json") resolved = null; // bare miss → 404
+        } else if (isEpisode) {
+          resolved = await findFullAudioName(join(dir, dirname(safe)), extname(base));
         }
+        if (resolved) file = Bun.file(join(dir, dirname(safe), resolved));
         if (!(await file.exists())) return new Response("not found", { status: StatusCodes.NOT_FOUND });
+        if (isEpisode && resolved) {
+          episodeEtag = audioEtag(resolved);
+          episodeDigest = await readEpisodeDigest(join(dir, dirname(safe)));
+        }
       }
       const size = file.size;
       // Cache policy is split by whether the filename is content-addressed.
@@ -193,13 +224,40 @@ export async function createDevServer(opts: DevServerOptions) {
       // via shared/httpRange.ts.
       const isContentHashed =
         /(^|\/)(full\.[0-9a-f]{16}\.[a-z0-9]+|manifest\.[0-9a-f]{16}\.json)$/i.test(safe);
-      const baseHeaders: Record<string, string> = {
-        "Cache-Control": isContentHashed
-          ? "public, max-age=31536000, immutable"
-          : "no-store",
-        "Accept-Ranges": "bytes",
-      };
-      const outcome = resolveRange(req.headers.get("range"), size);
+      // The stable `episode.<ext>` gets the revalidating policy (strong ETag +
+      // no-cache + CDN-Cache-Control) shared with prod; everything else keeps
+      // the immutable-vs-no-store split.
+      const baseHeaders: Record<string, string> = isEpisode
+        ? stableAudioHeaders(episodeEtag)
+        : {
+            "Cache-Control": isContentHashed
+              ? "public, max-age=31536000, immutable"
+              : "no-store",
+            "Accept-Ranges": "bytes",
+          };
+      // RFC 9530 representation digest on the stable URL (range-independent).
+      if (isEpisode && episodeDigest) {
+        baseHeaders["Repr-Digest"] = reprDigestSha256(episodeDigest);
+      }
+      // Conditional GET on the stable URL → 304 (echoing the cache headers).
+      if (
+        isEpisode &&
+        ifNoneMatchSatisfied(req.headers.get("if-none-match"), episodeEtag)
+      ) {
+        return new Response(null, {
+          status: StatusCodes.NOT_MODIFIED,
+          headers: baseHeaders,
+        });
+      }
+      // Drop the Range for HEAD (→ the full 200 below; Bun strips the body but
+      // keeps Content-Length, RFC 9110 §9.3.2) and on an If-Range mismatch (so a
+      // mid-seek client can't stitch two versions across a regeneration).
+      const rangeHeader =
+        req.method === "HEAD" ||
+        (isEpisode && !rangeHonored(req.headers.get("if-range"), episodeEtag))
+          ? null
+          : req.headers.get("range");
+      const outcome = resolveRange(rangeHeader, size);
       if (outcome.kind === "unsatisfiable") {
         return new Response("range not satisfiable", {
           status: StatusCodes.REQUESTED_RANGE_NOT_SATISFIABLE,

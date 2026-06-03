@@ -21,8 +21,47 @@ import { readdir } from "node:fs/promises";
 /** Matches a content-addressed manifest filename (`manifest.<16 hex>.json`). */
 export const MANIFEST_HASHED_RE = /^manifest\.[0-9a-f]{16}\.json$/;
 
+/** Matches a content-addressed full-track audio filename (`full.<16 hex>.<ext>`). */
+export const FULL_AUDIO_HASHED_RE = /^full\.[0-9a-f]{16}\.[a-z0-9]+$/i;
+
 export function manifestFileName(hash: string): string {
   return `manifest.${hash}.json`;
+}
+
+/**
+ * Resolve the current full-track audio filename inside a post's generated
+ * directory — the live `full.<hash>.<ext>` that the STABLE `episode.<ext>` URL
+ * maps to (see shared/stableAudio.ts). Optionally constrained to an extension
+ * (e.g. `.mp3`). Falls back to a legacy bare `full.<ext>`; null when absent.
+ *
+ * The build ships exactly one hashed track per post (copy-static.ts mirrors
+ * `generated/` and sweeps superseded hashes), so the choice is unambiguous in
+ * prod; if several coexist mid-regenerate in dev, pick deterministically.
+ */
+export async function findFullAudioName(
+  dir: string,
+  ext?: string,
+): Promise<string | null> {
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return null;
+  }
+  const wantExt = ext ? ext.toLowerCase() : null;
+  const hashed = entries
+    .filter(
+      (f) =>
+        FULL_AUDIO_HASHED_RE.test(f) &&
+        (!wantExt || f.toLowerCase().endsWith(wantExt)),
+    )
+    .sort();
+  if (hashed.length > 0) return hashed[hashed.length - 1]!;
+  const bare = entries.find(
+    (f) =>
+      /^full\.[a-z0-9]+$/i.test(f) && (!wantExt || f.toLowerCase().endsWith(wantExt)),
+  );
+  return bare ?? null;
 }
 
 /**

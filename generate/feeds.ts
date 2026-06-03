@@ -32,6 +32,8 @@ import { buildAuthorMap, type PublicAuthorProfile } from "../shared/authorProfil
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 import { decodeHtmlEntities } from "../shared/htmlEntities.ts";
 import { findManifestName } from "../shared/manifestFile.ts";
+import { stableEpisodePath } from "../shared/stableAudio.ts";
+import { isSha256Hex, sriSha256 } from "../shared/audioDigest.ts";
 import { createHash } from "node:crypto";
 
 const paths = resolveBlogPaths();
@@ -99,10 +101,15 @@ export type FeedPost = {
   author: FeedAuthor | null;
   // Present only when the post has narration audio.
   audio?: {
-    url: string; // absolute
+    url: string; // absolute STABLE enclosure URL (…/episode.<ext>)
     byteLength: number;
     durationSec: number;
     chaptersUrl: string; // absolute
+    // Content-addressed alternate (…/full.<hash>.<ext>, absolute) + the SRI
+    // string of the audio bytes. Both present ⇒ a <podcast:alternateEnclosure>
+    // advertises the immutable URL and lets clients verify integrity.
+    hashedUrl?: string;
+    integrity?: string; // W3C SRI, e.g. "sha256-<base64>"
   };
 };
 
@@ -231,6 +238,17 @@ export function buildRssFeed(site: FeedSite, posts: FeedPost[]): string {
         (p.summary ? `<description>${cdata(p.summary)}</description>` : "") +
         `<content:encoded>${cdata(p.contentHtml)}</content:encoded>` +
         `<enclosure url="${escapeXml(a.url)}" length="${a.byteLength}" type="audio/mpeg"/>` +
+        // Advertise the content-addressed alternate alongside the stable
+        // enclosure, with the audio's SRI so capable clients can verify or
+        // prefer the immutable URL (Podcasting 2.0; see specs/PodcastNamespace).
+        // `default="true"`: same media as the <enclosure> above.
+        (a.hashedUrl
+          ? `<podcast:alternateEnclosure type="audio/mpeg" length="${a.byteLength}" default="true">` +
+            `<podcast:source uri="${escapeXml(a.url)}"/>` +
+            `<podcast:source uri="${escapeXml(a.hashedUrl)}"/>` +
+            (a.integrity ? `<podcast:integrity type="sri" value="${escapeXml(a.integrity)}"/>` : "") +
+            `</podcast:alternateEnclosure>`
+          : "") +
         `<itunes:duration>${a.durationSec}</itunes:duration>` +
         (site.author ? `<itunes:author>${escapeXml(site.author.name)}</itunes:author>` : "") +
         `<itunes:explicit>${site.explicit ? "true" : "false"}</itunes:explicit>` +
@@ -307,7 +325,7 @@ export function buildChaptersJson(
 
 type VersionEntry = { hash: string; builtAt: string };
 type ManifestChapter = { id: string; title: string; startTime: number; endTime: number; parentId?: string };
-type Manifest = { audio?: string; duration?: number; chapters?: ManifestChapter[] };
+type Manifest = { audio?: string; duration?: number; chapters?: ManifestChapter[]; audioDigest?: string };
 
 // Pull the site title + description out of the blog's own landing index.html,
 // so the engine never hardcodes a blog name. Exported so sibling generators
@@ -476,11 +494,23 @@ async function main(): Promise<void> {
             const chaptersJson = buildChaptersJson(prefixChildChapterTitles(m.chapters ?? []));
             const chaptersFsPath = join(distDir, "generated", slug, "chapters.json");
             await writeFile(chaptersFsPath, chaptersJson, "utf8");
+            // STABLE shareable enclosure URL (`…/episode.<ext>`) — survives the
+            // next regeneration when the content hash rotates, unlike the hashed
+            // `m.audio`. Served with revalidation (strong ETag = the hash) and
+            // resolves to the very bytes we measured for `length` here. See
+            // proposals/32-stable-shareable-audio-url.md.
             audio = {
-              url: `${baseUrl}${m.audio}`,
+              url: `${baseUrl}${stableEpisodePath(m.audio)}`,
               byteLength,
               durationSec: Math.round(m.duration / 1000),
               chaptersUrl: `${baseUrl}/generated/${slug}/chapters.json`,
+              // Content-addressed alternate + integrity (proposals/32 §9): the
+              // immutable URL clients may prefer, and the SRI of the very bytes.
+              hashedUrl: `${baseUrl}${m.audio}`,
+              integrity:
+                m.audioDigest && isSha256Hex(m.audioDigest)
+                  ? sriSha256(m.audioDigest)
+                  : undefined,
             };
           }
         }

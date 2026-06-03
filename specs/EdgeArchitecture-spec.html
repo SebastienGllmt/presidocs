@@ -1,0 +1,375 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"
+    "http://www.w3.org/TR/html4/loose.dtd">
+<html lang="en">
+<head>
+  <title>Edge Architecture Specification 1.0</title>
+  <meta http-equiv="Content-Type" content="text/html">
+  <style type="text/css">
+<!--
+
+H1 H2 H3 H4 {
+page-break-after: avoid;
+}
+
+.break {
+page-break-after: always;
+}
+
+.nobreak {
+page-break-after: avoid;
+}
+
+ul dl ol table {
+page-break-before: avoid;
+}
+
+.example {
+background: #ffffcc;
+font-family: sans-serif;
+font-size: 0.8em;
+margin-left: 1.2em;
+padding: 2px;
+page-break-before: avoid;
+}
+
+pre.example {
+white-space: pre;
+}
+
+.spec {
+font-family: monospace;
+font-size: 0.9em;
+margin-left: 1.2em;
+page-break-before: avoid;
+}
+
+pre.spec {
+white-space: pre;
+}
+
+.comment {
+background-color: #ffff66;
+font-family: serif;
+}
+
+th {
+background-color: #333333;
+font-size: 0.9em;
+font-weight: normal;
+color: white;
+padding: 2pt 3pt;
+}
+
+td {
+font-size: 0.8em;
+background-color: #EEEEEE;
+padding: 2pt 3pt;
+}
+
+caption {
+font-weight: bold;
+background-color: #6699CC;
+padding: 2px 0px;
+}
+
+table {
+margin: 12px 0px 24px 0px;
+}
+
+h4 {
+font: 100% sans-serif;
+color: #005A9C;
+}
+-->
+
+
+
+  </style>
+  <link rel="stylesheet" type="text/css" href="https://www.w3.org/StyleSheets/TR/W3C-NOTE">
+</head>
+
+<body>
+
+<div class="head">
+<p><a href="https://www.w3.org/"><img src="https://www.w3.org/Icons/w3c_home" alt="W3C" height="48" width="72" align="left"></a></p>
+
+<h1>Edge Architecture Specification</h1>
+
+<h2>W3C Note 04 August 2001</h2>
+<dl>
+  <dt>This version:</dt>
+    <dd><a href="https://www.w3.org/TR/2001/NOTE-edge-arch-20010804">http://www.w3.org/TR/2001/NOTE-edge-arch-20010804</a></dd>
+  <dt>Latest version:</dt>
+    <dd><a href="https://www.w3.org/TR/edge-arch">http://www.w3.org/TR/edge-arch</a></dd>
+  <dt>Authors:</dt>
+    <dd><a href="mailto:mnot@akamai.com">Mark Nottingham</a>, Akamai</dd>
+    <dd><a href="mailto:xiang.liu@oracle.com">Xiang Liu</a>, Oracle</dd>
+</dl>
+
+<p class="copyright">©2001 <a href="http://www.akamai.com/"> Akamai
+Technologies</a>, <a href="http://www.oracle.com/">Oracle Corporation</a>. All
+Rights Reserved. Distribution policies are governed by the W3C intellectual
+property <a href="https://www.w3.org/Consortium/Legal/ipr-notice#Copyright">
+terms</a>.</p>
+<hr align="center" title="Separator from Header">
+</div>
+
+<h2>Abstract</h2>
+
+<p>This document defines the Edge Architecture, which extend the Web
+infrastructure through the use of HTTP surrogates - intermediaries that act on
+behalf of an origin server.</p>
+
+<h2 class="break">Status of this document</h2>
+
+<p>This document is part of a submission to the <a href="https://www.w3.org">World Wide Web Consortium</a> (see <a
+href="/Submission/2001/09/">Submission Request</a>, <a
+href="/Submission/2001/09/Comment">W3C Staff Comment</a>) that
+outlines an approach to scaling the Web infrastructure. Comments to the
+authors are welcome, but you are also encouraged to share your views on the W3C <a
+href="http://lists.w3.org/Archives/Public/www-talk">publicly archived
+www-talk mailing list</a> &lt;<a
+href="mailto:www-talk@w3.org">www-talk@w3.org</a>&gt;. For a full list
+of all acknowledged Submissions, please see <a href="/Submission/">Acknowledged Submissions to W3C</a>.</p>
+
+<p>This document is a NOTE made available by the W3C for discussion only.
+Publication of this Note by W3C indicates no endorsement by W3C or the W3C
+Team, or any W3C Members. No W3C resources were or are allocated to the issues
+addressed by the NOTE. W3C has had no editorial control over the preparation
+of this NOTE.</p>
+
+<p>A list of current W3C technical documents can be found at the <a href="https://www.w3.org/TR/">Technical Reports page</a>.</p>
+
+<h2>1. Introduction</h2>
+
+<p>One approach to scaling the Web is the use of <em> surrogates</em> -
+intermediaries that act on behalf of and with authority of an origin server
+(also known as "reverse proxies"). This document describes a framework for the
+distribution of HTTP content by surrogates, by specifying a means of
+controlling surrogates with HTTP headers, along with caching and response
+processing models for them.</p>
+
+<p>Surrogates may be deployed close to the origin server, or throughout the
+network - a configuration often referred to as a "Content Delivery Network"
+(CDN).</p>
+
+<p>Because they act on behalf of the origin server (and therefore the
+content's owner), surrogates offer content owners greater control over their
+behavior than proxies. As a result, they offer greater potential for improving
+performance, offloading processing from the origin server, and adding unique
+functionality to the Web.</p>
+
+<p>This document uses the Extended BNF syntax and rules from <a
+href="http://www.rfc-editor.org/rfc/rfc2616.txt">HTTP/1.1</a>.</p>
+
+<h2>2. Controlling Surrogates with HTTP Headers</h2>
+
+<p>Unlike standard HTTP intermediaries, Surrogates offer the ability for finer
+control by the origin server and content owner, because of their implied
+relationship. To enable this, we define HTTP headers to advertise the
+capabilities of a particular surrogate device, and control how it behaves.</p>
+
+<h3>2.1 Surrogate-Capability Header</h3>
+
+<p>The Surrogate-Capabilities request header allows surrogates to advertise
+their capabilities with <em>capability tokens</em>. Capability tokens indicate
+sets of operations (e.g., caching, processing) that a surrogate is willing to
+perform. They follow the form of product tokens in the HTTP;</p>
+
+<p class="spec">capability = token [ "/" token ]</p>
+
+<p>Capability tokens are case-sensitive.</p>
+
+<p>As requests pass through surrogates, the Surrogate-Capabilities header is
+appended;</p>
+<pre class="spec">capability-hdr = "Surrogate-Capability" ":" 1#capability-set
+capability-set = device-token "=" &lt;"&gt; capability \
+                 *( SP capability ) &lt;"&gt;
+device-token = token</pre>
+
+<p>For example,</p>
+
+<p><span class="example">Surrogate-Capabilities: abc="Surrogate/1.0",
+def="Surrogate/1.0 ESI/1.0"</span></p>
+
+<p>The name in each capability set identifies a <em>device token</em>, which
+uniquely identifies the surrogate that appended it. Device tokens must be
+unique within a request's Surrogate-Capabilities header.</p>
+
+<p>The value contains a space-separated list of capability tokens. In the
+example above, two surrogates are present in the request chain; one identified
+as 'abc' is capable of applying "ESI/1.0", while 'def' is capable of handling
+both "Surrogate/1.0" and "ESI/1.0".</p>
+
+<p>Surrogates must only append their information to any existing
+Surrogate-Capability headers, so that it may be read from left to right (or,
+if the headers are separate, from top to bottom) to construct a list of
+surrogates that the request passed through (and thus a list that may be read
+from right to left to discover surrogates that the response will pass
+through).</p>
+
+<h3>2.2 Surrogate-Control Header</h3>
+
+<p>The Surrogate-Control response header allows origin servers to dictate how
+surrogates should handle response entities, with <em> control directives</em>.
+Currently defined directives control processing and cache behavior.</p>
+<pre class="spec">control-hdr = "Surrogate-Control" ":" 1#( control-directive \
+              *( ";" device-token ) )
+control-directive = no-store |
+                    no-store-remote |
+                    max-age |
+                    content |
+                    extension-directive
+no-store = "no-store"    ; see section 4.2.1
+no-store-remote = "no-store-remote"    ; see section 4.2.2
+max-age = "max-age" "=" \
+          delta-seconds [ "+" delta-seconds ]   ; see section 4.2.3
+content = "content" "=" \
+          &lt;"&gt; capability *( SP capability ) &lt;"&gt; ; see section 4.2.4
+extension-directive = token [ "=" ( token | quoted-string ) ]</pre>
+
+<p>For example,</p>
+
+<p><span class="example">Surrogate-Control: no-store,
+content="ESI/1.0"</span></p>
+
+<p>Surrogates may modify the Surrogate-Control header to instruct downstream
+surrogates to process capabilities originally targetted at them. If no
+downstream surrogates have identified themselves, the header should be
+stripped from responses.</p>
+
+<h4>4.2.1 no-store</h4>
+
+<p>The no-store directive specifies that the response entity should not be
+stored in cache; it is only to be used for the original request, and may not
+be validated on the origin server.</p>
+
+<h4>4.2.2 no-store-remote</h4>
+
+<p>The no-store-remote directive has similar semantics to the no-store
+directive, except that it should only be honored by those surrogates that
+consider themselves "remote". Generally, this means those that are more than
+one or two hops from the origin server, such as surrogates in a CDN.</p>
+
+<h4>4.2.3 max-age</h4>
+
+<p>The max-age directive specifies how long the response entity can be
+considered fresh, in seconds. After this time, implementations must consider
+the cached entity stale.</p>
+
+<p>For example,</p>
+
+<p><span class="example">max-age=30</span></p>
+
+<p>Optionally, a '+' and a <em>freshness extension</em> can be appended, that
+specifies an additional period of time (in seconds) the stale entity may be
+served, before it must be revalidated or refetched as appropriate.</p>
+
+<p>For example,</p>
+
+<p><span class="example">max-age=30+60</span></p>
+
+<p>If no freshness extension is specified, it should be considered as '0'
+(i.e., the object should be revalidated or refetched immediately).</p>
+
+<h4>4.2.4 content</h4>
+
+<p>The content directive identifies what processing surrogates should perform
+on the response before forwarding it. The value of the content directive is a
+left-to-right ordered, space-separated list of capabilities for processing by
+surrogates.</p>
+
+<p>For example,</p>
+
+<p><span class="example">content="ESI/1.0 ESI-Inline/1.0"</span></p>
+
+<p>This directive specifies that first the operations represented by the
+"ESI/1.0" capability token and then the "ESI-Inline/1.0" capability token
+should be applied to the response entity. See also "Response Processing
+Model".</p>
+
+<p>Once processing takes place, the capability token that invoked it (as well
+as the 'content' directive, if appropriate) is consumed; that is, it is not
+passed forward to surrogates.</p>
+
+<h3>2.3 Surrogate-Control Targetting</h3>
+
+<p>Because surrogates can be deployed hetrogeneously in a hierarchy, it is
+necessary to enable the targetting of directives at individual devices.</p>
+
+<p>Surrogate-Control directives may have a parameter that identifies the
+surrogate that they are targetted at, as identified by the device token in the
+request's Surrogate-Capabilities header. Directives without targetting
+parameters are applied to all surrogates, unless a targetted directive
+overrides it. For example,</p>
+
+<p><span class="example">Surrogate-Control: max-age=60;abc,
+max-age=300</span></p>
+
+<p>Here, the device that identified itself as 'abc' in the
+Surrogate-Capabilties request header will apply a max-age of 300; all other
+surrogates will apply a max-age of 60.</p>
+
+<p><span class="example">Surrogate-Control: content="ESI/1.0";abc,
+content="ESI-Inline/1.0";def</span></p>
+
+<p>This header specifies that the device that identified itself as 'abc'
+should process the response entity for ESI, while the surrogate that
+identified itself as 'def' should process it for ESI-Inline.</p>
+
+<p>Implementations are not required to support targetting.</p>
+
+<h2>3. Caching Model</h2>
+
+<p>Caching in surrogates operates in a manner similar to the HTTP; the same
+freshness and validation mechanisms form its basis. However, there are
+additional mechanisms for controlling cacheability in Surrogates, that
+override such mechanisms in the HTTP.</p>
+
+<p>The Surrogate-Control response header contains several directives that
+influence entity cacheability; specifically, "no-store", "no-store-remote",
+and "max-age" (see "Surrogate-Control Header" for more information).
+Collectively, these directives and their behaviors are described by the
+capability token</p>
+
+<p><span class="spec">Surrogate/1.0</span></p>
+
+<p>This token should be included in all requests sent by compliant surrogates
+(see "Surrogate-Capabilities Header").</p>
+
+<p>When any of these directives are present, they override any HTTP
+cacheability information present in the response. If more than one is
+targetted at a surrogate, the most specific applies. For example,</p>
+
+<p><span class="example">Surrogate-Control: max-age=60,
+no-store;abc</span></p>
+
+<p>The surrogate that identified itself as 'abc' (see "Controlling Surrogates
+with HTTP Headers") would apply no-store; others would apply max-age=60.
+Conversely,</p>
+
+<p><span class="example">Surrogate-Control: no-store,
+max-age=60;abc</span></p>
+
+<p>In this example, 'abc' would apply max-age=60, while other surrogates would
+apply no-store.</p>
+
+<p>Surrogates should ignore any HTTP Cache-Control request header
+directives.</p>
+
+<h2>4. Response Processing Model</h2>
+
+<p>Surrogates may also invoke <em>processors</em> on response entitities as
+they pass through. Examples of processing include images transcoding, the
+application of XSLT stylesheets, or the interpretation of an in-markup
+language. By default, processing takes place after caching; that is, cached
+entities have any applicable processing applied before being served.
+Processors and extension directives may modify this behavior.</p>
+
+<p>Processing is invoked with the 'content' surrogate-control directive. The
+actual coorperative processing model depends on the nature of the processing,
+capabilities of surrogates, and their permissions to delegate processing to
+other surrogates. This document does not define any specific processing
+model.</p>
+<script src="https://www.w3.org/scripts/TR/fixup.js"></script></body>
+</html>

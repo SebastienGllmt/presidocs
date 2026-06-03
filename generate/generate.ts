@@ -776,7 +776,12 @@ const fullDelivered = await pipeline.encode(fullBuf, {
 // manifest's `audio` URL below; the player only ever reads `manifest.audio`, so
 // nothing downstream needs to know the scheme.
 const ext = pipeline.deliveryExt;
-const audioHash = new Bun.CryptoHasher("sha256").update(fullDelivered).digest("hex").slice(0, 16);
+// Full SHA-256 of the delivered track: the first 16 hex are the cache-busting
+// filename token (`full.<hash>.<ext>`); the FULL digest is persisted in the
+// manifest below for the stable URL's integrity surface — `Repr-Digest`
+// (RFC 9530) and `<podcast:integrity>` (W3C SRI). See shared/audioDigest.ts.
+const audioDigest = new Bun.CryptoHasher("sha256").update(fullDelivered).digest("hex");
+const audioHash = audioDigest.slice(0, 16);
 const fullName = `full.${audioHash}${ext}`;
 const fullPath = join(outDir, fullName);
 await Bun.write(fullPath, fullDelivered);
@@ -797,6 +802,12 @@ const manifest = {
   slug,
   generatedAt: new Date().toISOString(),
   audio: `/generated/${slug}/${fullName}`,
+  // Full SHA-256 hex of the audio bytes (the filename token is its 16-hex
+  // prefix). Consumed at build time by feeds.ts (podcast:integrity) and
+  // episode-audio.ts (the Worker's Repr-Digest map), and at request time by the
+  // dev server. Hashed into the manifest name below so the content-addressing
+  // invariant (filename = hash of narration-bearing fields) still holds.
+  audioDigest,
   duration: offset,
   chapters: manifestChapters,
   marks: manifestMarks,
@@ -816,6 +827,7 @@ const manifestJson = JSON.stringify(manifest, null, 2);
 const manifestHash = new Bun.CryptoHasher("sha256")
   .update(JSON.stringify({
     audio: manifest.audio,
+    audioDigest: manifest.audioDigest,
     duration: manifest.duration,
     chapters: manifest.chapters,
     marks: manifest.marks,

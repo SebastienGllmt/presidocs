@@ -6,6 +6,7 @@
 import { test, expect } from "bun:test";
 import {
   contentRangeHeader,
+  isResolvableRangeHeader,
   resolveRange,
   unsatisfiedRangeHeader,
 } from "./httpRange.ts";
@@ -23,6 +24,16 @@ test("garbage Range header → none (fall through to full 200)", () => {
   expect(resolveRange("not-a-range", 100)).toEqual({ kind: "none" });
   expect(resolveRange("bytes=abc-def", 100)).toEqual({ kind: "none" });
   expect(resolveRange("bytes=0-10,20-30", 100)).toEqual({ kind: "none" });
+});
+
+test("`bytes=-` (no first-pos, no suffix-length) is invalid → none, NOT 416", () => {
+  // RFC 9110 §14.1.2: suffix-length = 1*DIGIT, so `bytes=-` is syntactically
+  // invalid and must be ignored (served as full 200), not treated as an
+  // unsatisfiable suffix range.
+  expect(resolveRange("bytes=-", 100)).toEqual({ kind: "none" });
+  expect(isResolvableRangeHeader("bytes=-")).toBe(false);
+  // `bytes=-0` (suffix-length zero) IS well-formed but unsatisfiable (§14.1.2).
+  expect(resolveRange("bytes=-0", 100)).toEqual({ kind: "unsatisfiable", size: 100 });
 });
 
 test("full closed range `bytes=N-M`", () => {

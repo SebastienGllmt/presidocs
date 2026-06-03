@@ -44,6 +44,14 @@ import {
   unsatisfiedRangeHeader,
 } from "../shared/httpRange.ts";
 import { problem } from "../shared/problemDetails.ts";
+import {
+  audioEtag,
+  ifNoneMatchSatisfied,
+  rangeHonored,
+  stableAudioHeaders,
+  stableEpisodeSlug,
+} from "../shared/stableAudio.ts";
+import { isSha256Hex, reprDigestSha256 } from "../shared/audioDigest.ts";
 
 // The two build-time maps, supplied by the content repo's `worker.ts` from its
 // own `.generated/` directory. Structural types (not the engine's `PostMeta` /
@@ -52,6 +60,12 @@ import { problem } from "../shared/problemDetails.ts";
 export type WorkerContent = {
   postAuthors: Record<string, PostMeta>;
   postVersions: Record<string, PostVersionRecord>;
+  // Slug → { current content-addressed audio URL, full SHA-256 hex }, emitted by
+  // generate/episode-audio.ts. Resolves the stable shareable URL
+  // `/generated/<slug>/episode.<ext>` and supplies the `Repr-Digest` (RFC 9530).
+  // Optional so existing content repos that don't supply it keep building —
+  // those just don't serve the stable URL.
+  episodeAudio?: Record<string, { audio: string; digest?: string }>;
 };
 
 // Add HTTP Range support to a Static Assets response.
@@ -188,6 +202,76 @@ export function createWorkerHandler(content: WorkerContent) {
     return null;
   }
 
+  // Serve the STABLE shareable episode URL `/generated/<slug>/episode.<ext>` by
+  // resolving it to the current content-addressed asset via the build-time map,
+  // then serving those bytes with a revalidating policy (strong ETag = content
+  // hash, no `immutable`) — see shared/stableAudio.ts and proposals/32. Returns
+  // null when the slug is unknown or the mapped asset is missing, so the caller
+  // falls through to the static-asset 404. The in-page player and feeds still
+  // hit the hashed URL directly; only copied/feed links use this route.
+  async function serveStableEpisode(
+    req: Request,
+    env: Env,
+    slug: string,
+  ): Promise<Response | null> {
+    if (req.method !== "GET" && req.method !== "HEAD") return null;
+    const entry = content.episodeAudio?.[slug];
+    if (!entry) return null;
+    const audioPath = entry.audio;
+
+    const etag = audioEtag(audioPath);
+    // RFC 9530 representation digest (range-independent) — valid on 200/206/304.
+    const reprDigest =
+      entry.digest && isSha256Hex(entry.digest) ? reprDigestSha256(entry.digest) : null;
+    const withDigest = (h: Headers): Headers => {
+      if (reprDigest) h.set("Repr-Digest", reprDigest);
+      return h;
+    };
+
+    // Conditional GET: a matching validator short-circuits to 304 (RFC 9110
+    // §15.4.5 — echo the cache-affecting headers a 200 would carry).
+    if (ifNoneMatchSatisfied(req.headers.get("If-None-Match"), etag)) {
+      return new Response(null, {
+        status: StatusCodes.NOT_MODIFIED,
+        headers: withDigest(new Headers(stableAudioHeaders(etag))),
+      });
+    }
+
+    // Resolve the stable name to the live hashed asset and fetch it whole (the
+    // ASSETS binding ignores Range — applyRangeSupport slices below).
+    const assetUrl = new URL(audioPath, req.url);
+    // @ts-expect-error - ASSETS.fetch takes the same Request shape; the runtime and DOM Request types don't unify (mirrors the fall-through below).
+    const asset: Response = await env.ASSETS.fetch(new Request(assetUrl, { method: "GET" }));
+    if (asset.status !== 200) return null; // map points at a swept/missing file
+
+    // Our validator + cache policy REPLACE whatever the binding emitted; we
+    // validate on the strong content-hash ETag only.
+    const headers = new Headers(asset.headers);
+    for (const [k, v] of Object.entries(stableAudioHeaders(etag))) {
+      headers.set(k, v);
+    }
+    headers.delete("Last-Modified");
+    withDigest(headers); // Repr-Digest rides onto 200/206 (and HEAD via the runtime)
+
+    const full = new Response(asset.body, {
+      status: StatusCodes.OK,
+      statusText: "OK",
+      headers,
+    });
+
+    // HEAD flows through too: applyRangeSupport returns the bodied 200 (it
+    // special-cases HEAD), and the runtime strips the body while KEEPING
+    // Content-Length. (Returning `Response(null, …)` here would make the
+    // runtime drop Content-Length — RFC 9110 §9.3.2 wants HEAD to carry it.)
+
+    // Honor Range, but drop it on an If-Range mismatch (→ full 200) so a client
+    // mid-seek can't stitch bytes across a regeneration. The strong ETag rides
+    // onto the 206 via applyRangeSupport, which lets caches combine ranges only
+    // within one version (RFC 9110 §13.1.5 / §15.3.7, RFC 9111 §3.4).
+    if (!rangeHonored(req.headers.get("If-Range"), etag)) return full;
+    return applyRangeSupport(req, full);
+  }
+
   return {
     async fetch(
       req: Request,
@@ -197,6 +281,14 @@ export function createWorkerHandler(content: WorkerContent) {
       const apiResponse = handleApi(req, env);
       if (apiResponse !== null) {
         return withSecurityHeaders(await apiResponse, { private: true });
+      }
+
+      // --- Stable shareable episode URL (resolves to the hashed asset). ---
+      const stableSlug = stableEpisodeSlug(new URL(req.url).pathname);
+      if (stableSlug !== null) {
+        const episode = await serveStableEpisode(req, env, stableSlug);
+        if (episode !== null) return withSecurityHeaders(episode);
+        // Unknown slug / missing asset → fall through to the static 404.
       }
 
       // --- Static assets fall-through. The Workers Static Assets binding

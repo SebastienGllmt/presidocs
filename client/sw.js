@@ -65,6 +65,18 @@ self.addEventListener("fetch", (e) => {
     return; // no e.respondWith() → browser does the fetch
   }
 
+  // The stable shareable episode URL (/generated/<slug>/episode.<ext>) is the one
+  // MUTABLE resource under /generated/: it's server-revalidated (strong ETag +
+  // Cache-Control: no-cache), not content-addressed (see methodology → Stable
+  // shareable episode URL). Pass it through so the browser honors that
+  // revalidation — caching it here (cache-first OR network-first) would risk
+  // serving a stale episode after a regeneration, the exact thing the stable URL
+  // exists to avoid. Its offline story isn't needed: the in-page player rides the
+  // content-hashed path, and this is a share/feed URL.
+  if (/^\/generated\/[^/]+\/episode\.[a-z0-9]+$/.test(url.pathname)) {
+    return; // no e.respondWith() → browser fetches, honoring ETag/Cache-Control
+  }
+
   // Cache-first: content-addressed or hash-named static. URL changes when
   // bytes change, so a cache hit is correctness-safe forever.
   if (

@@ -34,10 +34,18 @@ const POST_WITH_AUDIO: FeedPost = {
   updated: "2026-05-30T02:27:47.354Z",
   author: { name: "Sebastien Guillemot", links: { x: "https://x.com/SebastienGllmt" } },
   audio: {
-    url: "https://blog.example.com/generated/offer-files/full.f2985f8c0b4fd293.mp3",
+    // The pipeline now emits the STABLE enclosure URL (`…/episode.mp3`), not the
+    // hashed track — so a cached feed's download link survives a regeneration.
+    // The hashed→stable derivation is unit-tested in shared/stableAudio.test.ts
+    // (stableEpisodePath); `byteLength` is still measured from the hashed file.
+    url: "https://blog.example.com/generated/offer-files/episode.mp3",
     byteLength: 19_636_240,
     durationSec: 2455,
     chaptersUrl: "https://blog.example.com/generated/offer-files/chapters.json",
+    // Content-addressed alternate + SRI integrity (proposals/32 §9). The SRI
+    // value here is the empty-string SHA-256 (a stable, recognizable vector).
+    hashedUrl: "https://blog.example.com/generated/offer-files/full.f2985f8c0b4fd293.mp3",
+    integrity: "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
   },
 };
 
@@ -122,11 +130,32 @@ test("uuidv5 is deterministic and matches the podcast-namespace example", () => 
   expect(guid).toBe("9b024349-ccf0-5f69-a609-6b82873eab3c");
 });
 
-test("RSS: only audio posts become items, with enclosure + chapters", () => {
+test("RSS: only audio posts become items, with a STABLE enclosure URL + chapters", () => {
   const xml = buildRssFeed(SITE, [POST_WITH_AUDIO, POST_NO_AUDIO]);
   expect((xml.match(/<item>/g) ?? []).length).toBe(1);
+  // Enclosure points at the stable `…/episode.mp3` (no hash), while `length`
+  // still matches the hashed file's byte size — proposals/32 §6.1/§9.
   expect(xml).toContain(
-    '<enclosure url="https://blog.example.com/generated/offer-files/full.f2985f8c0b4fd293.mp3" length="19636240" type="audio/mpeg"/>',
+    '<enclosure url="https://blog.example.com/generated/offer-files/episode.mp3" length="19636240" type="audio/mpeg"/>',
+  );
+  expect(xml).not.toMatch(/<enclosure url="[^"]*\/full\.[0-9a-f]{16}\.mp3"/);
+  expect(xml).toContain("<podcast:chapters");
+});
+
+test("RSS: alternateEnclosure advertises stable + hashed sources with SRI integrity", () => {
+  const xml = buildRssFeed(SITE, [POST_WITH_AUDIO]);
+  // One alternateEnclosure, default=true (same media as <enclosure>), length matches.
+  expect(xml).toContain(
+    '<podcast:alternateEnclosure type="audio/mpeg" length="19636240" default="true">',
+  );
+  // Both URIs are advertised: the stable enclosure URL and the immutable hashed one.
+  expect(xml).toContain('<podcast:source uri="https://blog.example.com/generated/offer-files/episode.mp3"/>');
+  expect(xml).toContain(
+    '<podcast:source uri="https://blog.example.com/generated/offer-files/full.f2985f8c0b4fd293.mp3"/>',
+  );
+  // The audio's W3C SRI, so capable clients can verify the bytes.
+  expect(xml).toContain(
+    '<podcast:integrity type="sri" value="sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="/>',
   );
   expect(xml).toContain("<itunes:duration>2455</itunes:duration>");
   expect(xml).toContain('<podcast:chapters url="https://blog.example.com/generated/offer-files/chapters.json" type="application/json+chapters"/>');

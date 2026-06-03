@@ -3,7 +3,8 @@
 Authoritative source: https://podcastindex.org/namespace/1.0 (per-tag docs at
 github.com/Podcastindex-org/podcast-namespace/tree/main/docs/tags). Mirrored here
 are the tags this engine emits: <podcast:guid>, <podcast:chapters>,
-<podcast:transcript>, <podcast:person>.
+<podcast:transcript>, <podcast:person>, <podcast:alternateEnclosure>,
+<podcast:source>, <podcast:integrity>.
 
 ---
 
@@ -236,5 +237,115 @@ The full taxonomy list is [here](https://github.com/Podcastindex-org/podcast-nam
         role="Cover Art Designer"
         href="https://example.com/artist/beckysmith"
 >Becky Smith</podcast:person>
+```
+
+---
+
+# Alternate Enclosure
+
+`<podcast:alternateEnclosure>`
+
+Provides one or more alternative versions of the episode's media (different
+qualities, formats, or transports) alongside the channel-standard `<enclosure>`.
+
+### Parent
+
+`<item>`
+
+### Count
+
+Multiple per item.
+
+### Attributes
+
+- **type** (required): Mime type of the media asset.
+- **length** (recommended): Length of the file in bytes.
+- **bitrate** (optional): Average encoding bitrate, in bits per second.
+- **height** (optional): Height of the media asset for video formats.
+- **lang** (optional): An IETF BCP 47 language tag.
+- **title** (optional): Human-readable name of the media asset.
+- **rel** (optional): Groups/offers different media elements together.
+- **codecs** (optional): An RFC 6381 codecs string.
+- **default** (optional): Boolean — whether this media is the same as the file
+  in the `<enclosure>` element.
+
+### Child Elements
+
+- `<podcast:source>` — one or more required (the URIs for this media).
+- `<podcast:integrity>` — single, optional (file integrity check).
+
+### Example
+
+```xml
+<podcast:alternateEnclosure type="audio/mpeg" length="43200000" bitrate="128000" default="true" title="Standard">
+    <podcast:source uri="https://example.com/file-0.mp3" />
+    <podcast:source uri="ipfs://someRandomMpegFile" />
+</podcast:alternateEnclosure>
+```
+
+---
+
+# Source
+
+`<podcast:source>`
+
+Defines a URI location for a `<podcast:alternateEnclosure>` media file. At least
+one must be present within every `<podcast:alternateEnclosure>`.
+
+### Parent
+
+`<podcast:alternateEnclosure>`
+
+### Count
+
+Multiple per alternateEnclosure.
+
+### Attributes
+
+- **uri** (required): The URI where the media file resides.
+- **contentType** (optional): Declares the mime-type of the file, useful when
+  the transport differs from the file delivered (e.g. a torrent).
+
+### Example
+
+```xml
+<podcast:alternateEnclosure type="video/mp4" length="7924786" bitrate="511276.52" height="720">
+    <podcast:source uri="https://example.com/file-720.mp4" />
+    <podcast:source uri="ipfs://QmX33FYehk6ckGQ6g1D9D3FqZPix5JpKstKQKbaS8quUFb" />
+    <podcast:source uri="https://example.com/file-720.torrent" contentType="application/x-bittorrent" />
+</podcast:alternateEnclosure>
+```
+
+---
+
+# Integrity
+
+`<podcast:integrity>`
+
+Lets a client verify the media of its parent `<podcast:alternateEnclosure>` has
+not been tampered with.
+
+### Parent
+
+`<podcast:alternateEnclosure>`
+
+### Count
+
+Single per alternateEnclosure.
+
+### Attributes
+
+- **type** (required): Either `"sri"` or `"pgp-signature"`.
+- **value** (required): For `type="sri"`, a W3C SRI-compliant integrity string
+  (e.g. `sha256-<base64>` / `sha384-<base64>`); for `type="pgp-signature"`, a
+  base64-encoded PGP signature.
+
+### Example
+
+```xml
+<podcast:alternateEnclosure type="video/mp4" length="7924786" bitrate="511276.52" height="720">
+    <podcast:source uri="https://example.com/file-720.mp4" />
+    <podcast:integrity type="sri" value="sha384-ExVqijgYHm15PqQqdXfW95x+Rs6C+d6E/ICxyQOeFevnxNLR/wtJNrNYTjIysUBo" />
+</podcast:alternateEnclosure>
 ```
 

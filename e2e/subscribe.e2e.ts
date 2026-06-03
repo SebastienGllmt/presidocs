@@ -5,9 +5,13 @@
 // always-present article-feed control. We assert each renders, its menu carries
 // the expected actions with the matching help deep-link, and the primary
 // buttons copy the canonical `/podcast.xml` / `/feed.xml` — plus the podcast
-// menu's per-episode "Copy episode audio" item copies the MP3. The
-// audio-less-post path (article control alone) is unit-tested in
-// client/subscribe.test.ts.
+// menu's per-episode "Copy episode audio" item copies the STABLE shareable URL
+// (`…/episode.mp3`, no hash), and we then fetch that URL to assert it serves
+// with revalidation (strong ETag, no immutable), a conditional 304, a ranged
+// 206 that echoes the ETag, and the If-Range cross-version guard — the
+// spec-critical contract from proposals/32-stable-shareable-audio-url.md.
+// The audio-less-post path (article control alone) is unit-tested in
+// client/subscribe.test.ts; the pure helpers in shared/stableAudio.test.ts.
 
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import type { Browser, BrowserContext, Page } from "playwright";
@@ -127,17 +131,75 @@ test("primary buttons copy the canonical feed URLs", async () => {
   }
 });
 
-test("the podcast menu's Copy episode audio copies this episode's MP3", async () => {
+// Copy the episode audio and return the STABLE URL it wrote to the clipboard.
+async function copyEpisodeAudioUrl(page: Page): Promise<string> {
+  await openFirstPost(page);
+  const more = page.getByRole("button", { name: "More podcast actions" });
+  await more.waitFor({ state: "attached", timeout: 10_000 });
+  await more.click();
+  await page.getByRole("menuitem", { name: /Copy episode audio/ }).click();
+  await waitForCopied(page, "Copy podcast feed"); // the podcast primary flashes
+  return page.evaluate(() => navigator.clipboard.readText());
+}
+
+test("Copy episode audio copies the STABLE episode URL (no content hash)", async () => {
   const page = await context.newPage();
   try {
-    await openFirstPost(page);
-    const more = page.getByRole("button", { name: "More podcast actions" });
-    await more.waitFor({ state: "attached", timeout: 10_000 });
-    await more.click();
+    const url = await copyEpisodeAudioUrl(page);
+    expect(url).toMatch(/\/generated\/[^/]+\/episode\.mp3$/);
+    // The whole point: the copied link must NOT be the swept-on-rebuild hashed file.
+    expect(url).not.toMatch(/\/full\.[0-9a-f]{16}\.mp3$/);
+  } finally {
+    await page.close();
+  }
+});
 
-    await page.getByRole("menuitem", { name: /Copy episode audio/ }).click();
-    await waitForCopied(page, "Copy podcast feed"); // the podcast primary flashes
-    expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(/\.mp3$/);
+test("the stable episode URL serves with revalidation (ETag, 304, ranged 206, If-Range guard)", async () => {
+  const page = await context.newPage();
+  try {
+    const url = await copyEpisodeAudioUrl(page);
+
+    // Plain GET: 200, strong ETag, revalidating (NOT immutable), seekable.
+    const res = await page.request.get(url);
+    expect(res.status()).toBe(200);
+    const h = res.headers();
+    const etag = h["etag"] ?? "";
+    expect(etag).toMatch(/^"[0-9a-f]{16}"$/); // strong: no W/ prefix
+    expect(h["cache-control"]).toBe("no-cache");
+    expect(h["cache-control"]).not.toContain("immutable");
+    expect(h["accept-ranges"]).toBe("bytes");
+    expect(h["content-type"]).toContain("audio/mpeg");
+    // RFC 9530 representation digest: sha-256=:<base64>: (proposals/32 §9).
+    expect(h["repr-digest"]).toMatch(/^sha-256=:[A-Za-z0-9+/]+=*:$/);
+
+    // Conditional GET with the matching validator → 304.
+    const notModified = await page.request.get(url, { headers: { "If-None-Match": etag } });
+    expect(notModified.status()).toBe(304);
+
+    // Ranged GET → 206 that ECHOES the strong ETag (the bare-Range guard).
+    const ranged = await page.request.get(url, { headers: { Range: "bytes=0-99" } });
+    expect(ranged.status()).toBe(206);
+    expect(ranged.headers()["content-range"]).toMatch(/^bytes 0-99\/\d+$/);
+    expect(ranged.headers()["etag"]).toBe(etag);
+
+    // If-Range with a STALE validator → ignore Range, serve the full 200 (so a
+    // client mid-seek can't stitch bytes across a regeneration).
+    const stale = await page.request.get(url, {
+      headers: { Range: "bytes=0-99", "If-Range": '"deadbeefdeadbeef"' },
+    });
+    expect(stale.status()).toBe(200);
+    expect(stale.headers()["content-range"]).toBeUndefined();
+
+    // If-Range with the CURRENT validator → honor Range (206).
+    const fresh = await page.request.get(url, {
+      headers: { Range: "bytes=0-99", "If-Range": etag },
+    });
+    expect(fresh.status()).toBe(206);
+
+    // HEAD → 200 (not 206) with an empty body — dev mirrors prod (RFC 9110 §9.3.2).
+    const head = await page.request.fetch(url, { method: "HEAD" });
+    expect(head.status()).toBe(200);
+    expect((await head.body()).byteLength).toBe(0);
   } finally {
     await page.close();
   }
