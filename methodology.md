@@ -1386,6 +1386,19 @@ Every post carries a "Copy as Markdown" **split control** (`client/copyMarkdown.
 
 **Dev parity.** Dev has no `dist/`, so the `/posts/<slug>.md` route in [`createDevServer.ts`](#dev-server-wrapper) generates the Markdown on the fly from the source post HTML with the same transform (fresh per request, like the byline JSON), so both the Copy and View-as-Markdown actions work identically on localhost (served as `text/markdown`, which the browser renders inline as text). Prod serves the static file via the `ASSETS` binding.
 
+### Subscribe controls (`client/subscribe.ts`)
+
+Next to [Copy as Markdown](#copy-as-markdown-sharedhtmltomarkdownts-generatemarkdown-exportts-clientcopymarkdownts) in the byline slot sit one or two **subscribe split-controls** — the reader-facing front door to the [subscription feeds](#subscription-feeds-atom--podcast-rss-generatefeedsts) the build emits. They share the copy-control's segmented-pill shape (primary copy button + caret menu, outside-click/Escape dismiss, roving arrow-key focus) and the shared `client/clipboard.ts` helper:
+
+- **Article feed** — on **every** post. Primary copies the Atom feed (`/feed.xml`); the menu adds *Open in feed reader* (the `feed://` OS handoff), *Copy article feed*, and *Learn more* (→ `/help#subscribe-articles`).
+- **Podcast feed** — only on posts that **have narration audio**. Primary copies the channel feed (`/podcast.xml`); the menu adds *Open in podcast app* (the `podcast://` handoff), *Copy podcast feed*, *Copy episode audio* (the per-episode MP3), and *Learn more* (→ `/help#subscribe-podcast`).
+
+**A podcast subscription is whole-show.** RSS has no "subscribe to one episode" URL, so the podcast feed link is identical on every post; the only genuinely per-post podcast artifact is the episode's own audio file. The control reads that — and its own "does this post have audio" gate — from the **narration manifest the player already fetches** (`data-narration-src`): a successful fetch carrying an `audio` field both proves the post is an episode and supplies the MP3 URL, so no new build-time signal is needed and the fetch is cache-shared with the [narrator](#player--sync-clientnarratorts). A post with no manifest (including narration opt-outs) gets the article control alone.
+
+**Copied links are canonical.** Every URL is built from the page's `<link rel="canonical">` origin (the one the [structured-data inject](#structured-data-schemaorg-open-graph-twitter-card-sharedinjectstructureddatats) emits), falling back to the live origin only in dev — so what a reader copies is the canonical blog URL even when the page is viewed from a preview host. The two halves of the help page's subscribe section carry their own `#subscribe-articles` / `#subscribe-podcast` anchors so each control's *Learn more* lands on the matching recipe rather than the top of a combined section.
+
+The two controls are kept **separate and explicit** rather than merged into one "Subscribe" menu: a podcast subscription and an article subscription are different acts with different destinations (a podcast app vs a feed reader), so each gets its own labelled affordance. This is the one place the engine surfaces raw feed URLs to a human in the article chrome; the [footer deliberately doesn't](#disclosure-surfaces), and `/help#subscribe` plus the `<head>` autodiscovery links remain the other two entry points.
+
 ### Offline / PWA (`client/sw.js`, `client/swRegister.ts`, `shared/injectPwaHead.ts`)
 
 The site is an installable PWA with offline reading of any page a reader has already visited. Three coordinated pieces, split clean across the engine/content boundary:
@@ -1530,6 +1543,7 @@ Decisions:
 - **Atom ids are permanent (RFC 4287 §4.2.6).** Each entry's tagURI takes its date from *that entry's own first-publish year*, so adding a later post with an *earlier* date never changes another entry's `<id>` (a global minimum year would rewrite every id and resurface the whole back catalogue as unread). The feed's own `<id>` uses a fixed `SITE_LAUNCH_YEAR`, never a min-across-posts. RSS `<guid isPermaLink="false">` is the (stable) post URL.
 - **Atom `<content type="html">` is entity-escaped** (the spec's normative form), not CDATA; the RSS `<content:encoded>` stays CDATA (RSS's own convention).
 - **Channel `<podcast:guid>` + `<atom:link rel="self">`.** The RSS channel carries a stable Podcasting-2.0 GUID — a dependency-free UUIDv5 over the feed URL with the spec's fixed namespace (verified against the spec's published example in a test) — plus an Atom self-link, both expected by podcast directories/validators.
+- **WebSub push is opt-in** ([WebSub], `WEBSUB_HUB`). When the env var names a hub, both feeds advertise it next to the self-link — `<link rel="hub">` in Atom, `<atom:link rel="hub">` in RSS — so a subscriber's reader can register with the hub and be **pushed** new posts within seconds instead of polling. The stateful half (subscriber list, verification, fan-out) lives in the hub, not here; the engine's only other duty is the publish notification, a post-deploy `POST` from [`generate/websub-ping.ts`](#subscription-feeds-atom--podcast-rss-generatefeedsts) that runs *after* `wrangler deploy` (the hub re-fetches the live feed) and pings each emitted topic (`/feed.xml` always, `/podcast.xml` when present). It's **defaultless on purpose** — a hub is a third-party (or self-hosted) dependency the operator picks explicitly, and the value must be the hub's POST endpoint — not just its homepage (recommended: `https://websubhub.com/hub` or Google's long-running `https://pubsubhubbub.appspot.com/`); unset → no hub link and the ping is a no-op. Pinging on every deploy is safe because the hub dedups by diffing the feed, so a deploy with no new post produces no subscriber traffic, and a failed ping is logged, never fatal. WebSub is well-supported by feed *readers* (NetNewsWire, Feedly, Inoreader) and largely ignored by chat platforms (Slack/Discord poll RSS or use incoming webhooks), so it's the reader-facing complement to — not a replacement for — a publisher webhook ([proposals/31](./proposals/31-publish-webhooks-discord-slack.md), the deferred Discord/Slack notification design).
 - **`<enclosure length>` is the real byte size** (`stat` of the built MP3), not `duration × bitrate` — MP3 framing isn't uniform and a wrong length makes some clients refuse the episode. The audio URL is the content-hashed `full.<hash>.mp3` read straight from the manifest, so the feed always points at the current track.
 - **Chapters in both the JSON sidecar *and* the MP3 itself.** `chapters.json` (ms → seconds) gives every modern podcast client chapter markers through `<podcast:chapters>` — the rich surface. The MP3 also carries [ID3v2 CHAP+CTOC frames](#relation-to-other-specifications) for the (older / minimalist) clients that only read in-file chapters, embedded at encode time via an ffmetadata sidecar (`-id3v2_version 3`) so the same chapter offsets the manifest uses land verbatim in the MP3. The encode therefore happens *after* the per-chapter offsets are summed from artifact durations, so the in-file times match the manifest byte-for-byte without a second pass. Hierarchy degrades to a flat list with part-prefixed child titles, same shape as the `<podcast:chapters>` sidecar — true nesting lives only on the in-page player.
 - **Plain-text fields are entity-decoded** (`shared/htmlEntities.ts`) before XML-escaping, since `HTMLRewriter` hands back `&mdash;` etc. intact and a naive re-escape would double-encode them; body HTML rides in `type="html"` CDATA untouched.
@@ -1893,6 +1907,7 @@ Reference shelf for an ongoing Lighthouse / Web Vitals improvement pass — thes
 [Podlove]: https://podlove.org/simple-chapters/
 [ID3Chapters]: https://id3.org/id3v2-chapters-1.0
 [JSONFeed]: https://www.jsonfeed.org/version/1.1/
+[WebSub]: https://www.w3.org/TR/websub/
 [JWT]: https://datatracker.ietf.org/doc/html/rfc7519
 [JWS]: https://datatracker.ietf.org/doc/html/rfc7515
 [JWA]: https://datatracker.ietf.org/doc/html/rfc7518
@@ -2010,6 +2025,7 @@ dangling partial. How we actually use each type is documented in prose above.)
 [Podlove]: ./specs/PodloveSimpleChapters-spec.html
 [ID3Chapters]: ./specs/ID3Chapters-spec.html
 [JSONFeed]: ./specs/JSONFeed-spec.html
+[WebSub]: ./specs/WebSub-spec.html
 [JWT]: ./specs/JWT-spec.html
 [JWS]: ./specs/JWS-spec.html
 [JWA]: ./specs/JWA-spec.html

@@ -364,6 +364,173 @@
   .copy-md-item-trailing { font-size: .72em; color: var(--page-fg-muted); }
   .copy-md-item-desc { font-size: .82em; color: var(--page-fg-muted); }
 
+  /* Subscribe split-controls (client/subscribe.ts) — the podcast-feed and
+     article-feed siblings of the Copy-as-Markdown control. Same segmented-pill
+     shape and surface language; a `.subctl-row` lays the (one or two) controls
+     out under the copy-md control with wrap. Injected by JS, so these rules
+     style markup the static HTML doesn't carry. */
+  .subctl-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+    margin: .35rem 0 0;
+  }
+  .subctl {
+    position: relative; /* containing block for the absolutely-placed menu */
+    display: inline-flex;
+    align-items: stretch;
+    font-size: .8rem;
+    line-height: 1.2;
+  }
+  .subctl svg { width: 1em; height: 1em; fill: currentColor; display: block; }
+  .subctl-primary,
+  .subctl-more {
+    display: inline-flex;
+    align-items: center;
+    font: inherit;
+    font-size: inherit;
+    color: var(--page-fg-muted);
+    background: transparent;
+    border: 1px solid color-mix(in srgb, var(--page-fg-muted) 35%, transparent);
+    cursor: pointer;
+    transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+  }
+  .subctl-primary:hover,
+  .subctl-more:hover,
+  .subctl-more[aria-expanded="true"] {
+    color: var(--page-fg);
+    background: color-mix(in srgb, var(--page-fg) 5%, transparent);
+  }
+  .subctl-primary:focus-visible,
+  .subctl-more:focus-visible {
+    outline: 2px solid var(--page-fg-muted);
+    outline-offset: 2px;
+    z-index: 1; /* keep the focus ring above the sibling's border */
+  }
+  /* Left half: the copy button. Rounded on the left only; its right border is
+     shared with the caret, so collapse it to avoid a double rule. */
+  .subctl-primary {
+    gap: .4em;
+    padding: .25rem .6rem;
+    border-radius: 999px 0 0 999px;
+    border-right-width: 0;
+  }
+  /* Right half: the caret. Rounded on the right only. */
+  .subctl-more {
+    padding: .25rem .45rem;
+    border-radius: 0 999px 999px 0;
+  }
+  .subctl-caret {
+    display: inline-flex;
+    font-size: .7em;
+    transition: transform 120ms ease;
+  }
+  .subctl-open .subctl-caret { transform: rotate(180deg); }
+
+  /* Primary-button glyph stack — feed icon and check occupy the same cell; we
+     cross-fade by toggling .subctl-copied. No layout shift between states. */
+  .subctl-glyphs {
+    position: relative;
+    display: inline-flex;
+    width: 1em;
+    height: 1em;
+  }
+  .subctl-glyph {
+    position: absolute;
+    inset: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 120ms ease;
+  }
+  .subctl-glyph-copied { opacity: 0; }
+  .subctl-copied .subctl-glyph-default { opacity: 0; }
+  .subctl-copied .subctl-glyph-copied { opacity: 1; }
+  .subctl-copied { color: var(--page-fg); }
+
+  /* Label cross-fade. The default label sits in flow and reserves the button's
+     width; "Copied!" (shorter) is absolutely overlaid, so the swap never
+     resizes the button. */
+  .subctl-label {
+    position: relative;
+    display: inline-flex;
+  }
+  .subctl-label-default { transition: opacity 120ms ease; }
+  .subctl-label-copied {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+  .subctl-copied .subctl-label-default { opacity: 0; }
+  .subctl-copied .subctl-label-copied { opacity: 1; }
+
+  /* Dropdown menu — absolutely placed under the control, a small card with a
+     soft shadow, matching the copy-md menu. */
+  .subctl-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 20;
+    min-width: 16rem;
+    padding: .3rem;
+    display: flex;
+    flex-direction: column;
+    gap: .15rem;
+    background: var(--page-bg);
+    border: 1px solid rgba(31, 35, 40, 0.12);
+    border-radius: 12px;
+    box-shadow: 0 8px 28px rgba(31, 35, 40, 0.16);
+  }
+  .subctl-menu[hidden] { display: none; }
+  .subctl-item {
+    display: flex;
+    align-items: center;
+    gap: .55rem;
+    width: 100%;
+    padding: .4rem .5rem;
+    font: inherit;
+    text-align: left;
+    text-decoration: none;
+    color: var(--page-fg-muted);
+    background: transparent;
+    border: 0;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .subctl-item:hover,
+  .subctl-item:focus-visible {
+    background: rgba(31, 35, 40, 0.06);
+    color: var(--page-fg);
+    outline: none;
+  }
+  .subctl-item-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 1.9rem;
+    height: 1.9rem;
+    border: 1px solid rgba(31, 35, 40, 0.12);
+    border-radius: 8px;
+    color: var(--page-fg-muted);
+  }
+  .subctl-item-text { display: flex; flex-direction: column; min-width: 0; }
+  .subctl-item-title {
+    display: inline-flex;
+    align-items: center;
+    gap: .35em;
+    font-weight: 600;
+    color: var(--page-fg);
+  }
+  .subctl-item-trailing { font-size: .72em; color: var(--page-fg-muted); }
+  .subctl-item-desc { font-size: .82em; color: var(--page-fg-muted); }
+
   /* Author byline (client/byline.ts). Lives in base.css — not narrator.css —
      because it must appear on every post, including narration opt-out posts that
      never link narrator.css (same reasoning that moved the page-global layer

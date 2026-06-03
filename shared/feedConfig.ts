@@ -26,6 +26,18 @@ export type FeedConfig = {
   explicit: boolean;
   /** Opt-in podcast owner contact (Apple directory submission). */
   ownerEmail: string | null;
+  /**
+   * Opt-in WebSub hub URL ([WebSub] — a `<link rel="hub">` the feeds declare so
+   * subscribers' tools can get pushed updates instead of polling). Empty → no
+   * hub link is emitted and the post-deploy ping is a no-op. Kept env-driven
+   * and defaultless on purpose: it names a third-party (or self-hosted) service,
+   * so the operator chooses it explicitly rather than the engine baking in a
+   * dependency. Must be the hub's POST endpoint (subscribers register with it
+   * and websub-ping.ts pings it), not just the project homepage. Recommended
+   * public hubs: https://websubhub.com/hub or Google's long-running
+   * https://pubsubhubbub.appspot.com/.
+   */
+  hubUrl: string | null;
 };
 
 export function resolveFeedConfig(env: Record<string, string | undefined> = process.env): FeedConfig {
@@ -36,5 +48,6 @@ export function resolveFeedConfig(env: Record<string, string | undefined> = proc
     category: (env.PODCAST_CATEGORY ?? "").trim() || "Technology",
     explicit: (env.PODCAST_EXPLICIT ?? "").trim().toLowerCase() === "true",
     ownerEmail: (env.PODCAST_OWNER_EMAIL ?? "").trim() || null,
+    hubUrl: (env.WEBSUB_HUB ?? "").trim() || null,
   };
 }

@@ -93,8 +93,12 @@ export type HelpContext = {
   /** BCP-47 language tag for <html lang>. */
   lang: string;
   features: FeatureSet;
-  /** Absolute feed URLs (podcast null when no audio). */
-  feeds: { atom: string; podcast: string | null };
+  /**
+   * Absolute feed URLs (podcast null when no audio). `hubUrl` is the opt-in
+   * [WebSub] hub (`WEBSUB_HUB`) — present only when the feeds advertise one, so
+   * the subscribe section mentions real-time push only when it's actually on.
+   */
+  feeds: { atom: string; podcast: string | null; hubUrl?: string | null };
   /** Privacy-policy href if the deploy set PRIVACY_POLICY_URL, else null. */
   privacyHref: string | null;
   /** Verbatim <link rel="stylesheet"> tag(s) lifted from dist/index.html. */
@@ -169,14 +173,27 @@ export function buildQuestions(ctx: HelpContext): HelpQuestion[] {
         `submit the feed through Spotify for Podcasters first.</p>`
       : "";
     const atomLine = f.atom
-      ? `<p><strong>To follow new posts as articles</strong>, add the Atom feed ` +
+      ? `<h3 id="subscribe-articles">Follow new posts as articles</h3>` +
+        `<p>Add the Atom feed ` +
         `<code>${escHtml(ctx.feeds.atom)}</code> to any feed reader — NetNewsWire, Feedly, ` +
         `miniflux, Reeder. It tells you when a new post lands and carries the article itself.</p>`
       : "";
     const podcastIntro = f.podcast
-      ? `<p><strong>To listen in a podcast app</strong>, add the podcast feed ` +
+      ? `<h3 id="subscribe-podcast">Listen in a podcast app</h3>` +
+        `<p>Add the podcast feed ` +
         `<code>${escHtml(ctx.feeds.podcast!)}</code>. It's an ordinary Apple-Podcasts-compatible ` +
         `RSS feed, so any podcast app that can add a feed by URL works.</p>`
+      : "";
+    // Real-time push (WebSub) — only when a hub is actually configured, so we
+    // never advertise instant delivery a hub-less deploy can't provide.
+    const realtimeLine = ctx.feeds.hubUrl
+      ? `<h3 id="subscribe-realtime">Real-time updates</h3>` +
+        `<p>These feeds support <a href="https://www.w3.org/TR/websub/" rel="noopener">WebSub</a> — if ` +
+        `your reader does too, it gets new posts pushed within seconds instead of waiting for its next ` +
+        `poll. Nothing to set up; it's announced in the feed automatically.</p>`
+      : "";
+    const realtimeText = ctx.feeds.hubUrl
+      ? `These feeds support WebSub, so a compatible reader gets new posts pushed within seconds instead of polling. `
       : "";
     qs.push({
       id: "subscribe",
@@ -185,6 +202,7 @@ export function buildQuestions(ctx: HelpContext): HelpQuestion[] {
         atomLine +
         podcastIntro +
         podcastApps +
+        realtimeLine +
         `<p>There's no email list, no signup, and no tracking — subscribing just means adding a URL ` +
         `to an app you control.</p>`,
       answerText:
@@ -195,6 +213,7 @@ export function buildQuestions(ctx: HelpContext): HelpQuestion[] {
             `podcastsbyurl.com on iOS; Pocket Casts, Overcast, Castro, and AntennaPod via their Add-by-URL option). ` +
             `Spotify needs the operator to submit through Spotify for Podcasters first. `
           : "") +
+        realtimeText +
         `There's no email list, signup, or tracking — subscribing just means adding a URL to an app you control.`,
     });
   }
@@ -520,6 +539,7 @@ async function main(): Promise<void> {
     feeds: {
       atom: `${baseUrl}/feed.xml`,
       podcast: features.podcast ? `${baseUrl}/podcast.xml` : null,
+      hubUrl: cfg.hubUrl,
     },
     privacyHref,
     cssLinks: extractStylesheetLinks(landingHtml),

@@ -28,6 +28,8 @@ import faFile from "@fortawesome/fontawesome-free/svgs/solid/file-lines.svg" wit
 import faChevron from "@fortawesome/fontawesome-free/svgs/solid/chevron-down.svg" with { type: "text" };
 import faExternal from "@fortawesome/fontawesome-free/svgs/solid/up-right-from-square.svg" with { type: "text" };
 
+import { copyToClipboard } from "./clipboard.ts";
+
 // How long the "Copied!" state (icon swap + label) stays after a successful copy.
 const FEEDBACK_MS = 1600;
 
@@ -37,34 +39,6 @@ const FEEDBACK_MS = 1600;
 function markdownUrlForCurrentPage(): string {
   const path = location.pathname.replace(/\/+$/, "").replace(/\.html$/, "");
   return `${path}.md`;
-}
-
-async function copyToClipboard(text: string): Promise<boolean> {
-  // Async clipboard API is the modern path. It can reject on insecure origins
-  // or before user activation; fall through to the legacy execCommand path.
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch {
-      // fall through
-    }
-  }
-  try {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.setAttribute("readonly", "");
-    ta.style.position = "fixed";
-    ta.style.top = "-9999px";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(ta);
-    return ok;
-  } catch {
-    return false;
-  }
 }
 
 function iconSpan(cls: string, svg: string): HTMLSpanElement {

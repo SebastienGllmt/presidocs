@@ -21,6 +21,7 @@ const SITE: FeedSite = {
   category: "Technology",
   explicit: false,
   tagYear: 2026,
+  hubUrl: null,
 };
 
 const POST_WITH_AUDIO: FeedPost = {
@@ -86,6 +87,22 @@ test("Atom: type=html content is entity-escaped, not CDATA", () => {
   const xml = buildAtomFeed(SITE, [POST_WITH_AUDIO]);
   expect(xml).not.toContain("<![CDATA[");
   expect(xml).toContain("<content type=\"html\">&lt;h1&gt;Offer Files&lt;/h1&gt;");
+});
+
+test("WebSub: hub link is opt-in — present only when hubUrl is set", () => {
+  // Off by default (no WEBSUB_HUB) — neither feed advertises a hub.
+  expect(buildAtomFeed(SITE, [POST_WITH_AUDIO])).not.toContain('rel="hub"');
+  expect(buildRssFeed(SITE, [POST_WITH_AUDIO])).not.toContain('rel="hub"');
+
+  const withHub = { ...SITE, hubUrl: "https://websubhub.com/hub" };
+  // Atom: a <link rel="hub"> alongside the self-link.
+  expect(buildAtomFeed(withHub, [POST_WITH_AUDIO])).toContain(
+    '<link rel="hub" href="https://websubhub.com/hub"/>',
+  );
+  // RSS: the hub link uses the (already-declared) atom namespace.
+  expect(buildRssFeed(withHub, [POST_WITH_AUDIO])).toContain(
+    '<atom:link href="https://websubhub.com/hub" rel="hub"/>',
+  );
 });
 
 test("RSS: channel carries a stable podcast:guid + atom:link self", () => {

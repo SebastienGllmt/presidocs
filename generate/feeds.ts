@@ -78,6 +78,14 @@ export type FeedSite = {
    * minimum-across-posts (that shifts when an older post is added).
    */
   tagYear: number;
+  /**
+   * Opt-in [WebSub] hub URL. When set, both feeds advertise it via
+   * `<link rel="hub">` (Atom) / `<atom:link rel="hub">` (RSS) alongside the
+   * existing self-link, so a subscriber's reader can ask the hub to PUSH it
+   * updates instead of polling. null → omit the hub link. The publish ping
+   * itself is a post-deploy step (generate/websub-ping.ts), not emitted here.
+   */
+  hubUrl: string | null;
 };
 
 export type FeedPost = {
@@ -153,6 +161,7 @@ export function buildAtomFeed(site: FeedSite, posts: FeedPost[]): string {
     `<title>${escapeXml(site.title)}</title>` +
     (site.description ? `<subtitle>${escapeXml(site.description)}</subtitle>` : "") +
     `<link rel="self" type="application/atom+xml" href="${escapeXml(site.baseUrl)}/feed.xml"/>` +
+    (site.hubUrl ? `<link rel="hub" href="${escapeXml(site.hubUrl)}"/>` : "") +
     `<link rel="alternate" type="text/html" href="${escapeXml(site.baseUrl)}/"/>` +
     `<updated>${feedUpdated}</updated>` +
     authorBlock +
@@ -241,6 +250,7 @@ export function buildRssFeed(site: FeedSite, posts: FeedPost[]): string {
     `xmlns:podcast="https://podcastindex.org/namespace/1.0">` +
     `<channel>` +
     `<atom:link href="${escapeXml(feedUrl)}" rel="self" type="application/rss+xml"/>` +
+    (site.hubUrl ? `<atom:link href="${escapeXml(site.hubUrl)}" rel="hub"/>` : "") +
     `<podcast:guid>${guid}</podcast:guid>` +
     `<title>${escapeXml(site.title)}</title>` +
     `<link>${escapeXml(site.baseUrl)}/</link>` +
@@ -521,6 +531,7 @@ async function main(): Promise<void> {
     category: cfg.category,
     explicit: cfg.explicit,
     tagYear: launchYear,
+    hubUrl: cfg.hubUrl,
   };
 
   await writeFile(join(distDir, "feed.xml"), buildAtomFeed(site, posts), "utf8");

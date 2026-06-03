@@ -81,6 +81,42 @@ test("buildQuestions — atom-only subscribe section omits podcast app recipes",
   expect(sub.answerHtml).not.toContain("Apple Podcasts");
 });
 
+test("buildQuestions — subscribe section carries the per-feed sub-anchors", () => {
+  // Both halves are individually addressable so the per-post subscribe controls
+  // (client/subscribe.ts) can deep-link "Learn more" to the right one.
+  const both = buildQuestions(ctx(ALL_FEATURES)).find((q) => q.id === "subscribe")!;
+  expect(both.answerHtml).toContain('id="subscribe-podcast"');
+  expect(both.answerHtml).toContain('id="subscribe-articles"');
+  // Audio-less blogs carry only the article anchor.
+  const atomOnly = buildQuestions(
+    ctx({ ...ALL_FEATURES, podcast: false }, { feeds: { atom: "https://blog.example.com/feed.xml", podcast: null } }),
+  ).find((q) => q.id === "subscribe")!;
+  expect(atomOnly.answerHtml).toContain('id="subscribe-articles"');
+  expect(atomOnly.answerHtml).not.toContain('id="subscribe-podcast"');
+});
+
+test("buildQuestions — WebSub real-time note appears only when a hub is configured", () => {
+  // No hub → no mention (never advertise push a hub-less deploy can't provide).
+  const noHub = buildQuestions(ctx(ALL_FEATURES)).find((q) => q.id === "subscribe")!;
+  expect(noHub.answerHtml).not.toContain("WebSub");
+  expect(noHub.answerHtml).not.toContain("subscribe-realtime");
+  expect(noHub.answerText).not.toContain("WebSub");
+
+  // Hub set → the gated Real-time updates section + the answerText mirror.
+  const withHub = buildQuestions(
+    ctx(ALL_FEATURES, {
+      feeds: {
+        atom: "https://blog.example.com/feed.xml",
+        podcast: "https://blog.example.com/podcast.xml",
+        hubUrl: "https://websubhub.com/hub",
+      },
+    }),
+  ).find((q) => q.id === "subscribe")!;
+  expect(withHub.answerHtml).toContain('id="subscribe-realtime"');
+  expect(withHub.answerHtml).toContain("WebSub");
+  expect(withHub.answerText).toContain("WebSub");
+});
+
 test("buildQuestions — listen section renders the KEY_BINDINGS shortcut table", () => {
   const listen = buildQuestions(ctx(ALL_FEATURES)).find((q) => q.id === "listen")!;
   expect(listen.answerHtml).toContain('<table class="shortcuts">');
