@@ -88,6 +88,24 @@ test("leadingSilenceMs ignores silence that doesn't start at t≈0", async () =>
   expect(await leadingSilenceMs(combined)).toBe(asMs(0));
 });
 
+test("leadingSilenceMs reports an all-silence clip as fully silent (degenerate-take guard invariant)", async () => {
+  // generate.ts's silent-segment guard depends on this: a clip with NO speech
+  // anywhere reports its ENTIRE duration as leading silence, so the guard's
+  // `duration − leadingSilence` collapses to ~0. (This is the real failure mode
+  // we hit — MOSS emitted a 4s pure-silence take, leadingSilenceMs returned the
+  // full 4s, the trim then ate the whole segment and its aligned words.) If a
+  // future ffmpeg stops emitting silence_end at EOF this fails — and so would
+  // the guard, silently — so the assertion is load-bearing.
+  const allSilence = await buildSilence(asMs(4000), fmt);
+  const lead = await leadingSilenceMs(allSilence);
+  expect(pcmDurationMs(allSilence, fmt) - lead).toBeLessThanOrEqual(50);
+
+  // Contrast: leading silence followed by real audio leaves the speech as a
+  // large remainder, so the guard does NOT fire on a legitimately-padded take.
+  const withSpeech = concatWavs([await buildSilence(asMs(1000), fmt), await makeSineWav(asMs(1500))], fmt);
+  expect(pcmDurationMs(withSpeech, fmt) - (await leadingSilenceMs(withSpeech))).toBeGreaterThan(1000);
+});
+
 test("leadingSilenceTrimMs keeps a short lead untrimmed (guard protects soft onsets)", async () => {
   const silence = await buildSilence(asMs(300), fmt);
   const sound = await makeSineWav(asMs(500));

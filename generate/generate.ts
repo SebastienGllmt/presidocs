@@ -76,9 +76,21 @@ for (const arg of argv) {
 }
 
 const htmlPath = positional[0];
+// No post path → batch mode: generate over every narrated post (delegated to
+// generate-all.ts, which spawns this same script once per post). This is what
+// `bun run generate:prod` with no argument resolves to. `--chapters` and
+// `--force-mark` are single-post iteration knobs (they name marks/chapters in
+// one specific post), so reject them here rather than forward a nonsensical
+// filter to every post.
 if (!htmlPath) {
-  console.error("usage: bun run generate/generate.ts <post.html> [--tts=say] [--voice=Samantha] [--segment-gap=200] [--force-mark=NAME] [--mock] [--align=qwen3] [--chapters=intro,problem]");
-  process.exit(1);
+  for (const single of ["chapters", "force-mark"]) {
+    if (flags.has(single)) {
+      console.error(`--${single} requires a specific post; pass one: bun run generate/generate.ts <post.html> --${single}=...`);
+      process.exit(1);
+    }
+  }
+  const { runBatch } = await import("./generate-all.ts");
+  process.exit(await runBatch(argv));
 }
 
 const mock = flags.has("mock");
@@ -576,6 +588,25 @@ type ChapterArtifact = {
 
 const artifacts: ChapterArtifact[] = [];
 
+// Defect guard: a synthesized segment that is ENTIRELY silence (no speech
+// detected anywhere) is a degenerate TTS take — MOSS occasionally emits one
+// (e.g. a 4s clip of pure silence). It poisons the build invisibly: the
+// per-chapter leading-silence trim removes the whole "silent" segment, so any
+// aligned words for it fall before t=0 and get dropped, and the mark ships with
+// no word timing. Today that only surfaced far downstream at the deploy gate
+// (verify-narration: "N spoken mark(s) have no word-level timing") — or worse,
+// as dead air in the track. We catch it here at synth time and fail with the
+// exact re-roll command. Detection reuses `leadingSilenceMs` (the SAME
+// measurement that drives the trim, so the guard fires on exactly the inputs
+// that would break the trim): an all-silent clip reports its full duration as
+// leading silence, so `duration - leadingSilence <= ε` means "no speech." Scoped
+// to mark-bearing segments with real (letter/number) content — punctuation- or
+// whitespace-only segments legitimately synthesize to near-silence, and only a
+// mark-bearing segment is individually re-rollable via `--force-mark`.
+const silentMarks: { mark: string; chapter: string; durationMs: Milliseconds }[] = [];
+const SILENCE_EPSILON_MS = asMs(50);
+const hasSpeakableContent = (s: string) => /[\p{L}\p{N}]/u.test(s);
+
 // Reusable inter-segment / inter-chapter silence (built once). `null` when
 // gaps are disabled, so concat falls back to the original back-to-back glue.
 const segmentGap = segmentGapMs > 0 ? await pipeline.silence(segmentGapMs) : null;
@@ -626,7 +657,18 @@ for (const chapter of chapters) {
       buf = await tts.synthesize(seg.text, context);
     }
     segmentBufs.push(buf);
-    segmentDurations.push(await pipeline.duration(buf));
+    const segDuration = await pipeline.duration(buf);
+    segmentDurations.push(segDuration);
+    // Flag a degenerate all-silence take before it can poison the trim (see
+    // `silentMarks` above). Skips --mock (silence is its whole design) and runs
+    // on cached buffers too, so a previously-cached bad take is caught on the
+    // next build rather than shipped.
+    if (!mock && seg.markName && hasSpeakableContent(seg.text)) {
+      const lead = await pipeline.leadingSilenceMs(buf);
+      if (segDuration - lead <= SILENCE_EPSILON_MS) {
+        silentMarks.push({ mark: seg.markName, chapter: chapter.id, durationMs: segDuration });
+      }
+    }
     // Run alignment on the just-synthesized (or just-cached) audio. We align
     // every segment regardless of whether it carries a mark name, because
     // the cache is keyed on text + identity and re-aligning a no-mark segment
@@ -691,6 +733,30 @@ for (const chapter of chapters) {
     localMarks,
     trimMs,
   });
+}
+
+// Fail before writing any artifact if a segment came back as pure silence.
+// We do this AFTER the loop (not on first hit) so one run reports every bad
+// take and the author can re-roll them all in a single `--force-mark`. Exiting
+// here leaves the previous (good) manifest/audio untouched — we never overwrite
+// a working build with a silent one.
+if (silentMarks.length > 0) {
+  console.error(
+    `\n${silentMarks.length} narration segment(s) synthesized to pure silence (degenerate TTS take):`,
+  );
+  for (const s of silentMarks) {
+    console.error(
+      `  ✗ mark "${s.mark}" (chapter ${s.chapter}) — ${msToSeconds(s.durationMs).toFixed(2)}s, no speech detected`,
+    );
+  }
+  console.error(
+    `\nA silent take ships as dead air and loses the segment's word-level timing. Re-roll the bad take(s):\n` +
+      `  bun run generate:prod ${relative(projectRoot, resolve(htmlPath))} --force-mark=${silentMarks.map((s) => s.mark).join(",")}\n` +
+      `If a re-roll keeps coming back silent, reword the line (MOSS can choke on e.g. a spaced " - ").`,
+  );
+  await tts.close?.();
+  await cachedAligner?.close?.();
+  process.exit(1);
 }
 
 // Concatenate every chapter in the working (lossless) format. The encode
