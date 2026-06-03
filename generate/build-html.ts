@@ -34,6 +34,15 @@ async function main(): Promise<void> {
     entrypoints: entries,
     outdir: paths.distDir,
     target: "browser",
+    // Production assets are content-hashed and served immutable (methodology →
+    // Serving generated audio / Immutable Responses), so the build is the only
+    // place to shrink them. `minify` trims the JS/CSS chunks (Lighthouse
+    // `unminified-javascript`/`unminified-css`); `sourcemap: "linked"` emits a
+    // sibling `.js.map` + `//# sourceMappingURL` so prod stays debuggable and
+    // `valid-source-maps` passes. The footer plugin and the `__BUN_DEV__`
+    // constant-fold both run before minify, so neither is disturbed.
+    minify: true,
+    sourcemap: "linked",
     plugins: [siteFooterPlugin()],
     define: {
       // client/swRegister.ts uses `typeof __BUN_DEV__ === "undefined"` to

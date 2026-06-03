@@ -1063,6 +1063,12 @@ class Narrator {
         this.seekToMs(asMs(m.time + 10));
         this.player?.play();
       });
+      // The divider is a presentational labeled `<div>` — the prose face of a
+      // narration part, deliberately NOT a heading (the prose outline must not
+      // depend on whether a post has narration; see methodology) and NOT a
+      // `role="separator"` (a widget role can't host a control). A plain `<div>`
+      // isn't a widget role, so it validly hosts this button; the button's own
+      // aria-label ("Play narration from …") carries the part name to AT.
       divider.appendChild(btn);
     }
   }

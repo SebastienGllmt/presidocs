@@ -158,6 +158,27 @@ async function rewriteNarrationManifestSrc(
     .transform(html);
 }
 
+// Mark the post's top-level <article> as the document's main landmark. Posts
+// render <body><article …> with no <main>; axe's landmark-one-main wants
+// exactly one main landmark, and role="main" on the article satisfies it
+// without restructuring authored HTML. Post-scoped (the /posts/ gate) so the
+// landing page — which has its own <main> and may list <article> cards — is
+// untouched. Idempotent: the first <article> already carrying a role
+// (role="main" from a prior pass, or an author-set role) short-circuits the add.
+function injectPostMainLandmark(html: string, postPath: string): string {
+  if (!postPath.startsWith("/posts/")) return html;
+  let done = false;
+  return new HTMLRewriter()
+    .on("article", {
+      element(el) {
+        if (done) return;
+        done = true;
+        if (!el.getAttribute("role")) el.setAttribute("role", "main");
+      },
+    })
+    .transform(html);
+}
+
 async function walkHtml(dir: string): Promise<string[]> {
   const out: string[] = [];
   let entries;
@@ -271,6 +292,10 @@ async function main(): Promise<void> {
     // posts without a hashed manifest.
     after = await rewriteNarrationManifestSrc(after, distFileToPostPath(file));
 
+    // Give the post's <article> the main landmark (axe landmark-one-main).
+    // Independent of SITE_URL — the /posts/ gate scopes it to real posts.
+    after = injectPostMainLandmark(after, distFileToPostPath(file));
+
     // Structured data: real posts get BlogPosting; the landing page gets a
     // WebSite/Blog @graph; everything else short-circuits.
     if (siteUrl) {
@@ -348,4 +373,4 @@ if (import.meta.main) {
 }
 
 // Exported for tests.
-export { readSitePublisher, rewriteNarrationManifestSrc };
+export { readSitePublisher, rewriteNarrationManifestSrc, injectPostMainLandmark };

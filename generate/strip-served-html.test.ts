@@ -3,7 +3,11 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdir } from "node:fs/promises";
-import { readSitePublisher, rewriteNarrationManifestSrc } from "./strip-served-html.ts";
+import {
+  readSitePublisher,
+  rewriteNarrationManifestSrc,
+  injectPostMainLandmark,
+} from "./strip-served-html.ts";
 
 async function withTempPosts(
   files: Record<string, string>,
@@ -126,4 +130,27 @@ test("rewriteNarrationManifestSrc: ignores non-post pages", async () => {
   } finally {
     await rm(generatedDir, { recursive: true, force: true });
   }
+});
+
+test("injectPostMainLandmark: adds role=main to a post's first article", () => {
+  const out = injectPostMainLandmark(
+    `<body><article data-narration-src="/x"><h1>T</h1></article></body>`,
+    "/posts/offer-files",
+  );
+  expect(out).toContain('<article data-narration-src="/x" role="main">');
+});
+
+test("injectPostMainLandmark: idempotent and leaves an existing role intact", () => {
+  const once = injectPostMainLandmark(`<article><p>x</p></article>`, "/posts/p");
+  expect(once).toContain('<article role="main">');
+  // A second pass must not add a second role.
+  expect(injectPostMainLandmark(once, "/posts/p")).toBe(once);
+  // An author-set role is respected (not overwritten).
+  const authored = `<article role="region" aria-label="demo"><p>x</p></article>`;
+  expect(injectPostMainLandmark(authored, "/posts/p")).toBe(authored);
+});
+
+test("injectPostMainLandmark: no-op on non-post pages (landing has its own <main>)", () => {
+  const landing = `<main><article>card</article></main>`;
+  expect(injectPostMainLandmark(landing, "/index")).toBe(landing);
 });

@@ -298,6 +298,14 @@ export function injectStructuredData(
     tags.push(`<meta ${kind}="${prop}" content="${attr(content)}" />`);
 
   tags.push(`<link rel="canonical" href="${attr(url)}" />`);
+  // Plain <meta name="description"> for the search-snippet surface. Lighthouse's
+  // SEO `meta-description` audit checks this exact tag — og:/twitter:/JSON-LD
+  // descriptions don't satisfy it. Emit only when the post didn't author its
+  // own: `ex.description` is sourced solely from an existing tag (extract():99),
+  // so a non-empty value means one is already present and we must not duplicate.
+  // When absent, `description` falls back to the lede — the same text the og/
+  // twitter/JSON-LD descriptions already use.
+  if (description && !ex.description) meta("description", description, "name");
   meta("og:type", "article");
   if (title) meta("og:title", title);
   if (description) meta("og:description", description);

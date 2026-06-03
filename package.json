@@ -8,6 +8,7 @@
     "test:e2e": "bun test ./e2e/*.e2e.ts"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.11.3",
     "@cloudflare/workers-types": "^4.20260511.1",
     "@happy-dom/global-registrator": "^20.9.0",
     "@resvg/resvg-wasm": "^2.6.2",

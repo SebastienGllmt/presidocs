@@ -77,6 +77,26 @@ test("emits a BlogPosting with audio, author Person, dates, and publisher", () =
   expect(ld.audio.duration).toBe("PT40M55S");
 });
 
+test("post inject: emits a <meta name=description> from the lede when absent", () => {
+  const out = injectStructuredData(HTML, CTX);
+  // The fixture has no <meta name="description">, so we add one from the lede —
+  // the same text og:/twitter:/JSON-LD descriptions use (Lighthouse SEO
+  // `meta-description` checks this tag specifically).
+  expect(out).toContain('<meta name="description"');
+  expect(out).toMatch(/<meta name="description" content="[^"]*private swap[^"]*"/);
+});
+
+test("post inject: does NOT duplicate an existing meta description", () => {
+  const withDesc = HTML.replace(
+    "<title>",
+    '<meta name="description" content="Author supplied." />\n<title>',
+  );
+  const out = injectStructuredData(withDesc, CTX);
+  const count = (out.match(/<meta name="description"/g) ?? []).length;
+  expect(count).toBe(1);
+  expect(out).toContain('<meta name="description" content="Author supplied." />');
+});
+
 test("emits OG + Twitter Card tags with absolute URLs and the share card", () => {
   const out = injectStructuredData(HTML, CTX);
   expect(out).toContain('<meta property="og:type" content="article" />');
