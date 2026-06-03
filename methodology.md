@@ -481,7 +481,8 @@ The content-hashed `full.<hash>.mp3` is perfect for the player but wrong for a l
 - `Cache-Control: no-cache` to the browser (store-but-always-revalidate; a `304` is cheap) and `CDN-Cache-Control: max-age=60, stale-while-revalidate=604800` to the edge ([RFC9213] + [RFC5861]) for offload without an `immutable`-style stale window;
 - **never [`immutable`][ImmutableResponses]** (that's the hashed path's directive) and **never `must-revalidate`** (it would forbid the `stale-while-revalidate` serving above);
 - `If-Range` honored — a stale validator makes the server ignore `Range` and serve the full current file ([RFC9110] §13.1.5), so a client mid-seek across a regeneration can't stitch two versions; the ETag on every `206` is what protects bare-`Range` clients that never send `If-Range`;
-- `304`s echo the cache-affecting headers ([RFC9110] §15.4.5).
+- `304`s echo the cache-affecting headers ([RFC9110] §15.4.5);
+- `Content-Disposition: inline; filename="<slug>.<ext>"` ([RFC6266]) — `inline`, not `attachment`, so players still stream, but a manual "Save As" gets a per-post name (`offer-files.mp3`) instead of `episode.mp3` for every episode. A non-ASCII slug also carries an `filename*=UTF-8''…` form (RFC 5987); both servers build it from the same `episodeDownloadName` + `contentDispositionInline` helpers, so dev and prod agree.
 
 A regenerated episode therefore always reaches a revalidating client fresh while a copied link never dies, and the `<enclosure length>` stays trivially correct (we serve the exact file we measured).
 

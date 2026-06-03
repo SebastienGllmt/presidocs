@@ -40,6 +40,7 @@ import type { BlogPaths } from "../shared/blogPaths.ts";
 import { findFullAudioName, findManifestName } from "../shared/manifestFile.ts";
 import {
   audioEtag,
+  episodeDownloadName,
   ifNoneMatchSatisfied,
   rangeHonored,
   stableAudioHeaders,
@@ -263,7 +264,7 @@ export async function createDevServer(opts: DevServerOptions) {
       // no-cache + CDN-Cache-Control) shared with prod; everything else keeps
       // the immutable-vs-no-store split.
       const baseHeaders: Record<string, string> = isEpisode
-        ? stableAudioHeaders(episodeEtag)
+        ? stableAudioHeaders(episodeEtag, episodeDownloadName(basename(dirname(safe)), extname(base)))
         : {
             "Cache-Control": isContentHashed
               ? "public, max-age=31536000, immutable"

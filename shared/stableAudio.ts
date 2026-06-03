@@ -68,14 +68,59 @@ export function stableEpisodePath(audioPath: string): string {
   return audioPath.replace(/\/full(?:\.[0-9a-f]{16})?(\.[a-z0-9]+)$/i, "/episode$1");
 }
 
-/** The tiered cache headers for a stable episode response (see file header). */
-export function stableAudioHeaders(etag: string | null): Record<string, string> {
+/** The download filename for an episode: `<slug>.<ext>` (ext without a dot). */
+export function episodeDownloadName(slug: string, ext: string): string {
+  const e = ext.replace(/^\./, "");
+  return e ? `${slug}.${e}` : slug;
+}
+
+// Percent-encode for an RFC 5987 ext-value (the `filename*` form): like
+// encodeURIComponent but also escaping `'()*`, which encodeURIComponent leaves
+// bare yet are not in RFC 5987's attr-char set.
+function encodeRfc5987(s: string): string {
+  return encodeURIComponent(s).replace(
+    /['()*]/g,
+    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
+  );
+}
+
+/**
+ * RFC 6266 `Content-Disposition` for an *inline* (still-streamable) response
+ * with a human-readable download name. `inline`, not `attachment`, so players
+ * keep streaming; a manual "Save As" gets `<filename>` instead of the generic
+ * `episode.mp3`. Emits an ASCII `filename` fallback and, when the name carries
+ * non-ASCII bytes, an RFC 5987 `filename*=UTF-8''…` (RFC 6266 §5) so a Unicode
+ * slug survives in clients that read it.
+ */
+export function contentDispositionInline(filename: string): string {
+  // ASCII fallback token: strip quotes/backslashes (which would break the
+  // quoted-string) and map any non-ASCII byte to "_"; never empty.
+  const ascii =
+    filename.replace(/["\\]/g, "").replace(/[^\x20-\x7e]/g, "_").trim() || "episode";
+  let cd = `inline; filename="${ascii}"`;
+  if (/[^\x20-\x7e]/.test(filename)) {
+    cd += `; filename*=UTF-8''${encodeRfc5987(filename)}`;
+  }
+  return cd;
+}
+
+/**
+ * The tiered cache headers for a stable episode response (see file header).
+ * `downloadFilename` (optional) adds an `inline` Content-Disposition so a
+ * manual download gets a per-post name instead of `episode.<ext>` for every
+ * post (RFC 6266; see proposals/34 §1).
+ */
+export function stableAudioHeaders(
+  etag: string | null,
+  downloadFilename?: string,
+): Record<string, string> {
   const headers: Record<string, string> = {
     "Cache-Control": "no-cache",
     "CDN-Cache-Control": "max-age=60, stale-while-revalidate=604800",
     "Accept-Ranges": "bytes",
   };
   if (etag) headers["ETag"] = etag;
+  if (downloadFilename) headers["Content-Disposition"] = contentDispositionInline(downloadFilename);
   return headers;
 }
 

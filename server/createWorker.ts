@@ -46,6 +46,7 @@ import {
 import { problem } from "../shared/problemDetails.ts";
 import {
   audioEtag,
+  episodeDownloadName,
   ifNoneMatchSatisfied,
   rangeHonored,
   stableAudioHeaders,
@@ -233,6 +234,9 @@ export function createWorkerHandler(content: WorkerContent) {
     const audioPath = entry.audio;
 
     const etag = audioEtag(audioPath);
+    // Per-post download name (`<slug>.<ext>`) for the inline Content-Disposition,
+    // so a manual save isn't `episode.mp3` for every post (proposals/34 §1).
+    const downloadName = episodeDownloadName(slug, audioPath.split(".").pop() ?? "mp3");
     // RFC 9530 representation digest (range-independent) — valid on 200/206/304.
     const reprDigest =
       entry.digest && isSha256Hex(entry.digest) ? reprDigestSha256(entry.digest) : null;
@@ -246,7 +250,7 @@ export function createWorkerHandler(content: WorkerContent) {
     if (ifNoneMatchSatisfied(req.headers.get("If-None-Match"), etag)) {
       return new Response(null, {
         status: StatusCodes.NOT_MODIFIED,
-        headers: withDigest(new Headers(stableAudioHeaders(etag))),
+        headers: withDigest(new Headers(stableAudioHeaders(etag, downloadName))),
       });
     }
 
@@ -260,7 +264,7 @@ export function createWorkerHandler(content: WorkerContent) {
     // Our validator + cache policy REPLACE whatever the binding emitted; we
     // validate on the strong content-hash ETag only.
     const headers = new Headers(asset.headers);
-    for (const [k, v] of Object.entries(stableAudioHeaders(etag))) {
+    for (const [k, v] of Object.entries(stableAudioHeaders(etag, downloadName))) {
       headers.set(k, v);
     }
     headers.delete("Last-Modified");

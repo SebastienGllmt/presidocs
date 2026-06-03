@@ -7,6 +7,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   audioEtag,
+  contentDispositionInline,
+  episodeDownloadName,
   ifNoneMatchSatisfied,
   rangeHonored,
   stableAudioHeaders,
@@ -81,6 +83,45 @@ describe("stableAudioHeaders", () => {
 
   test("omits ETag when there's no hash to validate against", () => {
     expect(stableAudioHeaders(null).ETag).toBeUndefined();
+  });
+
+  test("no Content-Disposition unless a download name is given (back-compat)", () => {
+    expect(stableAudioHeaders('"88ec61b30372d408"')["Content-Disposition"]).toBeUndefined();
+  });
+
+  test("adds an inline Content-Disposition with the per-post name when given", () => {
+    const h = stableAudioHeaders('"88ec61b30372d408"', "offer-files.mp3");
+    // inline (NOT attachment) so players keep streaming; per-post filename.
+    expect(h["Content-Disposition"]).toBe('inline; filename="offer-files.mp3"');
+  });
+});
+
+describe("episodeDownloadName + contentDispositionInline", () => {
+  test("download name is <slug>.<ext>, tolerating a dotted ext", () => {
+    expect(episodeDownloadName("offer-files", "mp3")).toBe("offer-files.mp3");
+    expect(episodeDownloadName("offer-files", ".mp3")).toBe("offer-files.mp3");
+    expect(episodeDownloadName("offer-files", "")).toBe("offer-files");
+  });
+
+  test("ASCII filename uses the plain quoted-string form, no filename*", () => {
+    const cd = contentDispositionInline("offer-files.mp3");
+    expect(cd).toBe('inline; filename="offer-files.mp3"');
+    expect(cd).not.toContain("filename*");
+  });
+
+  test("non-ASCII slug gets an ASCII fallback AND an RFC 5987 filename*", () => {
+    const cd = contentDispositionInline("日本語.mp3");
+    // ASCII fallback maps non-ASCII bytes to "_" (always a valid token)…
+    expect(cd).toContain('filename="___.mp3"');
+    // …and the UTF-8 ext-value carries the real name, percent-encoded.
+    expect(cd).toContain("filename*=UTF-8''");
+    expect(cd).toContain(encodeURIComponent("日本語"));
+  });
+
+  test("escapes characters that would break the quoted-string", () => {
+    // A double-quote / backslash in the name must not terminate filename="…".
+    const cd = contentDispositionInline('a"b\\c.mp3');
+    expect(cd).toBe('inline; filename="abc.mp3"');
   });
 });
 
