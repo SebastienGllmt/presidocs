@@ -105,6 +105,11 @@ export type FeedPost = {
     byteLength: number;
     durationSec: number;
     chaptersUrl: string; // absolute
+    // Absolute URL of the word-timed WebVTT transcript (…/captions.vtt).
+    // Present only when the post was built with forced alignment (the file
+    // exists in dist) — gates the <podcast:transcript type="text/vtt"> tag so
+    // a non-aligned episode never advertises a 404. See proposals/39.
+    captionsUrl?: string;
     // Content-addressed alternate (…/full.<hash>.<ext>, absolute) + the SRI
     // string of the audio bytes. Both present ⇒ a <podcast:alternateEnclosure>
     // advertises the immutable URL and lets clients verify integrity.
@@ -253,6 +258,17 @@ export function buildRssFeed(site: FeedSite, posts: FeedPost[]): string {
         (site.author ? `<itunes:author>${escapeXml(site.author.name)}</itunes:author>` : "") +
         `<itunes:explicit>${site.explicit ? "true" : "false"}</itunes:explicit>` +
         `<podcast:chapters url="${escapeXml(a.chaptersUrl)}" type="application/json+chapters"/>` +
+        // Two transcripts, richest first (clients pick the best type they read):
+        //  - text/vtt: the verbatim, word-timed transcript of the spoken audio
+        //    (our forced-aligned captions.vtt), present only when alignment was
+        //    built. rel="captions" per the Podcast Namespace transcript tag.
+        //  - text/html: the post page — the parallel-prose companion. The
+        //    narration is a parallel narrative, not a read-aloud (see
+        //    methodology → What we're building), so the VTT is what's actually
+        //    heard and the HTML is the readable transcript-of-record.
+        (a.captionsUrl
+          ? `<podcast:transcript url="${escapeXml(a.captionsUrl)}" type="text/vtt" rel="captions"/>`
+          : "") +
         `<podcast:transcript url="${escapeXml(url)}" type="text/html"/>` +
         `</item>`
       );
@@ -504,6 +520,13 @@ async function main(): Promise<void> {
               byteLength,
               durationSec: Math.round(m.duration / 1000),
               chaptersUrl: `${baseUrl}/generated/${slug}/chapters.json`,
+              // Word-timed WebVTT transcript, advertised only when present.
+              // The build emits captions.vtt next to the audio iff the post
+              // was aligned (proposals/17), and copy-static ships it to dist;
+              // checking dist here keeps the tag and the file in lockstep.
+              ...(existsSync(join(distDir, "generated", slug, "captions.vtt"))
+                ? { captionsUrl: `${baseUrl}/generated/${slug}/captions.vtt` }
+                : {}),
               // Content-addressed alternate + integrity (proposals/32 §9): the
               // immutable URL clients may prefer, and the SRI of the very bytes.
               hashedUrl: `${baseUrl}${m.audio}`,

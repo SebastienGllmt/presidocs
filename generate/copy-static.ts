@@ -8,6 +8,8 @@
 //   - `generated/<slug>/manifest.<hash>.json` — narration timing manifest
 //     (content-addressed; see shared/manifestFile.ts)
 //   - `generated/<slug>/*.mp3`         — pre-rendered audio
+//   - `generated/<slug>/captions.vtt`  — word-timed WebVTT transcript, served
+//     and advertised via <podcast:transcript type="text/vtt"> (proposals/39)
 //   - `node_modules/@automerge/automerge/dist/automerge.wasm` — the
 //     Automerge WASM core the comments client lazy-loads.
 //
@@ -47,8 +49,26 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
-// Walks `generated/` and copies only the per-post audio + manifest
-// files. Walking manually (rather than `cp -r` with a filter) keeps
+// The include rule for `generated/<slug>/` files: ship the per-post audio,
+// the (content-addressed) timing manifest, and the word-timed WebVTT
+// transcript; everything else under `generated/` is build-internal (caches,
+// dev comment blobs, GC indexes — see the header comment). Exact-name matches
+// for `manifest.json`/`captions.vtt` keep the rule tight (no stray `.json`/
+// `.vtt` swept in); `full.<hash>.mp3` is matched by extension and the hashed
+// manifest by its regex. Pure + exported so the rule is unit-testable.
+export function shouldShipGeneratedFile(name: string): boolean {
+  // Dotfiles (notably macOS AppleDouble `._*` sidecars) are never shipped.
+  if (name.startsWith(".")) return false;
+  return (
+    MANIFEST_HASHED_RE.test(name) ||
+    name === "manifest.json" ||
+    name === "captions.vtt" ||
+    name.endsWith(".mp3")
+  );
+}
+
+// Walks `generated/` and copies only the per-post audio + manifest +
+// transcript files. Walking manually (rather than `cp -r` with a filter) keeps
 // the include rule legible and avoids the surprising "filter returns
 // false on a directory means we don't recurse into it" semantics of
 // `fs.cp`.
@@ -87,11 +107,7 @@ async function copyGeneratedArtifacts(): Promise<number> {
       // which match the `.mp3` keep-rule but are just resource-fork metadata, not
       // audio. Shipping them is dead weight (and confusing breadcrumbs).
       if (f.name.startsWith(".")) continue;
-      const keep =
-        MANIFEST_HASHED_RE.test(f.name) ||
-        f.name === "manifest.json" ||
-        f.name.endsWith(".mp3");
-      if (!keep) continue;
+      if (!shouldShipGeneratedFile(f.name)) continue;
       if (!createdDst) {
         await mkdir(slugDst, { recursive: true });
         createdDst = true;
@@ -255,7 +271,11 @@ async function main(): Promise<void> {
   console.log("Done.");
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Only run as a CLI; importing the pure helpers (e.g. shouldShipGeneratedFile
+// from tests) must not trigger a copy.
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

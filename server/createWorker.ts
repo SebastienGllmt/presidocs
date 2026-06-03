@@ -142,6 +142,19 @@ async function applyRangeSupport(req: Request, res: Response): Promise<Response>
   });
 }
 
+// Content-Type the Static Assets binding's extension default doesn't reliably
+// give us. Returns the MIME to force, or null to leave the asset response
+// untouched. Pure + exported so the routing decision is unit-testable.
+//  - .xml feeds → the feed MIME types strict validators sniff for.
+//  - .vtt transcripts → text/vtt, so a <podcast:transcript type="text/vtt">
+//    target serves as a caption file, not octet-stream/plain (proposals/39).
+export function staticAssetContentTypeOverride(pathname: string): string | null {
+  if (pathname === "/feed.xml") return "application/atom+xml; charset=utf-8";
+  if (pathname === "/podcast.xml") return "application/rss+xml; charset=utf-8";
+  if (pathname.endsWith(".vtt")) return "text/vtt; charset=utf-8";
+  return null;
+}
+
 export function createWorkerHandler(content: WorkerContent) {
   // Built once at module load — the maps are static for the lifetime of the
   // Worker (regenerated only when a new build is deployed).
@@ -298,19 +311,14 @@ export function createWorkerHandler(content: WorkerContent) {
       //     types between the runtime Request and DOM Request don't unify.
       const assetResponse: Response = await env.ASSETS.fetch(req);
 
-      // The feeds are static assets, but the Static Assets binding serves .xml
-      // as generic application/xml. Override with the feed-specific MIME types
-      // that strict feed validators sniff for (Atom / RSS).
+      // Some static assets need an explicit Content-Type the binding's
+      // extension default doesn't reliably give us (feeds, .vtt transcripts);
+      // see staticAssetContentTypeOverride. Don't depend on the binding default.
       const path = new URL(req.url).pathname;
-      const feedCt =
-        path === "/feed.xml"
-          ? "application/atom+xml; charset=utf-8"
-          : path === "/podcast.xml"
-            ? "application/rss+xml; charset=utf-8"
-            : null;
-      if (feedCt && assetResponse.status === 200) {
+      const overrideCt = staticAssetContentTypeOverride(path);
+      if (overrideCt && assetResponse.status === 200) {
         const headers = new Headers(assetResponse.headers);
-        headers.set("Content-Type", feedCt);
+        headers.set("Content-Type", overrideCt);
         return withSecurityHeaders(
           new Response(assetResponse.body, {
             status: assetResponse.status,

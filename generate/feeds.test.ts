@@ -142,6 +142,37 @@ test("RSS: only audio posts become items, with a STABLE enclosure URL + chapters
   expect(xml).toContain("<podcast:chapters");
 });
 
+test("RSS transcript: non-aligned audio post advertises only the text/html transcript", () => {
+  // POST_WITH_AUDIO has no captionsUrl (no forced alignment built), so the
+  // word-timed VTT tag must be absent — never advertise a 404. proposals/39.
+  const xml = buildRssFeed(SITE, [POST_WITH_AUDIO]);
+  expect(xml).toContain(
+    '<podcast:transcript url="https://blog.example.com/posts/offer-files" type="text/html"/>',
+  );
+  expect(xml).not.toContain('type="text/vtt"');
+});
+
+test("RSS transcript: aligned post advertises BOTH the word-timed VTT and the HTML transcript", () => {
+  const aligned: FeedPost = {
+    ...POST_WITH_AUDIO,
+    audio: {
+      ...POST_WITH_AUDIO.audio!,
+      captionsUrl: "https://blog.example.com/generated/offer-files/captions.vtt",
+    },
+  };
+  const xml = buildRssFeed(SITE, [aligned]);
+  // The verbatim, word-timed transcript of the spoken audio (rel="captions").
+  expect(xml).toContain(
+    '<podcast:transcript url="https://blog.example.com/generated/offer-files/captions.vtt" type="text/vtt" rel="captions"/>',
+  );
+  // The HTML companion (parallel-prose transcript-of-record) is still present.
+  expect(xml).toContain(
+    '<podcast:transcript url="https://blog.example.com/posts/offer-files" type="text/html"/>',
+  );
+  // VTT listed first (clients pick the richest type they support).
+  expect(xml.indexOf('type="text/vtt"')).toBeLessThan(xml.indexOf('type="text/html"'));
+});
+
 test("RSS: alternateEnclosure advertises stable + hashed sources with SRI integrity", () => {
   const xml = buildRssFeed(SITE, [POST_WITH_AUDIO]);
   // One alternateEnclosure, default=true (same media as <enclosure>), length matches.
