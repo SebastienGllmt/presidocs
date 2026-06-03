@@ -104,8 +104,42 @@ export type DevServerOptions = {
 
 type DevHandler = (req: Bun.BunRequest) => Response | Promise<Response>;
 
+// The engine's HTML-head bundler plugin (cascade-layer order + footer + landing
+// chips) only runs in dev if the content repo registers it under
+// `[serve.static].plugins` in its bunfig — Bun has no way for the engine to wire
+// it from here. If it's missing, dev silently mis-renders (layers can invert,
+// no footer/chips) while prod stays correct. So fail fast at startup with the
+// exact line to add, rather than shipping a per-repo presence test each blog
+// must remember to copy. Checks bunfig.toml + bunfig.local.toml (either may
+// carry it). `BLOG_SKIP_BUNFIG_CHECK=1` is an escape hatch for unusual setups.
+async function assertHeadPluginRegistered(contentRoot: string): Promise<void> {
+  if (process.env.BLOG_SKIP_BUNFIG_CHECK) return;
+  let toml = "";
+  for (const name of ["bunfig.toml", "bunfig.local.toml"]) {
+    try {
+      toml += await Bun.file(join(contentRoot, name)).text();
+    } catch {
+      // file absent → ignore
+    }
+  }
+  const registered =
+    /\[serve\.static\]/.test(toml) &&
+    /plugins\s*=\s*\[[^\]]*bunHtmlHeadPlugin\.ts/.test(toml);
+  if (!registered) {
+    throw new Error(
+      "[dev] bunfig.toml does not register the engine HTML-head plugin, so the " +
+        "dev server would mis-render (cascade layers can invert; no footer or " +
+        "feature-chips) while prod renders correctly. Add to bunfig.toml:\n\n" +
+        '  [serve.static]\n  plugins = ["presidocs/shared/bunHtmlHeadPlugin.ts"]\n\n' +
+        `(checked ${join(contentRoot, "bunfig.toml")}; set BLOG_SKIP_BUNFIG_CHECK=1 to bypass.)`,
+    );
+  }
+}
+
 export async function createDevServer(opts: DevServerOptions) {
   const { paths, staticRoutes } = opts;
+
+  await assertHeadPluginRegistered(paths.contentRoot);
 
   // Wrap a function-style route handler so its response carries the security
   // headers (parity with the Worker). `priv` additionally sets CORP for the
