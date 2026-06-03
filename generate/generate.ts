@@ -808,6 +808,21 @@ const manifest = {
   // dev server. Hashed into the manifest name below so the content-addressing
   // invariant (filename = hash of narration-bearing fields) still holds.
   audioDigest,
+  // Build provenance: what actually produced this narration. NOT folded into the
+  // manifest-name hash below — the engine/voice/aligner choice is already fully
+  // reflected in the hashed `audioDigest` (different engine → different bytes)
+  // and `marks` (different/absent aligner → different/absent `words`), so an
+  // unchanged regenerate stays byte-identical and cache-warm. The deploy gate
+  // (verify-narration.ts) reads this to refuse shipping a post that wasn't built
+  // with MOSS + forced alignment — e.g. the espeak-ng-and-no-`--align` artifacts
+  // a bare `bun run generate` leaves behind during a test pass.
+  provenance: {
+    tts: ttsName,
+    voice,
+    aligner: alignName ?? null,
+    alignLanguage: alignName ? alignLanguage : null,
+    mock,
+  },
   duration: offset,
   chapters: manifestChapters,
   marks: manifestMarks,
