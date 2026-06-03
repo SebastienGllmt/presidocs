@@ -6,7 +6,10 @@
 <meta name="author-email" content="sebastiengllmt@gmail.com" />
 <title>Hello, world</title>
 <!-- Engine-owned assets, referenced through the `engine` symlink so Bun's
-     bundler resolves + bundles them into same-origin ('self') assets. -->
+     bundler resolves + bundles them into same-origin ('self') assets. The
+     engine's cascade-layer order is injected as the first <head> CSS by the
+     bundler (bunfig [serve.static].plugins in dev, build-html.ts in prod), so
+     posts don't author it — see client/base.css. -->
 <link rel="stylesheet" href="../engine/client/base.css" />
 <link rel="stylesheet" href="../engine/client/narrator.css" />
 <link rel="stylesheet" href="../engine/client/comments.css" />

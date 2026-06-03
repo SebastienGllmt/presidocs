@@ -17,8 +17,52 @@
 // hardcoded to match the pre-refactor CLI invocation, so per-blog package.json
 // only carries the per-blog entry list.
 
-import { siteFooterPlugin } from "../shared/bunFooterPlugin.ts";
+import { basename } from "node:path";
+import { htmlHeadPlugin } from "../shared/bunHtmlHeadPlugin.ts";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
+import { checkHeadLayerOrder } from "../shared/cssLayers.ts";
+
+/**
+ * Assert the canonical cascade-layer order landed before the (bundled)
+ * stylesheet in each built layer-system page. The injection itself is done by
+ * `htmlHeadPlugin()` during the bundle (the same plugin dev registers via
+ * bunfig — see shared/bunHtmlHeadPlugin.ts); this is the build-time half of the
+ * dev/prod parity guard (methodology → Cascade-layer architecture, "Pinning the
+ * order") and catches any future bundler change that reorders or drops it.
+ *
+ * Layer participation is decided from the *source* entry (it links base.css);
+ * the built output links the bundled chunk instead, so the string is gone there.
+ */
+async function assertLayerOrderInBuiltHtml(
+  entries: string[],
+  outputs: Bun.BuildArtifact[],
+): Promise<void> {
+  const htmlByName = new Map<string, string>();
+  for (const o of outputs) {
+    if (o.kind === "entry-point" && o.path.endsWith(".html")) {
+      htmlByName.set(basename(o.path), o.path);
+    }
+  }
+
+  const problems: string[] = [];
+  for (const entry of entries) {
+    const source = await Bun.file(entry).text().catch(() => "");
+    if (!source.includes("base.css")) continue; // not in the layer system
+    const outPath = htmlByName.get(basename(entry));
+    if (!outPath) continue;
+    const built = await Bun.file(outPath).text();
+    for (const p of checkHeadLayerOrder(built)) problems.push(`${basename(entry)}: ${p}`);
+  }
+
+  if (problems.length > 0) {
+    console.error(
+      "Cascade-layer order assertion failed in built HTML " +
+        "(see methodology → Cascade-layer architecture):",
+    );
+    for (const p of problems) console.error(`  - ${p}`);
+    process.exit(1);
+  }
+}
 
 async function main(): Promise<void> {
   const entries = process.argv.slice(2);
@@ -39,11 +83,13 @@ async function main(): Promise<void> {
     // place to shrink them. `minify` trims the JS/CSS chunks (Lighthouse
     // `unminified-javascript`/`unminified-css`); `sourcemap: "linked"` emits a
     // sibling `.js.map` + `//# sourceMappingURL` so prod stays debuggable and
-    // `valid-source-maps` passes. The footer plugin and the `__BUN_DEV__`
+    // `valid-source-maps` passes. The head plugin and the `__BUN_DEV__`
     // constant-fold both run before minify, so neither is disturbed.
     minify: true,
     sourcemap: "linked",
-    plugins: [siteFooterPlugin()],
+    // Injects the cascade-layer order + site footer (shared/bunHtmlHeadPlugin.ts).
+    // The same plugin runs in dev via bunfig, so dev and prod render identically.
+    plugins: [htmlHeadPlugin()],
     define: {
       // client/swRegister.ts uses `typeof __BUN_DEV__ === "undefined"` to
       // decide whether to register the SW. Substituting the identifier with
@@ -59,6 +105,8 @@ async function main(): Promise<void> {
     for (const log of result.logs) console.error(log);
     process.exit(1);
   }
+
+  await assertLayerOrderInBuiltHtml(entries, result.outputs);
 }
 
 if (import.meta.main) {

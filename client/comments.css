@@ -785,7 +785,11 @@ body.cmt-highlights-hidden .cmt-action-bar { display: none; }
    Responsive: the column sits in the right margin of a 720px-wide article.
    At wide viewports we reserve space on the right of the body so the
    article's `margin: auto` shifts it left, opening a clear gutter for the
-   column instead of overlapping article content.
+   column instead of overlapping article content. The reservation TAPERS
+   with viewport width (see the `max()` below): it shifts the article only
+   as far as needed to clear the right-pinned column, and not at all once
+   the centered article already clears it on its own — so wide screens get
+   no shift, narrow-wide screens get exactly enough.
 
    Below ~1100px the column doesn't fit alongside the article, so each
    card carries `popover="auto"` instead and renders as a native popover
@@ -796,7 +800,18 @@ body.cmt-highlights-hidden .cmt-action-bar { display: none; }
    hide-all FAB remains the single mute-all affordance.
    ============================================================================ */
 @media (min-width: 1100px) {
-  body { padding-right: 360px; }
+  /* Reserve exactly enough right gutter to keep the centered article clear
+     of the viewport-pinned column (cards + rail: right 24px, width 320px →
+     left edge at 100vw - 344px). A centered `max-width: 768px` article's
+     right edge sits at (100vw - P + 768)/2; setting that equal to the
+     column's left edge gives the needed padding P = 1460px - 100vw (1460
+     rather than the geometric 1456 keeps the same ~2px gap the old fixed
+     360px left at the 1100px breakpoint). `max(0px, …)` floors it so the
+     reservation tapers to zero by ~1460px and never shifts wider screens.
+     Note: 100vw includes the scrollbar gutter (~15px) the column lives
+     inside, so the real gap runs that much tighter — raise 1460 if you
+     want visible breathing room. */
+  body { padding-right: max(0px, 1460px - 100vw); }
   /* Desktop hides the FAB — the column itself is the affordance. */
   .cmt-hide-all-fab { display: none; }
 

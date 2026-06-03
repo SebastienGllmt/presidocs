@@ -30,8 +30,11 @@
 // Runs LAST in the build chain (after feeds.ts + site-discovery.ts) so those
 // existence checks see the final dist/. Served by env.ASSETS.fetch; /help
 // resolves to dist/help.html the same way /privacy resolves to dist/privacy.html
-// (Workers Static Assets html_handling). Dev serves source, so /help is a
-// prod-only artifact — same posture as the feeds and sitemap.
+// (Workers Static Assets html_handling). The dev server has no dist/, so it
+// renders /help on the fly from source instead — see `renderHelpHtmlFromSource`
+// / `featuresFromSource` below, wired into createDevServer.ts's `/help` route,
+// with feature-gating computed from source (a dev-preview approximation of the
+// dist/-based gating here).
 
 import { readdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -43,7 +46,7 @@ import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 import { decodeHtmlEntities } from "../shared/htmlEntities.ts";
 import { findManifestName } from "../shared/manifestFile.ts";
 import { injectSiteFooter } from "../shared/injectFooter.ts";
-import { injectPwaHead, type PwaHeadOptions } from "../shared/injectPwaHead.ts";
+import { injectPwaHead } from "../shared/injectPwaHead.ts";
 import { readSiteMeta } from "./feeds.ts";
 import { KEY_BINDINGS } from "../client/narratorDom.ts";
 
@@ -430,14 +433,14 @@ export function buildHelpHtml(ctx: HelpContext, questions: HelpQuestion[]): stri
 
 // ---- disk gather ------------------------------------------------------------
 
-type VersionEntry = { hash: string; builtAt: string };
+export type VersionEntry = { hash: string; builtAt: string };
 
 // Lift the <link rel="stylesheet"> tag(s) out of the built landing page so the
 // help page reuses the exact same bundled stylesheet (post-build hashed chunk).
 // help.html sits at the dist root like index.html, so the relative href
 // resolves identically. Falls back to the engine's source landing.css if the
 // landing somehow carries no stylesheet link (degraded but not broken).
-function extractStylesheetLinks(landingHtml: string): string {
+export function extractStylesheetLinks(landingHtml: string): string {
   const matches = landingHtml.match(/<link\b[^>]*rel=["']stylesheet["'][^>]*>/gi);
   if (matches && matches.length) return matches.join("");
   return `<link rel="stylesheet" href="/engine/client/landing.css" />`;
@@ -445,7 +448,7 @@ function extractStylesheetLinks(landingHtml: string): string {
 
 // Any narrated post → the Listen feature exists. Mirrors the manifest check
 // feeds.ts / strip-served-html.ts use per post.
-async function hasAnyNarration(generatedDir: string): Promise<boolean> {
+export async function hasAnyNarration(generatedDir: string): Promise<boolean> {
   let entries;
   try {
     entries = await readdir(generatedDir, { withFileTypes: true });
@@ -471,7 +474,7 @@ async function hasAnyNarration(generatedDir: string): Promise<boolean> {
 // use. Comments are a core feature on every post, so a non-zero count is what
 // gates the Comments section/chip (auth config is a runtime secret we can't
 // read at build time, so "has posts" is the honest build-time signal).
-async function countPosts(postsDir: string, versions: Record<string, VersionEntry[]>): Promise<number> {
+export async function countPosts(postsDir: string, versions: Record<string, VersionEntry[]>): Promise<number> {
   let files: string[];
   try {
     files = (await readdir(postsDir)).filter((f) => f.endsWith(".html"));
@@ -487,6 +490,117 @@ async function countPosts(postsDir: string, versions: Record<string, VersionEntr
     if (history && history.length > 0) n++;
   }
   return n;
+}
+
+// Assemble the HelpContext from gathered inputs. Shared by the prod build
+// (main, dist-gathered) and the dev server (renderHelpHtmlFromSource,
+// source-gathered) so the two can't drift. `cssLinks` is passed in because its
+// source differs: prod lifts the bundled chunk link from dist/index.html; dev
+// points at the engine-served landing.css.
+async function buildHelpContext(args: {
+  baseUrl: string;
+  language?: string | null;
+  hubUrl?: string | null;
+  features: FeatureSet;
+  versions: Record<string, VersionEntry[]>;
+  cssLinks: string;
+}): Promise<HelpContext> {
+  const authorMap = (await buildAuthorMap(paths.postsDir, paths.contentRoot)).map;
+  const newestPath = Object.entries(args.versions)
+    .filter(([, h]) => h && h.length > 0)
+    .sort((a, b) => (a[1]![0]!.builtAt < b[1]![0]!.builtAt ? 1 : -1))[0]?.[0];
+  const authorName =
+    (newestPath && authorMap[newestPath]?.name) || Object.values(authorMap)[0]?.name || null;
+  const meta = await readSiteMeta();
+  const lang = (args.language || "en").split("-")[0] || "en";
+  const privacyHref = (process.env.PRIVACY_POLICY_URL ?? "").trim() || null;
+  return {
+    siteUrl: args.baseUrl,
+    siteTitle: meta.title,
+    siteDescription: meta.description,
+    authorName: authorName ? decodeHtmlEntities(authorName) : null,
+    lang,
+    features: args.features,
+    feeds: {
+      atom: `${args.baseUrl}/feed.xml`,
+      podcast: args.features.podcast ? `${args.baseUrl}/podcast.xml` : null,
+      hubUrl: args.hubUrl,
+    },
+    privacyHref,
+    cssLinks: args.cssLinks,
+  };
+}
+
+// PWA <head> + site footer chrome, so /help isn't an outlier among served pages.
+// Shared by prod and dev. Reads the content repo's manifest for theme/icon.
+async function applyHelpChrome(helpHtml: string, privacyHref: string | null): Promise<string> {
+  let out = helpHtml;
+  const manifestSrc = join(paths.contentRoot, "manifest.webmanifest");
+  if (existsSync(manifestSrc)) {
+    try {
+      const m = (await Bun.file(manifestSrc).json()) as { theme_color?: string; icons?: { src?: string }[] };
+      out = injectPwaHead(out, { themeColor: m.theme_color, appleTouchIcon: m.icons?.[0]?.src });
+    } catch {
+      // malformed manifest → skip PWA head
+    }
+  }
+  return injectSiteFooter(out, { privacyHref: privacyHref ?? "", helpHref: "/help" });
+}
+
+async function readVersions(): Promise<Record<string, VersionEntry[]>> {
+  try {
+    return (await Bun.file(paths.versionsJson).json()) as Record<string, VersionEntry[]>;
+  } catch {
+    return {};
+  }
+}
+
+// Feature gating computed from SOURCE (no dist/), for the dev server. Mirrors
+// main()'s dist-based gating: feeds are emitted whenever SITE_URL is set
+// (atom), the podcast feed exists iff there's narration audio (podcast), the
+// manifest ships from the content root (pwa), posts gate comments. Can differ
+// from prod only where a prod artifact isn't represented in source — acceptable
+// for a dev preview (see methodology).
+export async function featuresFromSource(): Promise<FeatureSet> {
+  const narration = await hasAnyNarration(paths.generatedDir);
+  const versions = await readVersions();
+  const postCount = await countPosts(paths.postsDir, versions);
+  return {
+    narration,
+    atom: !!resolveFeedConfig().baseUrl,
+    podcast: narration,
+    comments: postCount > 0,
+    pwa: existsSync(join(paths.contentRoot, "manifest.webmanifest")),
+  };
+}
+
+/** The feature-chip nav for the landing, gated from source (dev). */
+export async function chipsHtmlFromSource(): Promise<string> {
+  return buildFeatureChipsHtml(await featuresFromSource());
+}
+
+/**
+ * Render /help on the fly from source, for the dev server. Returns null when
+ * SITE_URL is unset or the content repo ships its own help.html (which the dev
+ * route should serve directly instead). `cssLinks` should point at a dev-served
+ * stylesheet (the engine landing.css), since there's no bundled chunk in dev.
+ */
+export async function renderHelpHtmlFromSource(cssLinks: string): Promise<string | null> {
+  const cfg = resolveFeedConfig();
+  if (!cfg.baseUrl) return null;
+  if (existsSync(join(paths.contentRoot, "help.html"))) return null; // operator's own
+  const features = await featuresFromSource();
+  const versions = await readVersions();
+  const ctx = await buildHelpContext({
+    baseUrl: cfg.baseUrl,
+    language: cfg.language,
+    hubUrl: cfg.hubUrl,
+    features,
+    versions,
+    cssLinks,
+  });
+  const helpHtml = buildHelpHtml(ctx, buildQuestions(ctx));
+  return applyHelpChrome(helpHtml, ctx.privacyHref);
 }
 
 async function main(): Promise<void> {
@@ -535,52 +649,22 @@ async function main(): Promise<void> {
     pwa: existsSync(join(distDir, "manifest.webmanifest")),
   };
 
-  // Site author display name: the newest post's author (mirrors feeds.ts /
-  // strip-served-html's pickSiteAuthor), else any author, else null.
-  const authorMap = (await buildAuthorMap(paths.postsDir, paths.contentRoot)).map;
-  const newestPath = Object.entries(versions)
-    .filter(([, h]) => h && h.length > 0)
-    .sort((a, b) => (a[1]![0]!.builtAt < b[1]![0]!.builtAt ? 1 : -1))[0]?.[0];
-  const authorName =
-    (newestPath && authorMap[newestPath]?.name) || Object.values(authorMap)[0]?.name || null;
-
-  const meta = await readSiteMeta();
-  const lang = (cfg.language || "en").split("-")[0] || "en";
-  const privacyHref = (process.env.PRIVACY_POLICY_URL ?? "").trim() || null;
-
-  const ctx: HelpContext = {
-    siteUrl: baseUrl,
-    siteTitle: meta.title,
-    siteDescription: meta.description,
-    authorName: authorName ? decodeHtmlEntities(authorName) : null,
-    lang,
+  const ctx = await buildHelpContext({
+    baseUrl,
+    language: cfg.language,
+    hubUrl: cfg.hubUrl,
     features,
-    feeds: {
-      atom: `${baseUrl}/feed.xml`,
-      podcast: features.podcast ? `${baseUrl}/podcast.xml` : null,
-      hubUrl: cfg.hubUrl,
-    },
-    privacyHref,
+    versions,
+    // Prod lifts the bundled chunk link from the built landing so help.html is
+    // styled by the same hashed stylesheet.
     cssLinks: extractStylesheetLinks(landingHtml),
-  };
+  });
 
   const questions = buildQuestions(ctx);
 
-  // 1) Emit dist/help.html, then run the same head/footer chrome the other
-  //    served pages get (PWA <head> + site footer) so /help isn't an outlier.
-  let helpHtml = buildHelpHtml(ctx, questions);
-  let pwaOpts: PwaHeadOptions | null = null;
-  const manifestSrc = join(paths.contentRoot, "manifest.webmanifest");
-  if (existsSync(manifestSrc)) {
-    try {
-      const m = (await Bun.file(manifestSrc).json()) as { theme_color?: string; icons?: { src?: string }[] };
-      pwaOpts = { themeColor: m.theme_color, appleTouchIcon: m.icons?.[0]?.src };
-    } catch {
-      pwaOpts = null;
-    }
-  }
-  if (pwaOpts) helpHtml = injectPwaHead(helpHtml, pwaOpts);
-  helpHtml = injectSiteFooter(helpHtml, { privacyHref: privacyHref ?? "", helpHref: "/help" });
+  // 1) Emit dist/help.html with the same head/footer chrome the other served
+  //    pages get (PWA <head> + site footer) so /help isn't an outlier.
+  const helpHtml = await applyHelpChrome(buildHelpHtml(ctx, questions), ctx.privacyHref);
   await writeFile(landingPath.replace(/index\.html$/, "help.html"), helpHtml, "utf8");
 
   // 2) Inject the feature chips into the landing (idempotent).

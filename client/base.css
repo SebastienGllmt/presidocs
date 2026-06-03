@@ -56,6 +56,15 @@
    attribution { display: none }` opt-out still works either way (collapsing
    the element wins over color/margin no matter the cascade resolution). */
 
+/* RESTATEMENT, not the authoritative declaration. The order is pinned first by
+   an inline <style> the engine's bundler injects as the first <head> CSS (dev:
+   bunfig [serve.static].plugins → shared/bunHtmlHeadPlugin.ts; prod: the same
+   plugin via generate/build-html.ts), so it parses before any linked/JS-imported sheet
+   can create a layer — Bun's dev HMR injects the JS-imported shikwasa-vendor.css
+   ahead of base.css, which would otherwise invert the order. See methodology →
+   Cascade-layer architecture → "Pinning the order" and shared/cssLayers.ts. This
+   line keeps the order correct even if a page is served without the injected
+   pin; it's harmless when (as expected) the pin already established the order. */
 @layer engine-tokens, vendor, engine-layout, post, engine-components;
 
 @layer engine-tokens {

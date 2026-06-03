@@ -30,6 +30,7 @@ import { handlePostVersionRequest } from "./postVersionsRoute.ts";
 import { buildOpenApiDocument } from "./openapi.ts";
 import { handleAnalyticsRequest } from "./analyticsRoute.ts";
 import { handleRegenerateRequest } from "./regenerate.dev.ts";
+import { renderHelpHtmlFromSource } from "../generate/help-page.ts";
 import { handleSoundTestList, handleSoundTestRegenerate } from "./soundTest.dev.ts";
 import { withSecurityHeaders } from "../shared/securityHeaders.ts";
 import { buildAuthorMap } from "../shared/authorProfile.ts";
@@ -286,6 +287,38 @@ export async function createDevServer(opts: DevServerOptions) {
 
   const apiRoutes: Record<string, DevHandler | { POST: DevHandler }> = {
     "/generated/*": pub(serveFromDir(paths.generatedDir, "generated")),
+    // Reader-facing help page. In prod it's a dist/ artifact (generate/help-page.ts);
+    // here it's rendered on the fly from source per request (like serveMarkdown
+    // below) so it's visible in the `bun run dev` HMR loop. Feature-gating is
+    // computed from source, so it can differ slightly from prod for not-yet-built
+    // artifacts (see methodology → reader-facing help). The landing chips that
+    // link here are injected by the engine HTML-head plugin (bunHtmlHeadPlugin).
+    "/help": pub(async () => {
+      const html = await renderHelpHtmlFromSource(
+        '<link rel="stylesheet" href="/engine/client/landing.css" />',
+      );
+      if (html == null) {
+        // No SITE_URL, or the content repo ships its own help.html — serve that
+        // file directly if present, else there's no help page to show.
+        const own = Bun.file(join(paths.contentRoot, "help.html"));
+        if (await own.exists()) {
+          return new Response(await own.text(), {
+            headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+          });
+        }
+        return new Response("not found", { status: StatusCodes.NOT_FOUND });
+      }
+      return new Response(html, {
+        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+      });
+    }),
+    // The engine landing stylesheet, so the on-the-fly /help above is styled the
+    // same way the landing is (prod lifts the bundled chunk; dev has none). Raw
+    // file — landing.css has no @import/@layer, so it needs no bundling.
+    "/engine/client/landing.css": pub(async () =>
+      new Response(Bun.file(join(paths.engineRoot, "client/landing.css")), {
+        headers: { "Content-Type": "text/css; charset=utf-8", "Cache-Control": "no-store" },
+      })),
     "/assets/automerge.wasm": pub(async () =>
       new Response(Bun.file(paths.automergeWasm), {
         headers: {

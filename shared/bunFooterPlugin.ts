@@ -14,16 +14,24 @@
 // same two hrefs from the same env: privacy from PRIVACY_POLICY_URL, help from
 // SITE_URL (the gate generate/help-page.ts uses to emit /help).
 //
-// **Build-only.** This plugin is wired through `Bun.build({plugins:[...]})`
-// in `engine/generate/build-html.ts`. It is deliberately NOT registered via
-// `Bun.plugin(...)` at the dev server's entry: Bun's runtime plugin system
-// (as of 1.3.14) rejects `loader: "html"` in onLoad results, so a runtime
-// registration crashes Bun.serve as soon as an HTMLBundle import resolves.
-// The footer is fully engine-owned (content pages no longer hand-author one),
-// so it's simply absent under `bun run dev` — the same prod-only posture as the
-// feeds, sitemap, and /help. When Bun's runtime plugin system gains html-loader
-// support the dev gap closes by also calling `Bun.plugin(siteFooterPlugin())`
-// from each content-repo's `index.ts`.
+// **Injection wiring.** The footer transform (`injectSiteFooterFromEnv`) is an
+// HTML bundler transform. It must NOT be registered via a *runtime* `Bun.plugin()`
+// at the dev server entry: the bundler's loader union includes "html", but the
+// runtime `onLoad` loader set does not — verified on Bun 1.3.14, importing a
+// `.html` with such a plugin registered throws `Expected loader to be one of
+// "js","jsx","object","ts","tsx","toml","yaml","json","md"` (no "html"/"css"/
+// "text"), and #21521 shows a runtime plugin may not discover the HTML's modules
+// even when accepted (oven-sh/bun#17655, open).
+//
+// The seam that works is `bunfig.toml`'s `[serve.static].plugins`, which hooks
+// the dev server's *bundler*. Because Bun `onLoad` is first-match-wins, the
+// footer and the cascade-layer-order injection share ONE `.html` plugin —
+// `shared/bunHtmlHeadPlugin.ts` — which calls `injectSiteFooterFromEnv` (here)
+// and `injectLayerOrderStyle` (cssLayers.ts). That plugin is registered in dev
+// via bunfig and in prod via `Bun.build` in generate/build-html.ts, so the
+// footer now renders under `bun run dev` too (it is no longer prod-only).
+// `siteFooterPlugin` below remains a standalone footer-only plugin for callers
+// that want just the footer.
 //
 // Read PRIVACY_POLICY_URL once at construction (matches the build-time
 // caller's posture: env-gated, fail-silent on unset). The plugin is a
@@ -42,26 +50,31 @@ export type SiteFooterPluginOptions = {
   helpHref?: string;
 };
 
-export function siteFooterPlugin(
+/**
+ * The footer transform, env-gated. Reads the privacy/help hrefs from the
+ * environment (overridable via `opts`) and injects the footer; returns the HTML
+ * unchanged when no links are configured (fail-silent) or when a footer is
+ * already present (injectSiteFooter is idempotent). This is the reusable unit
+ * shared by the build-time plugin below and the dev/prod HTML-head plugin
+ * (shared/bunHtmlHeadPlugin.ts) — so dev and prod inject the same footer.
+ */
+export function injectSiteFooterFromEnv(
+  html: string,
   opts: SiteFooterPluginOptions = {},
-): BunPlugin {
-  const privacyHref = (opts.privacyHref ?? process.env.PRIVACY_POLICY_URL ?? "")
-    .trim();
-  const helpHref = (opts.helpHref ?? (process.env.SITE_URL ? "/help" : ""))
-    .trim();
+): string {
+  const privacyHref = (opts.privacyHref ?? process.env.PRIVACY_POLICY_URL ?? "").trim();
+  const helpHref = (opts.helpHref ?? (process.env.SITE_URL ? "/help" : "")).trim();
+  if (!privacyHref && !helpHref) return html;
+  return injectSiteFooter(html, { privacyHref, helpHref });
+}
+
+export function siteFooterPlugin(opts: SiteFooterPluginOptions = {}): BunPlugin {
   return {
     name: "presidocs:inject-site-footer",
     setup(build) {
-      // No links to show → register nothing. Same fail-silent posture as
-      // strip-served-html.ts's main(): the blog still ships, it just doesn't
-      // inject a footer in this deploy.
-      if (!privacyHref && !helpHref) return;
       build.onLoad({ filter: /\.html$/, namespace: "file" }, async (args) => {
         const html = await Bun.file(args.path).text();
-        return {
-          contents: injectSiteFooter(html, { privacyHref, helpHref }),
-          loader: "html",
-        };
+        return { contents: injectSiteFooterFromEnv(html, opts), loader: "html" };
       });
     },
   };
