@@ -201,6 +201,36 @@
     opacity: .85;
   }
 
+  /* "Back to all posts" link (client/backLink.ts) — the article's first child,
+     above the <h1>. A muted, small page-nav affordance; the arrow nudges left
+     on hover, the standard "go back" microinteraction. Injected by JS, so these
+     rules style markup the static HTML doesn't carry. */
+  .back-link {
+    display: inline-flex;
+    align-items: center;
+    gap: .4em;
+    margin: 0 0 .9rem;
+    font-size: .8rem;
+    line-height: 1.2;
+    color: var(--page-fg-muted);
+    text-decoration: none;
+  }
+  .back-link:hover { color: var(--page-fg); }
+  .back-link:focus-visible {
+    outline: 2px solid var(--page-fg-muted);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+  .back-link-icon { display: inline-flex; }
+  .back-link-icon svg {
+    width: .85em;
+    height: .85em;
+    fill: currentColor;
+    display: block;
+    transition: transform 120ms ease;
+  }
+  .back-link:hover .back-link-icon svg { transform: translateX(-2px); }
+
   /* "Copy as Markdown" split control (client/copyMarkdown.ts). A small, muted
      segmented pill in the byline/lede slot — a primary "Copy" button plus a
      caret that opens a dropdown ("Copy as Markdown" / "View as Markdown"),
@@ -211,6 +241,7 @@
     position: relative; /* containing block for the absolutely-placed menu */
     display: inline-flex;
     align-items: stretch;
+    vertical-align: top; /* align with the inline-level .subctl-row beside it */
     margin: .25rem 0 0;
     font-size: .8rem;
     line-height: 1.2;
@@ -367,13 +398,17 @@
   /* Subscribe split-controls (client/subscribe.ts) — the podcast-feed and
      article-feed siblings of the Copy-as-Markdown control. Same segmented-pill
      shape and surface language; a `.subctl-row` lays the (one or two) controls
-     out under the copy-md control with wrap. Injected by JS, so these rules
-     style markup the static HTML doesn't carry. */
+     out beside the copy-md control, on the same line. Inline-level (not block)
+     so it flows next to the inline-flex copy-md pill rather than dropping to its
+     own row; the whole row wraps as a unit on a too-narrow viewport, and its
+     own children wrap inside that. Injected by JS, so these rules style markup
+     the static HTML doesn't carry. */
   .subctl-row {
-    display: flex;
+    display: inline-flex;
+    vertical-align: top; /* top-align with the copy-md pill on the shared line */
     flex-wrap: wrap;
     gap: .5rem;
-    margin: .35rem 0 0;
+    margin: .25rem 0 0 .5rem; /* match copy-md's top; .5rem left = the inter-pill gap */
   }
   .subctl {
     position: relative; /* containing block for the absolutely-placed menu */

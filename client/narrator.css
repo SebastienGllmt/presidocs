@@ -23,7 +23,7 @@
    statement runs. Named-list statements can't reorder layers that have
    already been declared, so engine-layout ends up appended after
    engine-components and beats it. Unlayered sidesteps that entirely. */
-body { padding-block-end: 8rem; }
+body { padding-block-end: 10rem; }
 
 @layer engine-components {
 :root {
