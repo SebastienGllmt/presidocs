@@ -178,6 +178,20 @@ export function buildQuestions(ctx: HelpContext): HelpQuestion[] {
         `<code>${escHtml(ctx.feeds.atom)}</code> to any feed reader — NetNewsWire, Feedly, ` +
         `miniflux, Reeder. It tells you when a new post lands and carries the article itself.</p>`
       : "";
+    // Readers who want posts in THEIR own chat use the same feed via that
+    // platform's RSS integration — self-serve and reader-controlled, but polling
+    // (so not instant). Distinct from the author's instant publish-webhook push,
+    // which only reaches channels the author owns (see methodology → Subscription
+    // feeds for that audience split).
+    const chatLine = f.atom
+      ? `<h3 id="subscribe-chat">Get new posts in your own Slack or Discord</h3>` +
+        `<p>The same feed drops into a chat channel you control. In <strong>Slack</strong>, ` +
+        `run <code>/feed subscribe ${escHtml(ctx.feeds.atom)}</code> in the channel. In ` +
+        `<strong>Discord</strong>, point a third-party RSS bot (such as ` +
+        `<a href="https://monitorss.xyz/" rel="noopener">MonitoRSS</a>) at that same URL. ` +
+        `Both <em>poll</em> the feed, so posts show up on their schedule (Slack checks roughly hourly) ` +
+        `rather than the instant a post goes live.</p>`
+      : "";
     const podcastIntro = f.podcast
       ? `<h3 id="subscribe-podcast">Listen in a podcast app</h3>` +
         `<p>Add the podcast feed ` +
@@ -200,13 +214,18 @@ export function buildQuestions(ctx: HelpContext): HelpQuestion[] {
       question: "How do I subscribe or add this to my podcast app?",
       answerHtml:
         atomLine +
+        chatLine +
         podcastIntro +
         podcastApps +
         realtimeLine +
         `<p>There's no email list, no signup, and no tracking — subscribing just means adding a URL ` +
         `to an app you control.</p>`,
       answerText:
-        (f.atom ? `Follow new posts by adding the Atom feed ${ctx.feeds.atom} to any feed reader. ` : "") +
+        (f.atom
+          ? `Follow new posts by adding the Atom feed ${ctx.feeds.atom} to any feed reader — or pipe ` +
+            `it into your own chat (Slack: /feed subscribe <that URL>; Discord: a third-party RSS bot ` +
+            `like MonitoRSS at https://monitorss.xyz/), which poll the feed so updates aren't instant. `
+          : "") +
         (f.podcast
           ? `Listen in a podcast app by adding the RSS feed ${ctx.feeds.podcast} — it's Apple-Podcasts-compatible, ` +
             `so any app that adds a feed by URL works (Apple Podcasts via File → Follow a Show by URL on macOS or ` +

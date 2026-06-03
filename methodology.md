@@ -23,6 +23,7 @@ Key design decisions that shape the architecture:
 - **No light/dark toggle**: we will never support a dark-mode/light-mode switch, because we need to ensure generated visuals for charts, etc. appear correctly (too hard to do this for both modes)
 - **Figures are live and interactive.** Diagrams aren't static images or pre-rendered video — the `<figure>`'s markup is authored in the post and progressively enhanced into an animated, interactive diagram by a referenced [GSAP](#animated-figures) module (kept external, like the player's code, because the prod CSP forbids inline scripts/styles). The figure stays [comment-anchorable as a graphic](#anchoring-graphics) and can sync to narration. See [Animated figures](#animated-figures).
 - **Objects are CRDT-based; the *production* server is dumb storage.** Objects are managed via Automerge (CRDT library) and synced as content-addressed change objects in R2. Following this CRDT paradigm, the **production** server (the Cloudflare Worker) never runs Automerge or holds any other reconciliation logic — it just shuffles bytes. This is a *production deployment* constraint, not a universal one: it's what lets the comment data survive a malicious / buggy / different-version edge server, and it's why per-reader writes don't need server-side merge. **Localhost is exempt.** The dev Bun server and the offline build/authoring tools (`bun run generate`, `authoring/*`) run on the developer's machine, fully trusted, and freely run Automerge — merging every reader's blob, snapshotting, serializing to other formats. So "the server is dumb" should be read as "the *edge* server is dumb"; anything that only ever runs on localhost may be as smart as it likes.
+- **Authored content is trusted at its source; readers are not.** A presidocs blog is *single-tenant authoring*: everything under `posts/` — prose, figures, the spoken script — is written by the specific, trusted people who run the blog, never submitted by anonymous users. So we **don't defend the system against its own authors**. An author can already ship arbitrary HTML, scripts, and links to readers, so author-supplied text needs no sanitization *against itself* — e.g. a post title is forwarded verbatim to downstream channels (a publish-webhook to Discord/Slack passes a title through as-is, even one containing `@everyone`), because the author having that capability is not a new trust boundary. The party we *do* treat as untrusted is the **reader**: reader-contributed data (comments) is exactly what the dumb-edge-server + CRDT design above guards — a malicious or buggy edge server can't corrupt the merged comment history. The dividing line is *content authoring* (trusted) vs *reader interaction* (untrusted); if presidocs ever accepted untrusted multi-author content submission, that line would move and author-supplied text would need escaping — but today it does not.
 - **Cloudflare ecosystem in prod, Bun in dev.** We focus on leveraging the Cloudflare ecosyhstem for production (Workers for the HTTP layer, R2 for any dynamic blob, the Static Assets binding for static content). Bun is dev-only (`bun --hot index.ts`) and build-time only (`bun run generate`)
 - **Commenting as a core feature** Comments are done via OAuth login with the user's email. This allows us to not only apply recommended changes if relevant, but also follow-up with any commenter (via email or otherwise) to engage.
 - **AI-assisted iteration: the comment system *is* the editing surface.** The author leaves their own comments on a post via the same UI a reader does, interleaved with readers' feedback ("rephrase this paragraph", "add an example for X"). An offline tool then hands every unresolved thread — both sources, undifferentiated — to Claude, which edits the source HTML in one reviewable diff. No separate editor view, no parallel workflow for human-driven vs. reader-driven edits. The same mechanism that gathers reader questions is the mechanism that drives the next revision. See [AI-assisted authoring](#ai-assisted-authoring-authoring).
@@ -1543,7 +1544,8 @@ Decisions:
 - **Atom ids are permanent (RFC 4287 §4.2.6).** Each entry's tagURI takes its date from *that entry's own first-publish year*, so adding a later post with an *earlier* date never changes another entry's `<id>` (a global minimum year would rewrite every id and resurface the whole back catalogue as unread). The feed's own `<id>` uses a fixed `SITE_LAUNCH_YEAR`, never a min-across-posts. RSS `<guid isPermaLink="false">` is the (stable) post URL.
 - **Atom `<content type="html">` is entity-escaped** (the spec's normative form), not CDATA; the RSS `<content:encoded>` stays CDATA (RSS's own convention).
 - **Channel `<podcast:guid>` + `<atom:link rel="self">`.** The RSS channel carries a stable Podcasting-2.0 GUID — a dependency-free UUIDv5 over the feed URL with the spec's fixed namespace (verified against the spec's published example in a test) — plus an Atom self-link, both expected by podcast directories/validators.
-- **WebSub push is opt-in** ([WebSub], `WEBSUB_HUB`). When the env var names a hub, both feeds advertise it next to the self-link — `<link rel="hub">` in Atom, `<atom:link rel="hub">` in RSS — so a subscriber's reader can register with the hub and be **pushed** new posts within seconds instead of polling. The stateful half (subscriber list, verification, fan-out) lives in the hub, not here; the engine's only other duty is the publish notification, a post-deploy `POST` from [`generate/websub-ping.ts`](#subscription-feeds-atom--podcast-rss-generatefeedsts) that runs *after* `wrangler deploy` (the hub re-fetches the live feed) and pings each emitted topic (`/feed.xml` always, `/podcast.xml` when present). It's **defaultless on purpose** — a hub is a third-party (or self-hosted) dependency the operator picks explicitly, and the value must be the hub's POST endpoint — not just its homepage (recommended: `https://websubhub.com/hub` or Google's long-running `https://pubsubhubbub.appspot.com/`); unset → no hub link and the ping is a no-op. Pinging on every deploy is safe because the hub dedups by diffing the feed, so a deploy with no new post produces no subscriber traffic, and a failed ping is logged, never fatal. WebSub is well-supported by feed *readers* (NetNewsWire, Feedly, Inoreader) and largely ignored by chat platforms (Slack/Discord poll RSS or use incoming webhooks), so it's the reader-facing complement to — not a replacement for — a publisher webhook ([proposals/31](./proposals/31-publish-webhooks-discord-slack.md), the deferred Discord/Slack notification design).
+- **WebSub push is opt-in** ([WebSub], `WEBSUB_HUB`). When the env var names a hub, both feeds advertise it next to the self-link — `<link rel="hub">` in Atom, `<atom:link rel="hub">` in RSS — so a subscriber's reader can register with the hub and be **pushed** new posts within seconds instead of polling. The stateful half (subscriber list, verification, fan-out) lives in the hub, not here; the engine's only other duty is the publish notification, a post-deploy `POST` from [`generate/websub-ping.ts`](#subscription-feeds-atom--podcast-rss-generatefeedsts) that runs *after* `wrangler deploy` (the hub re-fetches the live feed) and pings each emitted topic (`/feed.xml` always, `/podcast.xml` when present). It's **defaultless on purpose** — a hub is a third-party (or self-hosted) dependency the operator picks explicitly, and the value must be the hub's POST endpoint — not just its homepage (recommended: `https://websubhub.com/hub` or Google's long-running `https://pubsubhubbub.appspot.com/`); unset → no hub link and the ping is a no-op. Pinging on every deploy is safe because the hub dedups by diffing the feed, so a deploy with no new post produces no subscriber traffic, and a failed ping is logged, never fatal. WebSub is well-supported by feed *readers* (NetNewsWire, Feedly, Inoreader) and largely ignored by chat platforms (Slack/Discord poll RSS or use incoming webhooks), so it's the reader-facing complement to — not a replacement for — the publish webhooks below.
+- **Publish webhooks push to chat channels** (opt-in, `DISCORD_WEBHOOK_URL` / `SLACK_WEBHOOK_URL` / `WEBHOOK_URL`). Where WebSub serves feed readers, this gets an *instant message into a Discord/Slack channel* (or any HTTP endpoint) on publish — the case WebSub can't, since those platforms don't speak it. We POST outbound ourselves rather than lean on polling integrations (Slack's RSS app, Discord's MonitoRSS, Zapier): those are laggy (Slack polls ~hourly) and live in someone else's account, whereas an instant, self-owned POST on deploy is the whole point. **This draws a deliberate audience line.** Instant push reaches *only channels the author owns* (the env-configured webhook URLs). A **reader** who wants new posts in *their own* Slack/Discord is served differently: they add the public Atom feed through that platform's own RSS integration (Slack's `/feed subscribe`, a Discord RSS bot like [MonitoRSS](https://monitorss.xyz/)) — reader-controlled and self-serve, but *polling*, so not instant (this is the reader path documented on the [help page](#reader-facing-help--feature-discovery-generatehelp-pagets)). We deliberately do **not** offer instant reader-self-serve push to arbitrary reader endpoints: that would require a per-subscriber endpoint registry and publish-time fan-out — exactly the edge state the dumb-edge-server rule forbids — and WebSub, the standard for reader-registered push, isn't spoken by chat platforms. So a reader's *instant* option is to join a channel the author already pushes to; their *self-serve* option is the feed. The mechanism is the same post-deploy slot as the WebSub ping: [`generate/publish-notify.ts`](#subscription-feeds-atom--podcast-rss-generatefeedsts) builds the channel payloads and `POST`s them; it never touches the edge. The "new posts only, never re-spam" trigger uses **the live deployed feed as its state** (deliberately no committed notified-set file, which would drift since deploy doesn't commit) — the set of new posts is `ids(new Atom feed) − ids(currently-live Atom feed)` (the Atom feed only: an audio post is already one Atom entry, so `podcast.xml` is never separately diffed, which would double-announce it), and because Atom entry ids are immutable (above), an edit or a no-op re-deploy yields an empty delta. Reading the live feed must happen *before* `wrangler deploy` flips it, so the step is split in two around the deploy: a pre-deploy `--snapshot` writes the live ids to an ephemeral, gitignored `generated/.notify-snapshot.json`, and a post-deploy `--notify` diffs the built feed against it and sends the delta. First-ever deploy announces at most the newest post (never the backlog); failures are paced, logged, and never fatal. Per-blog (each blog its own channels), secrets handled like `SESSION_SECRET`. Discord/Slack get their native payload shapes; the generic `WEBHOOK_URL` **only** (Discord/Slack require their own fixed shapes and verify no signatures) can opt into a CloudEvents envelope (`WEBHOOK_FORMAT=cloudevents`) and/or Standard Webhooks signing (`WEBHOOK_SIGNING_SECRET`). Titles/summaries pass through verbatim per the [trusted-author model](#what-were-building). **Discord/Slack are typed, not SDK'd:** an incoming webhook is a plain JSON POST, so the transport is our own `fetch` and we depend only on the platforms' official *type* packages (`discord-api-types`, `@slack/types` — both zero-runtime-dependency dev deps), so the compiler checks every payload against Discord/Slack's own field definitions (e.g. `APIEmbed`) and applies their hard limits (Discord title ≤256 / description ≤4096, truncated). No runtime SDK — `discord.js` drags a gateway/websocket tree and `@slack/webhook` pulls `axios`, both overkill for one POST. The optional CloudEvents envelope and Standard Webhooks signature are likewise **hand-rolled** (a few lines of JSON / `crypto` HMAC), not their SDKs. Deferred enhancements (richer message content, live-channel acceptance validation, extra channels) live in [proposals/33](./proposals/33-publish-webhooks-enhancements.md).
 - **`<enclosure length>` is the real byte size** (`stat` of the built MP3), not `duration × bitrate` — MP3 framing isn't uniform and a wrong length makes some clients refuse the episode. The audio URL is the content-hashed `full.<hash>.mp3` read straight from the manifest, so the feed always points at the current track.
 - **Chapters in both the JSON sidecar *and* the MP3 itself.** `chapters.json` (ms → seconds) gives every modern podcast client chapter markers through `<podcast:chapters>` — the rich surface. The MP3 also carries [ID3v2 CHAP+CTOC frames](#relation-to-other-specifications) for the (older / minimalist) clients that only read in-file chapters, embedded at encode time via an ffmetadata sidecar (`-id3v2_version 3`) so the same chapter offsets the manifest uses land verbatim in the MP3. The encode therefore happens *after* the per-chapter offsets are summed from artifact durations, so the in-file times match the manifest byte-for-byte without a second pass. Hierarchy degrades to a flat list with part-prefixed child titles, same shape as the `<podcast:chapters>` sidecar — true nesting lives only on the in-page player.
 - **Plain-text fields are entity-decoded** (`shared/htmlEntities.ts`) before XML-escaping, since `HTMLRewriter` hands back `&mdash;` etc. intact and a naive re-escape would double-encode them; body HTML rides in `type="html"` CDATA untouched.
@@ -1993,6 +1995,35 @@ Reference shelf for an ongoing Lighthouse / Web Vitals improvement pass — thes
 [DOMDistiller]: https://chromium.googlesource.com/chromium/dom-distiller
 [ScreenAI]: https://chromium.googlesource.com/chromium/src/+/HEAD/services/screen_ai/README.md
 
+<!-- Specs surfaced by the proposals/32 (stable shareable audio URL)
+investigation. Registered here ahead of implementation; they are NOT yet cited
+in the prose above, so unlike every other tag in this section these are
+deliberate orphans until that feature lands. Already-mirrored specs that bear
+on the same design are reused, not duplicated: [ImmutableResponses] (RFC 8246,
+the inverse policy — immutable belongs on the hashed URL, never the stable one),
+[RSS2]/[ApplePodcast]/[PodcastNS] (enclosure, episode GUID, podcast:integrity),
+[Atom], and [RFC7538] (308 — the redirect status to AVOID for a stable→hash
+hop). -->
+[RFC9110]: https://www.rfc-editor.org/rfc/rfc9110.html
+[RFC9111]: https://www.rfc-editor.org/rfc/rfc9111.html
+[RFC5861]: https://www.rfc-editor.org/rfc/rfc5861.html
+[RFC9213]: https://www.rfc-editor.org/rfc/rfc9213.html
+[RFC9530]: https://www.rfc-editor.org/rfc/rfc9530.html
+[RFC3986]: https://www.rfc-editor.org/rfc/rfc3986.html
+[RFC3003]: https://www.rfc-editor.org/rfc/rfc3003.html
+[RFC8288]: https://www.rfc-editor.org/rfc/rfc8288.html
+[RFC6596]: https://www.rfc-editor.org/rfc/rfc6596.html
+[RFC6266]: https://www.rfc-editor.org/rfc/rfc6266.html
+[RFC8615]: https://www.rfc-editor.org/rfc/rfc8615.html
+[CoolURIs]: https://www.w3.org/Provider/Style/URI
+[CoolURIsSW]: https://www.w3.org/TR/cooluris/
+[HTMLMedia]: https://html.spec.whatwg.org/multipage/media.html
+[MSEMpegAudio]: https://www.w3.org/TR/mse-byte-stream-format-mpeg-audio/
+[SRI2]: https://www.w3.org/TR/sri-2/
+[EdgeArch]: https://www.w3.org/TR/edge-arch
+[KeyHeader]: https://www.ietf.org/archive/id/draft-ietf-httpbis-key-01.txt
+[ClearSiteData]: https://www.w3.org/TR/clear-site-data/
+
 <!-- For LLMs: local copies of the specs above. (No local copy of [TwitterCards]
 — developer.x.com renders it client-side as a JS app, so there is no static
 document to mirror; use the web link. The Twitter Card vocabulary we emit also
@@ -2104,5 +2135,37 @@ each backed by a mirrored W3C/WICG spec above. Likewise no local copies of
 Observatory just runs Google Lighthouse and its RUM uses the `web-vitals`
 library, so these are product docs / a code repo, not new specs; the metric
 definitions they rely on are the same mirrored W3C/WICG specs above.)
+
+Local copies of the proposals/32 specs (web links in the second-to-last block).
+All have a static document, so all are mirrored — including the ones the
+investigation judged NOT useful, flagged inline so they aren't mistaken for
+load-bearing: [EdgeArch] (the pre-RFC-9213 vendor Surrogate-Control mechanism —
+superseded by [RFC9213] for our CDN, kept for reference), [KeyHeader] (an
+EXPIRED, never-standardized IETF draft for a richer secondary cache key — do not
+design around it; mirrored as the original `.txt` Internet-Draft), [ClearSiteData]
+(clears CLIENT state, can't target one URL's CDN-cached bytes — not an
+invalidation tool here), and [RFC8615] (well-known URIs — irrelevant to serving
+the media, only to discovery metadata). [SRI2] is mirrored but does NOT yet
+cover `<audio>`/`<source>`; its relevance is purely as the hash format
+[PodcastNS]'s `podcast:integrity` reuses.
+[RFC9110]: ./specs/HTTPSemantics-spec.html
+[RFC9111]: ./specs/HTTPCaching-spec.html
+[RFC5861]: ./specs/StaleContentExtensions-spec.html
+[RFC9213]: ./specs/TargetedCacheControl-spec.html
+[RFC9530]: ./specs/DigestFields-spec.html
+[RFC3986]: ./specs/URI-spec.html
+[RFC3003]: ./specs/AudioMpegMediaType-spec.html
+[RFC8288]: ./specs/WebLinking-spec.html
+[RFC6596]: ./specs/CanonicalLinkRelation-spec.html
+[RFC6266]: ./specs/ContentDisposition-spec.html
+[RFC8615]: ./specs/WellKnownURIs-spec.html
+[CoolURIs]: ./specs/CoolURIs-spec.html
+[CoolURIsSW]: ./specs/CoolURIsSemanticWeb-spec.html
+[HTMLMedia]: ./specs/HTMLMediaElements-spec.html
+[MSEMpegAudio]: ./specs/MSEMpegAudioByteStream-spec.html
+[SRI2]: ./specs/SRI2-spec.html
+[EdgeArch]: ./specs/EdgeArchitecture-spec.html
+[KeyHeader]: ./specs/KeyHeader-spec.txt
+[ClearSiteData]: ./specs/ClearSiteData-spec.html
 -->
 

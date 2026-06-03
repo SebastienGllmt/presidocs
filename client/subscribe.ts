@@ -33,6 +33,7 @@ import faPlay from "@fortawesome/fontawesome-free/svgs/solid/play.svg" with { ty
 import faLink from "@fortawesome/fontawesome-free/svgs/solid/link.svg" with { type: "text" };
 import faCheck from "@fortawesome/fontawesome-free/svgs/solid/check.svg" with { type: "text" };
 import faInfo from "@fortawesome/fontawesome-free/svgs/solid/circle-info.svg" with { type: "text" };
+import faComments from "@fortawesome/fontawesome-free/svgs/solid/comments.svg" with { type: "text" };
 import faChevron from "@fortawesome/fontawesome-free/svgs/solid/chevron-down.svg" with { type: "text" };
 import faExternal from "@fortawesome/fontawesome-free/svgs/solid/up-right-from-square.svg" with { type: "text" };
 
@@ -167,6 +168,14 @@ export function buildConfigs(
         title: "Copy article feed",
         desc: "The Atom feed URL (RSS-compatible)",
         text: articleFeed,
+      },
+      {
+        kind: "link",
+        icon: faComments,
+        title: "Use in Slack or Discord",
+        desc: "Pipe the feed into your own chat channel",
+        href: `${origin}/help#subscribe-chat`,
+        newTab: true,
       },
       {
         kind: "link",

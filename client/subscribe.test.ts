@@ -69,11 +69,18 @@ test("buildConfigs — text-only post yields the article control alone", () => {
   expect(article.items.map((i) => i.title)).toEqual([
     "Open in feed reader",
     "Copy article feed",
+    "Use in Slack or Discord",
     "Learn more",
   ]);
   const open = article.items[0]!;
   if (open.kind === "link") expect(open.href).toBe("feed://blog.example.com/feed.xml");
-  const learn = article.items[2]!;
+  // The chat item points readers at the help section for their own Slack/Discord.
+  const chat = article.items[2]!;
+  if (chat.kind === "link") {
+    expect(chat.href).toBe("https://blog.example.com/help#subscribe-chat");
+    expect(chat.newTab).toBe(true);
+  }
+  const learn = article.items[3]!;
   if (learn.kind === "link") {
     expect(learn.href).toBe("https://blog.example.com/help#subscribe-articles");
   }
