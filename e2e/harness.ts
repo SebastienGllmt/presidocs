@@ -79,6 +79,39 @@ export async function mintSessionCookie(
   return { name: "blog-session", value };
 }
 
+/**
+ * Like `mintSessionCookie`, but signs the session with a post's *author*
+ * email so the server-authoritative `isPostAuthor` check passes and the UI
+ * runs in author mode (the unresolved-count badge, the per-card thread-id
+ * chip, author-resolve). The email is read from the post's
+ * `<meta name="author-email">` so the test isn't pinned to one blog. The
+ * `userId` stays unique per call for store isolation — `isPostAuthor` keys on
+ * email, not id, so a distinct id is still "the author".
+ */
+export async function mintAuthorSessionCookie(
+  blogDir: string,
+  slug: string,
+  uniq: string,
+): Promise<{ name: string; value: string }> {
+  const html = readFileSync(join(blogDir, "posts", `${slug}.html`), "utf8");
+  const m =
+    html.match(/<meta\s+[^>]*name=["']author-email["'][^>]*content=["']([^"']+)["']/i) ??
+    html.match(/<meta\s+[^>]*content=["']([^"']+)["'][^>]*name=["']author-email["']/i);
+  if (!m) throw new Error(`no <meta name="author-email"> in posts/${slug}.html`);
+  const devVars = readFileSync(join(blogDir, ".dev.vars"), "utf8");
+  const secret = devVars.match(/^SESSION_SECRET\s*=\s*"?([^"\n]+)"?/m);
+  if (!secret) throw new Error(`SESSION_SECRET not found in ${blogDir}/.dev.vars`);
+  process.env.SESSION_SECRET = secret[1]!.trim();
+  const value = await createSessionToken({
+    userId: `google:e2e-author-${uniq}`,
+    email: m[1]!.trim(),
+    emailVerified: true,
+    name: "E2E Author",
+    provider: "google",
+  });
+  return { name: "blog-session", value };
+}
+
 const CHROME_CANDIDATES = [
   "/usr/bin/google-chrome",
   "/usr/bin/google-chrome-stable",

@@ -72,6 +72,12 @@ import {
   walkBlocks,
 } from "./commentsDom.ts";
 
+// Build-time define (Bun.build `define` map) — `undefined` under the fast
+// `bun run dev` server, `"false"` in built/dev:edge/prod. Used only to gate
+// the dev-only e2e test seam (`installTestHooks`); see swRegister.ts for the
+// same pattern. Never true in a shipped bundle.
+declare const __BUN_DEV__: boolean | undefined;
+
 type BlockInfo = {
   id: string;
   element: HTMLElement;
@@ -312,6 +318,16 @@ class CommentSystem {
   // alongside `drafts`. Carries through reloads so the user sees their
   // half-typed comment when they come back.
   private draftBodies = new Map<string, string>();
+  // In-progress reply text for SAVED threads, keyed by thread id. The
+  // saved-thread analogue of `draftBodies`: it lets a half-typed reply
+  // survive a `renderAll()` card rebuild (e.g. the user starts a reply,
+  // then opens a NEW comment — which selects article text, blurring the
+  // reply box, so the focus-based capture/restore in `renderAll` can't
+  // rescue it). Restored in `buildComposer`, written on every keystroke,
+  // cleared on submit. Session-only and deliberately NOT in
+  // `draftsStorage`: an unsent reply has no draft thread to belong to,
+  // and persisting it would need a storage-schema change for little gain.
+  private replyBodies = new Map<string, string>();
   // Persistence handle for `drafts` + `draftBodies`. Null until identity
   // is loaded — the storage key embeds the userId so we can't construct
   // it before login, matching how `CommentStore` is scoped.
@@ -352,6 +368,19 @@ class CommentSystem {
   // Set while a card is being scrolled-to / pulsed, used to suppress the
   // reposition pass from fighting the smooth-scroll.
   private pulseTimer = 0;
+
+  // Render-coalescing state for the involuntary (background-poll) render
+  // path — see `backgroundRender`. `lastRenderSignature` is a digest of
+  // everything `renderAll` draws, captured at the end of each render, so a
+  // poll that pulled nothing new can skip the teardown entirely. `composing`
+  // tracks whether the user is mid-IME-composition in a composer textarea
+  // (set via composition events in `buildComposer`); a background render that
+  // lands during composition is deferred to `compositionend` via
+  // `pendingBackgroundRender` rather than tearing down the live textarea (and
+  // dropping the pre-commit conversion text with it).
+  private lastRenderSignature: string | null = null;
+  private composing = false;
+  private pendingBackgroundRender = false;
 
   async init() {
     this.articleRoot = document.querySelector<HTMLElement>(
@@ -494,6 +523,8 @@ class CommentSystem {
     }
 
     this.renderAll();
+
+    this.installTestHooks();
 
     document.addEventListener("selectionchange", () => this.onSelectionChange());
     document.addEventListener("click", (e) => this.onAnyClick(e));
@@ -720,16 +751,26 @@ class CommentSystem {
   // Author-only at-a-glance counter of unresolved threads, mounted in
   // the column header. The intent is "did I miss any comments?"
   // surfacing — without it the author has to scroll the whole post to
-  // be sure. Hidden for non-authors and when there's no thread at all
-  // (a fresh post showing "0 unresolved" is just noise). When the post
-  // has threads we keep it mounted even at 0 so the author sees the
-  // explicit confirmation that everything's been dealt with. Clicks
-  // cycle through the unresolved threads in document order.
+  // be sure. Hidden for non-authors and when there's nothing to report
+  // (no saved thread AND no unsent draft — a bare "0 unresolved" on a
+  // fresh post is just noise). When the post has threads we keep it
+  // mounted even at 0 so the author sees explicit confirmation that
+  // everything's been dealt with; it also calls out unsent drafts via a
+  // "(+N draft)" suffix (or "N unsent drafts" when nothing's posted yet)
+  // so a half-written-but-never-submitted comment can't masquerade as
+  // done. Clicks cycle through the unresolved threads in document order.
   private renderUnresolvedCount() {
     if (!this.column) return;
     const author = this.isAuthorMode();
     const totalThreads = this.snapshot.length;
-    if (!author || totalThreads === 0) {
+    const drafts = this.drafts.length;
+    // Show the badge for the author whenever there's something to report: any
+    // saved thread, OR any unsent draft. The draft case surfaces a "you have
+    // unposted comments" nudge even before the first one is published — the
+    // exact trap where a half-written comment that was never submitted looks
+    // done but doesn't count. Nothing at all → no badge (a bare "0 unresolved"
+    // on a fresh post is just noise).
+    if (!author || (totalThreads === 0 && drafts === 0)) {
       this.unresolvedCountEl?.remove();
       this.unresolvedCountEl = null;
       this.lastUnresolvedIds = [];
@@ -739,6 +780,9 @@ class CommentSystem {
 
     const unresolved = this.snapshot.filter((t) => !this.threadIsResolved(t));
     const count = unresolved.length;
+    const draftNote = drafts > 0
+      ? ` (+${drafts} draft${drafts === 1 ? "" : "s"})`
+      : "";
 
     if (!this.unresolvedCountEl) {
       const btn = document.createElement("button");
@@ -759,14 +803,23 @@ class CommentSystem {
     }
 
     const el = this.unresolvedCountEl;
-    if (count === 0) {
+    if (totalThreads === 0) {
+      // Only unsent drafts exist — nothing has been posted yet.
+      el.dataset.state = "drafts";
+      el.textContent = `${drafts} unsent draft${drafts === 1 ? "" : "s"}`;
+      el.title = "You have unsent drafts — press “Comment” on a card to post it";
+      el.disabled = true;
+    } else if (count === 0) {
       el.dataset.state = "clear";
-      el.textContent = "All comments resolved";
-      el.title = "No unresolved threads on this post";
+      el.textContent = "All comments resolved" + draftNote;
+      el.title = drafts > 0
+        ? "No unresolved threads; you also have unsent drafts"
+        : "No unresolved threads on this post";
       el.disabled = true;
     } else {
       el.dataset.state = "pending";
-      el.textContent = `${count} unresolved comment${count === 1 ? "" : "s"}`;
+      el.textContent =
+        `${count} unresolved comment${count === 1 ? "" : "s"}` + draftNote;
       el.title = "Jump to the next unresolved comment";
       el.disabled = false;
     }
@@ -1209,6 +1262,10 @@ class CommentSystem {
     this.updateBottomSpacer();
 
     this.restoreActiveComposer(activeComposer);
+
+    // Record what we just drew so the background-poll path can skip a render
+    // that wouldn't change anything (see `backgroundRender`).
+    this.lastRenderSignature = this.computeRenderSignature();
   }
 
   // Snapshot of an in-progress composer textarea, taken before a render
@@ -1462,21 +1519,57 @@ class CommentSystem {
         this.draftBodies.set(thread.id, ta.value);
         this.persistDrafts();
       });
+    } else {
+      // Replies to saved threads get the same render-surviving buffer, but
+      // in-memory only (see `replyBodies`). Without it, opening a new
+      // comment mid-reply rebuilds this card with an empty box and the
+      // typed reply is lost — the focus-based capture/restore can't help
+      // because making the selection already blurred this textarea.
+      const saved = this.replyBodies.get(thread.id);
+      if (saved) ta.value = saved;
+      ta.addEventListener("input", () => {
+        if (ta.value) this.replyBodies.set(thread.id, ta.value);
+        else this.replyBodies.delete(thread.id);
+      });
     }
     // Stop card-click bubbling from inside the textarea (would re-trigger
     // anchor scrolling on every click while typing).
     ta.addEventListener("click", (e) => e.stopPropagation());
+    // Track IME composition so a background render doesn't tear this textarea
+    // down mid-conversion (the uncommitted pre-edit text isn't in `.value`
+    // and would be lost). A render requested while composing is deferred and
+    // flushed here on `compositionend`. Matters most for CJK input.
+    ta.addEventListener("compositionstart", () => {
+      this.composing = true;
+    });
+    ta.addEventListener("compositionend", () => {
+      this.composing = false;
+      if (this.pendingBackgroundRender) {
+        this.pendingBackgroundRender = false;
+        this.backgroundRender();
+      }
+    });
     composer.appendChild(ta);
 
     const row = document.createElement("div");
     row.className = "cmt-reply-row";
 
-    // Author-only: surface the thread id so the author can correlate this
-    // card with the `id=<threadId>` lines /process-comments prints (and the
-    // ids `resolve-threads` accepts). Readers never see it; drafts have no
-    // exported id yet so we skip them. CSS pins it to the row's left edge
-    // (margin-right:auto), so it reads as "to the left of Hide". Click copies.
-    if (!isDraft && this.isAuthorMode()) {
+    // Left edge of the action row. For a DRAFT it holds a "Draft" status tag
+    // — the unposted state has to be unmistakable (a draft never enters the
+    // CRDT, so a comment typed but never submitted silently doesn't count),
+    // and a draft has no thread id yet, so this slot is otherwise empty. For a
+    // SAVED thread (author only) it instead surfaces the thread id so the
+    // author can correlate the card with the `id=<threadId>` lines
+    // /process-comments prints (and `resolve-threads` accepts); readers never
+    // see it. Both pin left via `margin-right:auto` so the action buttons stay
+    // grouped on the right.
+    if (isDraft) {
+      const tag = document.createElement("span");
+      tag.className = "cmt-draft-tag";
+      tag.textContent = "Draft";
+      tag.title = "Not posted yet — press “Comment” to publish it";
+      row.appendChild(tag);
+    } else if (this.isAuthorMode()) {
       const id = document.createElement("button");
       id.type = "button";
       id.className = "cmt-thread-id";
@@ -1514,10 +1607,7 @@ class CommentSystem {
       cancel.addEventListener("click", (e) => {
         e.stopPropagation();
         if (isDraft) {
-          this.drafts = this.drafts.filter((t) => t.id !== thread.id);
-          this.draftBodies.delete(thread.id);
-          this.persistDrafts();
-          this.renderAll();
+          this.discardDraft(thread.id);
         } else {
           this.hiddenCardIds.add(thread.id);
           this.renderAll();
@@ -1607,6 +1697,9 @@ class CommentSystem {
         this.persistDrafts();
       } else {
         this.store.addReply(thread.id, reply);
+        // Drop the in-progress buffer so the post-submit re-render doesn't
+        // refill the reply box with the text we just sent.
+        this.replyBodies.delete(thread.id);
       }
       ta.value = "";
       this.refreshSnapshotAndRender();
@@ -1616,9 +1709,27 @@ class CommentSystem {
       doSubmit();
     });
     ta.addEventListener("keydown", (e) => {
+      // While an IME composition is active, Enter/Esc belong to the
+      // converter (commit a candidate / cancel the conversion), not to us —
+      // acting on them would submit or discard mid-conversion. `isComposing`
+      // is the platform's own signal for this. Critical for CJK input.
+      if (e.isComposing) return;
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
         e.preventDefault();
         doSubmit();
+        return;
+      }
+      // Esc on an untouched new comment discards it — the light-dismiss
+      // users expect from the mobile popover, extended to the desktop
+      // column card (which isn't a popover, so Esc would otherwise do
+      // nothing). Gated on an empty box so we never throw away typed
+      // work — once there's text, Esc is inert and the draft stays.
+      // Draft-only: a reply's dismiss is "Hide" (recoverable), not a
+      // discard, so Esc there shouldn't destroy the card. `preventDefault`
+      // keeps the native popover from also light-dismissing underneath us.
+      if (e.key === "Escape" && isDraft && !ta.value.trim()) {
+        e.preventDefault();
+        this.discardDraft(thread.id);
       }
     });
 
@@ -1675,7 +1786,78 @@ class CommentSystem {
         console.warn("poll: resolutions hydrate failed:", err);
       }
     }
-    this.refreshSnapshotAndRender();
+    this.backgroundRender();
+  }
+
+  // The involuntary re-render entry point: the poll calls this (never
+  // `renderAll` directly), as does the dev test seam. Unlike a render driven
+  // by the user's own mutation, a background render can land while the user is
+  // mid-sentence in a composer — so it carries two guards a mutation render
+  // doesn't need:
+  //   1. If the user is mid-IME-composition, defer until `compositionend` —
+  //      tearing the textarea down mid-conversion drops the uncommitted
+  //      pre-edit text (which lives only in the DOM, not in `.value`). This
+  //      matters most for CJK input.
+  //   2. If nothing the render draws has changed since the last render
+  //      (the common case — a 60s tick that pulled no new comments), skip the
+  //      teardown entirely. This is the "no DOM work beyond the snapshot
+  //      comparison" the poll comment promises.
+  // Either guard leaving work undone is safe: the next genuine change (or the
+  // deferred run on `compositionend`) renders it.
+  private backgroundRender(): void {
+    if (!this.store) return;
+    if (this.composing) {
+      this.pendingBackgroundRender = true;
+      return;
+    }
+    this.snapshot = this.store.snapshot();
+    if (this.computeRenderSignature() === this.lastRenderSignature) return;
+    this.renderAll();
+  }
+
+  // A digest of everything `renderAll` draws, so the background path can tell
+  // a no-op poll from one that actually moved something. Covers the card set
+  // and each card's render-affecting state: draft/resolved/stale/hidden flags
+  // and the reply list (ids + tombstone state, so a new or deleted reply is a
+  // change). Author mode and the version banner gate header surfaces, so they
+  // count too. Deliberately excludes in-progress textarea bodies (drafts'
+  // bodies live in `draftBodies` and the textarea handles its own text — a
+  // keystroke must not force a column rebuild) and layout-only state (stack
+  // offsets, scroll), which a poll never changes.
+  private computeRenderSignature(): string {
+    const parts: string[] = [
+      this.isAuthorMode() ? "a1" : "a0",
+      this.previousVersionHash ? "v1" : "v0",
+    ];
+    for (const thread of [...this.snapshot, ...this.drafts]) {
+      const isDraft = this.drafts.includes(thread);
+      const flags =
+        (isDraft ? "d" : "") +
+        (this.threadIsResolved(thread) ? "r" : "") +
+        (!isDraft && isTextTarget(thread.target) && this.threadIsStale(thread) ? "s" : "") +
+        (this.hiddenCardIds.has(thread.id) ? "h" : "");
+      const replies = thread.replies
+        .map((r) => r.id + (isDeleted(r) ? "x" : ""))
+        .join(".");
+      parts.push(`${thread.id}:${flags}:${replies}`);
+    }
+    return parts.join("|");
+  }
+
+  // Dev/test-only seam: a handle for the real-browser e2e suite to drive the
+  // two render paths deterministically. No user gesture produces a background
+  // no-op render, and waiting on the real 60s poll in a test is flaky — so the
+  // suite calls these instead. Gated on the dev define, so it's absent from
+  // every built/prod bundle (`__BUN_DEV__` is `"false"` there).
+  private installTestHooks(): void {
+    if (!(typeof __BUN_DEV__ === "undefined" || __BUN_DEV__)) return;
+    (window as unknown as { __cmtTest?: Record<string, () => void> }).__cmtTest = {
+      // Unconditional full re-render — exercises the capture/restore of the
+      // focused composer that a delta-bearing background render relies on.
+      forceRender: () => this.renderAll(),
+      // The guarded involuntary path: skips on no-delta, defers during IME.
+      backgroundRender: () => this.backgroundRender(),
+    };
   }
 
   // Re-pull the JSON snapshot from the store and re-render. Called after
@@ -2014,6 +2196,21 @@ class CommentSystem {
   // localStorage. Called after any mutation that adds, removes, or
   // edits a draft. The bodies map is filtered through the current
   // `drafts` array so a stray entry for a removed thread can't leak.
+  // Discard an unsubmitted draft entirely — drop the thread, its
+  // in-progress body, and persist the removal, then re-render. Shared by
+  // the composer's "Cancel" button and the Esc-on-empty light-dismiss.
+  private discardDraft(threadId: string): void {
+    this.drafts = this.drafts.filter((t) => t.id !== threadId);
+    this.draftBodies.delete(threadId);
+    this.persistDrafts();
+    // If this draft was the open mobile popover, close it properly
+    // (hides the popover + clears the body class) — `preventDefault` on
+    // the Esc keydown suppresses the platform's own light-dismiss, so
+    // without this the `cmt-mobile-popover-active` class would linger.
+    if (this.activeCardId === threadId) this.setActiveCard(null);
+    this.renderAll();
+  }
+
   private persistDrafts(): void {
     if (!this.draftsStorage) return;
     const entries = this.drafts.map((thread) => ({

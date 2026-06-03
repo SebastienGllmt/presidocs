@@ -334,6 +334,20 @@
   white-space: nowrap;
 }
 .cmt-thread-id:hover { background: #eef0f3; color: var(--cmt-fg); }
+/* "Draft" status tag — occupies the same row's left edge a saved thread's
+   id chip would (`margin-right:auto`), since a draft has no id. Blue accent
+   to match the draft card frame; makes the unposted state unmistakable. */
+.cmt-draft-tag {
+  margin-right: auto;
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(9, 105, 218, 0.12);
+  color: var(--cmt-draft-border);
+  font: 700 10px/1.2 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 .cmt-reply-cancel,
 .cmt-reply-resolve,
 .cmt-reply-submit {
@@ -614,6 +628,14 @@ body.cmt-identity-dismissed .cmt-identity { display: none; }
 }
 .cmt-unresolved-count[data-state="clear"] {
   color: var(--cmt-fg-muted);
+  cursor: default;
+}
+/* Drafts-only: nothing posted yet, just unsent drafts. Blue accent to match
+   the draft cards' frame; not actionable (nothing unresolved to jump to). */
+.cmt-unresolved-count[data-state="drafts"] {
+  background: rgba(9, 105, 218, 0.08);
+  border-color: var(--cmt-draft-border);
+  color: #0b4a8f;
   cursor: default;
 }
 
