@@ -344,6 +344,68 @@ test("[chromium] the comment header rail stays pinned in the top gutter, not at 
   }
 }, 90_000);
 
+// The pinned rail shares the cards' gutter, so a card anchored near the top of
+// the article would rest *under* it (identity card / version surfaces / unresolved
+// count occluded). `adjustCardStacking` seeds the cascade with the rail's bottom
+// so those cards fall below it. We force the overlap deterministically by growing
+// the rail (independent of this post's exact top geometry), then assert the top
+// card cleared it. Chromium-only: the stack pass is plain, engine-agnostic JS.
+test("[chromium] a comment anchored under the header rail cascades below it", async () => {
+  const browser = await chromium.launch({ executablePath: CHROME, args: ["--no-sandbox"] });
+  try {
+    const cookie = await mintSessionCookie(resolveBlogDir(), `railcollide-${++nonce}-${server.baseURL.split(":").pop()}`);
+    const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+    await ctx.addCookies([{ name: cookie.name, value: cookie.value, domain: "localhost", path: "/", httpOnly: true, sameSite: "Lax" }]);
+    const page = await ctx.newPage();
+    await gotoPost(page, "/posts/offer-files");
+    await page.locator(".cmt-rail").waitFor({ state: "attached", timeout: 10000 });
+
+    const blocks = await normalParagraphIndices(page);
+    // Topmost prose paragraph — its card anchors highest, nearest the rail.
+    await seedThreadViaUI(page, blocks[0]!, "comment near the very top");
+
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.addStyleTag({ content: ".cmt-card { transition: none !important }" });
+
+    // Stage the overlap regardless of where this post's first paragraph sits:
+    // grow the rail tall enough to cover the top card, then nudge the stack pass
+    // (it re-runs on resize) to react to the new rail height.
+    await page.evaluate(() => {
+      const rail = document.querySelector<HTMLElement>(".cmt-rail")!;
+      const filler = document.createElement("div");
+      filler.style.height = "600px";
+      rail.appendChild(filler);
+      window.dispatchEvent(new Event("resize"));
+    });
+    await page.waitForTimeout(400);
+
+    const r = await page.evaluate(() => {
+      const rail = document.querySelector<HTMLElement>(".cmt-rail")!.getBoundingClientRect();
+      const cards = [...document.querySelectorAll<HTMLElement>(".cmt-card:not([data-draft])")];
+      return {
+        railBottom: Math.round(rail.bottom),
+        railHeight: Math.round(rail.height),
+        tops: cards.map((c) => Math.round(c.getBoundingClientRect().top)),
+      };
+    });
+    console.log("[chromium] rail-collide:", JSON.stringify(r));
+
+    expect(r.railHeight, "rail was grown to overlap the top card").toBeGreaterThan(400);
+    expect(r.tops.length, "the seeded comment renders as a card").toBeGreaterThanOrEqual(1);
+    // No card rests inside the rail's band — each clears its bottom (1px slack).
+    for (const t of r.tops) {
+      expect(
+        t,
+        `card top ${t} must sit below the rail bottom ${r.railBottom}, not under it`,
+      ).toBeGreaterThanOrEqual(r.railBottom - 1);
+    }
+
+    await ctx.close();
+  } finally {
+    await browser.close();
+  }
+}, 90_000);
+
 // Google-Docs margin-note behavior: a card is glued to its anchor's DOCUMENT
 // position and scrolls off with the text — it must NOT vanish the instant the
 // anchor leaves the viewport. Concretely: with the anchor scrolled just above

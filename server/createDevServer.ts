@@ -34,6 +34,7 @@ import { handleSoundTestList, handleSoundTestRegenerate } from "./soundTest.dev.
 import { withSecurityHeaders } from "../shared/securityHeaders.ts";
 import { buildAuthorMap } from "../shared/authorProfile.ts";
 import { buildPublicPostVersionsMap } from "../shared/publicPostVersions.ts";
+import { htmlToMarkdown, renderMarkdownDocument, type FrontMatter } from "../shared/htmlToMarkdown.ts";
 import type { BlogPaths } from "../shared/blogPaths.ts";
 import { findManifestName } from "../shared/manifestFile.ts";
 import {
@@ -373,13 +374,52 @@ export async function createDevServer(opts: DevServerOptions) {
     "/dev/sound-test": soundTestPage,
   };
 
+  // `/posts/<slug>.md` — the "Copy as Markdown" twin. In prod this is a static
+  // file emitted by generate/markdown-export.ts and served by ASSETS; dev has
+  // no dist/, so we generate it on the fly from the source post HTML using the
+  // same shared transform (built fresh per request, like the byline JSON, so an
+  // edit shows up on reload without a restart). Bun's static routes can't carry
+  // the `.md` extension on the `/posts/<slug>` keys, so this lives in the
+  // catch-all below rather than the routes map.
+  async function serveMarkdown(req: Bun.BunRequest): Promise<Response | null> {
+    const url = new URL(req.url);
+    const m = url.pathname.match(/^\/posts\/(.+)\.md$/);
+    if (!m) return null;
+    const slug = decodeURIComponent(m[1]!);
+    const safe = normalize(slug);
+    if (safe.startsWith("..") || safe.includes("\0")) {
+      return new Response("forbidden", { status: StatusCodes.FORBIDDEN });
+    }
+    const file = Bun.file(join(paths.postsDir, `${safe}.html`));
+    if (!(await file.exists())) {
+      return new Response("not found", { status: StatusCodes.NOT_FOUND });
+    }
+    const extract = htmlToMarkdown(await file.text());
+    const fm: FrontMatter = {
+      title: extract.title,
+      url: `${url.origin}/posts/${safe}`,
+    };
+    // Last-updated parity with the byline: the newest builtAt from versions.json.
+    const versionMap = await buildPublicPostVersionsMap(paths.versionsJson);
+    const updated = versionMap[`/posts/${safe}`]?.lastUpdated;
+    if (updated) fm.updated = updated;
+    return new Response(renderMarkdownDocument(extract, fm), {
+      headers: {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    });
+  }
+
   return {
     port: opts.port ?? Number(process.env.PORT ?? 3000),
     // Static post/landing bundles + the dev-only page bundle first, then the
     // function API routes.
     routes: { ...staticRoutes, ...pageRoutes, ...apiRoutes },
     development: { hmr: true, console: true },
-    fetch() {
+    async fetch(req: Bun.BunRequest) {
+      const md = await serveMarkdown(req);
+      if (md) return withSecurityHeaders(md);
       return new Response("not found", { status: StatusCodes.NOT_FOUND });
     },
   };

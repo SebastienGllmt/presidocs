@@ -294,6 +294,11 @@ class CommentSystem {
   // when not authenticated. Rendered once at init, re-rendered on
   // identity change (currently only at boot).
   private identityHeader: HTMLElement | null = null;
+  // The fixed top-of-gutter rail that hosts the permanent header surfaces
+  // (identity card, version banner, version history, unresolved count). The
+  // stack pass treats its occupied band as an obstacle so top-of-article
+  // cards cascade below it instead of being occluded by it.
+  private railEl: HTMLElement | null = null;
   // Drafts — a freshly composed thread that the user hasn't submitted
   // yet. Promoted to the store on first reply, removed on Cancel.
   // Deliberately not in the CRDT: drafts shouldn't sync to a server
@@ -649,6 +654,9 @@ class CommentSystem {
         banner.remove();
         this.versionBannerEl = null;
         this.updateBottomSpacer();
+        // The rail just shrank — re-cascade so top cards that were sitting
+        // below the banner reclaim the freed space.
+        this.adjustCardStacking();
       });
       banner.appendChild(dismiss);
 
@@ -660,6 +668,9 @@ class CommentSystem {
     if (this.docVersion?.history && this.docVersion.history.length > 0) {
       const details = document.createElement("details");
       details.className = "cmt-version-history";
+      // Expanding / collapsing changes the rail's height, so re-cascade the
+      // cards against the new rail bottom.
+      details.addEventListener("toggle", () => this.adjustCardStacking());
 
       const summary = document.createElement("summary");
       summary.className = "cmt-version-history-summary";
@@ -700,6 +711,10 @@ class CommentSystem {
     }
 
     this.updateBottomSpacer();
+    // The banner / history mount here (after the boot-time renderAll, since
+    // initDocVersion awaits a fetch), growing the rail — re-cascade so cards
+    // anchored near the top fall below the now-taller rail.
+    this.adjustCardStacking();
   }
 
   // Author-only at-a-glance counter of unresolved threads, mounted in
@@ -920,6 +935,7 @@ class CommentSystem {
     const rail = document.createElement("div");
     rail.className = "cmt-rail";
     col.appendChild(rail);
+    this.railEl = rail;
 
     const header = document.createElement("div");
     header.className = "cmt-identity";
@@ -1723,11 +1739,21 @@ class CommentSystem {
   // Document-relative card positions don't change on scroll (cards scroll with
   // the page, the anchor re-resolves in the compositor), so this only needs to
   // run per render and on resize — never per scroll frame.
+  //
+  // The pinned header rail (identity card, version banner / history,
+  // unresolved count) shares the cards' gutter, so a card anchored near the top
+  // of the article would otherwise rest under it. We seed the cascade with the
+  // rail's occupied band so those cards fall below it. The rail is
+  // `position: fixed`, so its viewport rect already IS its document position at
+  // scrollY=0 (the resting reference) — we deliberately do NOT add `scrollY` to
+  // it. That keeps the seed scroll-invariant, just like the cards' own
+  // positions, so the pass stays a per-render / per-resize job.
   private adjustCardStacking(): void {
     const cards = [...this.cardEls.values()];
     // Mobile cards are top-layer popovers (one at a time) — never stacked in
-    // flow. Clear any offset a prior desktop render may have left behind.
-    if (this.isMobile || cards.length < 2) {
+    // flow, and the rail is hidden there. Clear any offset a prior desktop
+    // render may have left behind.
+    if (this.isMobile || cards.length === 0) {
       for (const card of cards) card.style.removeProperty("--cmt-stack-offset");
       return;
     }
@@ -1748,7 +1774,10 @@ class CommentSystem {
     measured.sort((a, b) => a.top - b.top || order.get(a.card)! - order.get(b.card)!);
 
     const GAP_PX = 8;
-    let lastBottom = -Infinity;
+    // Seed the cascade with the rail's bottom edge (scroll-0 document Y; see
+    // the note above on why `scrollY` is not added). `-Infinity` when the rail
+    // is absent or collapsed, leaving card-vs-card stacking unchanged.
+    let lastBottom = this.railObstacleBottom();
     for (const m of measured) {
       const offset = m.top < lastBottom + GAP_PX ? lastBottom + GAP_PX - m.top : 0;
       m.card.style.setProperty("--cmt-stack-offset", `${Math.round(offset)}px`);
@@ -1761,6 +1790,19 @@ class CommentSystem {
     requestAnimationFrame(() => {
       for (const card of cards) card.style.removeProperty("transition");
     });
+  }
+
+  // Bottom edge of the pinned header rail, as a seed for the stack cascade —
+  // the scroll-0 document Y below which top-anchored cards must fall so they
+  // don't rest under the rail. The rail is `position: fixed`, so its viewport
+  // rect already is its scroll-0 document position; we return it as-is (no
+  // `scrollY`) to keep the value scroll-invariant. Returns `-Infinity` (a
+  // no-op seed) when the rail is missing or collapsed to nothing — e.g. every
+  // surface hidden (the identity bar dismissed) or measured before layout —
+  // so an empty rail never nudges otherwise-clear cards.
+  private railObstacleBottom(): number {
+    const r = this.railEl?.getBoundingClientRect();
+    return r && r.height > 0 ? r.bottom : -Infinity;
   }
 
   // The article element a narration comment refers to. A narration

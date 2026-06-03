@@ -7,6 +7,7 @@ import {
   readSitePublisher,
   rewriteNarrationManifestSrc,
   injectPostMainLandmark,
+  injectMarkdownAltLink,
 } from "./strip-served-html.ts";
 
 async function withTempPosts(
@@ -153,4 +154,21 @@ test("injectPostMainLandmark: idempotent and leaves an existing role intact", ()
 test("injectPostMainLandmark: no-op on non-post pages (landing has its own <main>)", () => {
   const landing = `<main><article>card</article></main>`;
   expect(injectPostMainLandmark(landing, "/index")).toBe(landing);
+});
+
+test("injectMarkdownAltLink: advertises the post's .md twin in <head>", () => {
+  const out = injectMarkdownAltLink(
+    `<head><title>T</title></head>`,
+    "/posts/offer-files",
+  );
+  expect(out).toContain(
+    '<link rel="alternate" type="text/markdown" title="Markdown" href="/posts/offer-files.md" />',
+  );
+});
+
+test("injectMarkdownAltLink: idempotent and scoped to posts", () => {
+  const once = injectMarkdownAltLink(`<head></head>`, "/posts/p");
+  expect(injectMarkdownAltLink(once, "/posts/p")).toBe(once);
+  // Non-post pages (landing, privacy) get no markdown link.
+  expect(injectMarkdownAltLink(`<head></head>`, "/index")).toBe(`<head></head>`);
 });

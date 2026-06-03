@@ -56,6 +56,23 @@ function injectFeedLinks(html: string): string {
     .transform(html);
 }
 
+// Advertise the post's Markdown twin (`/posts/<slug>.md`, emitted by
+// generate/markdown-export.ts) so the "Copy as Markdown" button — and any
+// LLM/crawler that prefers Markdown — can discover it. Post-scoped; relative
+// href resolves against the page origin, exactly like the feed autodiscovery
+// links above. Idempotent on the `type="text/markdown"` marker. Independent of
+// SITE_URL: the `.md` is built on every deploy, so the link always points at a
+// real file (mirrors how the feed links advertise /feed.xml before feeds.ts).
+function injectMarkdownAltLink(html: string, postPath: string): string {
+  if (!postPath.startsWith("/posts/")) return html;
+  if (html.includes('type="text/markdown"')) return html;
+  const link =
+    `<link rel="alternate" type="text/markdown" title="Markdown" href="${postPath}.md" />`;
+  return new HTMLRewriter()
+    .on("head", { element(el) { el.append(link, { html: true }); } })
+    .transform(html);
+}
+
 // The narration track for a post, if it was generated (opt-out posts have none).
 async function readAudio(
   postPath: string,
@@ -296,6 +313,10 @@ async function main(): Promise<void> {
     // Independent of SITE_URL — the /posts/ gate scopes it to real posts.
     after = injectPostMainLandmark(after, distFileToPostPath(file));
 
+    // Advertise the post's Markdown twin (built by markdown-export.ts).
+    // Independent of SITE_URL — the .md is emitted on every deploy.
+    after = injectMarkdownAltLink(after, distFileToPostPath(file));
+
     // Structured data: real posts get BlogPosting; the landing page gets a
     // WebSite/Blog @graph; everything else short-circuits.
     if (siteUrl) {
@@ -373,4 +394,9 @@ if (import.meta.main) {
 }
 
 // Exported for tests.
-export { readSitePublisher, rewriteNarrationManifestSrc, injectPostMainLandmark };
+export {
+  readSitePublisher,
+  rewriteNarrationManifestSrc,
+  injectPostMainLandmark,
+  injectMarkdownAltLink,
+};

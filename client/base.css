@@ -201,6 +201,169 @@
     opacity: .85;
   }
 
+  /* "Copy as Markdown" split control (client/copyMarkdown.ts). A small, muted
+     segmented pill in the byline/lede slot — a primary "Copy" button plus a
+     caret that opens a dropdown ("Copy as Markdown" / "View as Markdown"),
+     the convention LLM-friendly docs sites have converged on. Present but
+     unobtrusive, like a "Share"/"Listen" affordance near the top of an article.
+     Injected by JS, so these rules style markup the static HTML doesn't carry. */
+  .copy-md {
+    position: relative; /* containing block for the absolutely-placed menu */
+    display: inline-flex;
+    align-items: stretch;
+    margin: .25rem 0 0;
+    font-size: .8rem;
+    line-height: 1.2;
+  }
+  .copy-md svg { width: 1em; height: 1em; fill: currentColor; display: block; }
+  .copy-md-primary,
+  .copy-md-more {
+    display: inline-flex;
+    align-items: center;
+    font: inherit;
+    font-size: inherit;
+    color: var(--page-fg-muted);
+    background: transparent;
+    border: 1px solid color-mix(in srgb, var(--page-fg-muted) 35%, transparent);
+    cursor: pointer;
+    transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+  }
+  .copy-md-primary:hover,
+  .copy-md-more:hover,
+  .copy-md-more[aria-expanded="true"] {
+    color: var(--page-fg);
+    background: color-mix(in srgb, var(--page-fg) 5%, transparent);
+  }
+  .copy-md-primary:focus-visible,
+  .copy-md-more:focus-visible {
+    outline: 2px solid var(--page-fg-muted);
+    outline-offset: 2px;
+    z-index: 1; /* keep the focus ring above the sibling's border */
+  }
+  /* Left half: the copy button. Rounded on the left only; its right border is
+     shared with the caret, so collapse it to avoid a double rule. */
+  .copy-md-primary {
+    gap: .4em;
+    padding: .25rem .6rem;
+    border-radius: 999px 0 0 999px;
+    border-right-width: 0;
+  }
+  /* Right half: the caret. Rounded on the right only. */
+  .copy-md-more {
+    padding: .25rem .45rem;
+    border-radius: 0 999px 999px 0;
+  }
+  .copy-md-caret {
+    display: inline-flex;
+    font-size: .7em;
+    transition: transform 120ms ease;
+  }
+  .copy-md-open .copy-md-caret { transform: rotate(180deg); }
+
+  /* Primary-button glyph stack — md icon and check occupy the same cell; we
+     cross-fade by toggling .copy-md-copied. No layout shift between states. */
+  .copy-md-glyphs {
+    position: relative;
+    display: inline-flex;
+    width: 1em;
+    height: 1em;
+  }
+  .copy-md-glyph {
+    position: absolute;
+    inset: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 120ms ease;
+  }
+  .copy-md-glyph-copied { opacity: 0; }
+  .copy-md-copied .copy-md-glyph-default { opacity: 0; }
+  .copy-md-copied .copy-md-glyph-copied { opacity: 1; }
+  .copy-md-copied { color: var(--page-fg); }
+
+  /* Label cross-fade. The default label sits in normal flow and reserves the
+     button's width; "Copied!" (shorter) is absolutely overlaid, so the swap
+     never resizes the button. */
+  .copy-md-label {
+    position: relative;
+    display: inline-flex;
+  }
+  .copy-md-label-default { transition: opacity 120ms ease; }
+  .copy-md-label-copied {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+  .copy-md-copied .copy-md-label-default { opacity: 0; }
+  .copy-md-copied .copy-md-label-copied { opacity: 1; }
+
+  /* Dropdown menu. Absolutely placed under the control (start-aligned), a small
+     card with a soft shadow — same surface language as the rest of the chrome. */
+  .copy-md-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 20;
+    min-width: 16rem;
+    padding: .3rem;
+    display: flex;
+    flex-direction: column;
+    gap: .15rem;
+    background: var(--page-bg);
+    border: 1px solid rgba(31, 35, 40, 0.12);
+    border-radius: 12px;
+    box-shadow: 0 8px 28px rgba(31, 35, 40, 0.16);
+  }
+  .copy-md-menu[hidden] { display: none; }
+  .copy-md-item {
+    display: flex;
+    align-items: center;
+    gap: .55rem;
+    width: 100%;
+    padding: .4rem .5rem;
+    font: inherit;
+    text-align: left;
+    text-decoration: none;
+    color: var(--page-fg-muted);
+    background: transparent;
+    border: 0;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .copy-md-item:hover,
+  .copy-md-item:focus-visible {
+    background: rgba(31, 35, 40, 0.06);
+    color: var(--page-fg);
+    outline: none;
+  }
+  .copy-md-item-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 1.9rem;
+    height: 1.9rem;
+    border: 1px solid rgba(31, 35, 40, 0.12);
+    border-radius: 8px;
+    color: var(--page-fg-muted);
+  }
+  .copy-md-item-text { display: flex; flex-direction: column; min-width: 0; }
+  .copy-md-item-title {
+    display: inline-flex;
+    align-items: center;
+    gap: .35em;
+    font-weight: 600;
+    color: var(--page-fg);
+  }
+  .copy-md-item-trailing { font-size: .72em; color: var(--page-fg-muted); }
+  .copy-md-item-desc { font-size: .82em; color: var(--page-fg-muted); }
+
   /* Author byline (client/byline.ts). Lives in base.css — not narrator.css —
      because it must appear on every post, including narration opt-out posts that
      never link narrator.css (same reasoning that moved the page-global layer

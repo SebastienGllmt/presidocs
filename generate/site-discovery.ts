@@ -117,8 +117,14 @@ export function buildSitemapXml(entries: SitemapEntry[]): string {
 }
 
 export type LlmsPost = {
-  /** Absolute URL. */
-  url: string;
+  /**
+   * Absolute URL of the post's **Markdown twin** (`/posts/<slug>.md`, emitted by
+   * generate/markdown-export.ts). The Posts list links here, not at the HTML
+   * page: an LLM indexer lands on clean Markdown with no HTML to parse, which is
+   * the whole point of an llms.txt index. The canonical HTML page is still
+   * carried by sitemap.xml and each post's `<link rel="canonical">`.
+   */
+  mdUrl: string;
   title: string;
   summary: string;
 };
@@ -153,7 +159,9 @@ export function buildLlmsTxt(site: LlmsSite, posts: LlmsPost[]): string {
     lines.push("");
     for (const p of posts) {
       const suffix = p.summary ? `: ${p.summary}` : "";
-      lines.push(`- [${p.title}](${p.url})${suffix}`);
+      // Link the Markdown twin (`/posts/<slug>.md`), not the HTML page — see
+      // LlmsPost.mdUrl. An LLM following this index gets clean Markdown directly.
+      lines.push(`- [${p.title}](${p.mdUrl})${suffix}`);
     }
     lines.push("");
   }
@@ -242,7 +250,9 @@ async function main(): Promise<void> {
   const podcastUrl = existsSync(join(distDir, "podcast.xml")) ? `${baseUrl}/podcast.xml` : null;
   const meta = await readSiteMeta();
   const llmsPosts: LlmsPost[] = posts.map((p) => ({
-    url: `${baseUrl}${p.postPath}`,
+    // The Markdown twin emitted by generate/markdown-export.ts (which runs
+    // earlier in `bun run build`), so the file is on disk by serve time.
+    mdUrl: `${baseUrl}${p.postPath}.md`,
     title: p.title,
     summary: p.summary,
   }));

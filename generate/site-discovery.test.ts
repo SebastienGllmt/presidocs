@@ -69,12 +69,12 @@ const LLMS_SITE: LlmsSite = {
 
 const LLMS_POSTS: LlmsPost[] = [
   {
-    url: "https://blog.example.com/posts/offer-files",
+    mdUrl: "https://blog.example.com/posts/offer-files.md",
     title: "Offer Files: shared liquidity without a chain",
     summary: "How Midnight turns a private swap into a file you can paste anywhere",
   },
   {
-    url: "https://blog.example.com/posts/offer-files-data",
+    mdUrl: "https://blog.example.com/posts/offer-files-data.md",
     title: "Chia Offer Files by the Numbers",
     summary: "An analysis of offer files on the Chia blockchain",
   },
@@ -85,8 +85,10 @@ test("llms.txt: title, blockquote summary, post list with summaries, ## Optional
   expect(txt).toContain("# Presidocs — talks, not just text");
   expect(txt).toContain("> Blog posts that feel like attending the talk.");
   expect(txt).toContain("## Posts");
+  // The Posts list links the Markdown twin (`.md`), not the HTML page, so an
+  // LLM indexer lands on clean Markdown.
   expect(txt).toContain(
-    "- [Offer Files: shared liquidity without a chain](https://blog.example.com/posts/offer-files): How Midnight turns a private swap into a file you can paste anywhere",
+    "- [Offer Files: shared liquidity without a chain](https://blog.example.com/posts/offer-files.md): How Midnight turns a private swap into a file you can paste anywhere",
   );
   // `## Optional` is reserved by the llmstxt.org spec — feeds belong there
   // (subscription endpoints are skippable when token-budgeted).
@@ -122,8 +124,8 @@ test("llms.txt: empty posts list collapses cleanly (header + Optional only)", ()
 
 test("llms.txt: post with no summary still renders as a clean bullet", () => {
   const txt = buildLlmsTxt(LLMS_SITE, [
-    { url: "https://blog.example.com/posts/x", title: "Bare", summary: "" },
+    { mdUrl: "https://blog.example.com/posts/x.md", title: "Bare", summary: "" },
   ]);
-  expect(txt).toContain("- [Bare](https://blog.example.com/posts/x)\n");
-  expect(txt).not.toContain("- [Bare](https://blog.example.com/posts/x):");
+  expect(txt).toContain("- [Bare](https://blog.example.com/posts/x.md)\n");
+  expect(txt).not.toContain("- [Bare](https://blog.example.com/posts/x.md):");
 });
