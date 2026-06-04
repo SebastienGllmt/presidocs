@@ -24,10 +24,9 @@
 
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { readdir, mkdir, rm, stat } from "node:fs/promises";
+import { readdir, mkdir, rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
-import { VIDEO_HASHED_RE } from "../shared/manifestFile.ts";
 import { renderElementToPng } from "./share-card.ts";
 import { CAPTURE_DEFAULTS } from "./capture-defaults.ts";
 import { resolveAuthorProfile } from "../shared/authorProfile.ts";
@@ -57,9 +56,6 @@ type FigureShot = import("./capture-figures.ts").FigureShot;
 // not covered below).
 
 const CACHE_VERSION = "v1";
-// How many whole-render caches to retain (LRU). Each full cut is large (~260MB),
-// but a handful lets a full + teaser cut (and a couple of recent edits) coexist.
-const RENDER_CACHE_KEEP = 3;
 
 function hashStr(s: string): string {
   return createHash("sha256").update(s).digest("hex").slice(0, 16);
@@ -81,10 +77,10 @@ async function timed<T>(label: string, fn: () => Promise<T>): Promise<T> {
 // --- timeline types (subset of the manifest we consume) ----------------------
 
 type Word = { s: number; e: number; t: number; d: number };
-// `figure` is the optional stage/control pointer (proposal 47) — which figure is
-// on the stage during this segment, distinct from `name` (the highlight target).
-// Absent on every post until proposal 47's parser lands → the legacy derivation
-// in `deriveFigureOccurrences` is used; present → the explicit pointer model.
+// `figure` is the stage/control pointer (proposal 47) — which figure is on the
+// stage during this segment, distinct from `name` (the highlight target). A
+// figure id stages it; `"none"`/`""` clears it; absent leaves the stage
+// unchanged (see `deriveFigureOccurrences`).
 type Mark = { name: string; time: number; chapter: string; text: string; words?: Word[]; figure?: string };
 type Chapter = { id: string; title: string; startTime: number; endTime: number; parentId?: string };
 type Manifest = { slug: string; audio: string; duration: number; chapters: Chapter[]; marks: Mark[] };
@@ -241,26 +237,21 @@ export type FigureOccur = { id: string; startMs: number; visEndMs: number };
 
 /**
  * Compute each figure's on-stage span (audio-rel ms within `[t0,t1)`, returned
- * as `startMs/visEndMs` rebased to `t0`). Two modes, picked per-post:
- *
- *  - **Explicit pointer mode** (proposal 47) — used when ANY mark carries a
- *    `figure` attribute. `figure` stages a figure; it is sticky *within a
- *    sub-chapter* and **auto-clears at each sub-chapter boundary** (a change in
- *    a mark's `chapter`); `figure: "" | "none"` clears it early. This yields
- *    tight, explicit on/off spans (and genuine empty-stage stretches), which is
- *    what lets the layered renderer include a figure input only in the segments
- *    that actually need it (proposal 45 §8).
- *  - **Legacy fallback** — when NO mark carries `figure` (every post today): a
- *    mark whose `name` is a `<figure id>` stages that figure, sticky until the
- *    next such mark. Byte-identical to the pre-47 behavior, so nothing regresses
- *    until a post opts in.
+ * as `startMs/visEndMs` rebased to `t0`), from the `marks[].figure` stage
+ * pointer (proposal 47). A `figure` value stages that figure; it is sticky
+ * *within a sub-chapter* and **auto-clears at each sub-chapter boundary** (a
+ * change in a mark's `chapter`); `figure: "" | "none"` clears it early; an
+ * absent attribute leaves the stage unchanged. This yields tight, explicit
+ * on/off spans (and genuine empty-stage stretches), which is what lets the
+ * layered renderer include a figure input only in the segments that actually
+ * need it (proposal 45 §8). The stage defaults to empty, so a mark that never
+ * sets `figure` shows no figure at all.
  *
  * `cutMs` (the `VIDEO_DEMO_FIG_CUT_MS` test knob) caps each span to force the
  * long-animation narration-hold path. Pure + exported for unit tests.
  */
 export function deriveFigureOccurrences(
   marks: readonly Mark[],
-  figureIds: ReadonlySet<string>,
   t0: number,
   t1: number,
   duration: number,
@@ -275,18 +266,8 @@ export function deriveFigureOccurrences(
     if (e > s) occurs.push({ id, startMs: s - t0, visEndMs: e - t0 });
   };
 
-  if (!marks.some((m) => m.figure !== undefined)) {
-    // Legacy: figure-name mark → sticky until the next figure-name mark.
-    const figureMarks = marks.filter((m) => figureIds.has(m.name));
-    for (let i = 0; i < figureMarks.length; i++) {
-      const m = figureMarks[i]!;
-      emit(m.name, m.time, figureMarks[i + 1]?.time ?? duration);
-    }
-    return occurs;
-  }
-
-  // Explicit pointer mode: walk the staged figure, flushing a span whenever it
-  // changes, the stage clears, or the sub-chapter boundary is crossed.
+  // Walk the staged figure, flushing a span whenever it changes, the stage
+  // clears, or the sub-chapter boundary is crossed.
   let cur: string | null = null;
   let curStart = 0;
   let prevChapter: string | undefined;
@@ -338,7 +319,6 @@ type PostCtx = {
   title: string;
   authorName: string | null;
   avatarDataUri: string | null;
-  figureIds: Set<string>;
 };
 
 function speakerChip(ctx: PostCtx, size: number, fontSize: number): unknown {
@@ -551,8 +531,7 @@ async function loadPostCtx(slug: string): Promise<PostCtx> {
       avatar = await avatarDataUri(res.author.avatarSrcPath);
     }
   }
-  const figureIds = new Set([...html.matchAll(/<figure[^>]*\bid="([^"]+)"/g)].map((m) => m[1]!));
-  return { siteName, title, authorName, avatarDataUri: avatar, figureIds };
+  return { siteName, title, authorName, avatarDataUri: avatar };
 }
 
 // --- manifest loading --------------------------------------------------------
@@ -653,6 +632,11 @@ async function figureEnvHash(): Promise<string> {
   } catch {}
   try {
     parts.push("figureAnimation:" + (await hashFile(join(paths.engineRoot, "client", "figureAnimation.ts"))));
+  } catch {}
+  // The capture code itself determines the pixels (e.g. which page chrome it
+  // hides), so a change to it must invalidate cached captures.
+  try {
+    parts.push("captureFigures:" + (await hashFile(join(paths.engineRoot, "generate", "capture-figures.ts"))));
   } catch {}
   return hashStr(parts.join("\n"));
 }
@@ -780,12 +764,11 @@ async function buildPlan(slug: string, t0: number, t1: number): Promise<Plan> {
     }
   }
 
-  // ----- figure occurrences (audio time): which figure is on the stage when.
-  // Explicit `marks[].figure` pointer if the post carries it (proposal 47), else
-  // the legacy sticky figure-name rule. VIDEO_DEMO_FIG_CUT_MS shortens spans to
-  // force the long-animation pause path for testing. -----
+  // ----- figure occurrences (audio time): which figure is on the stage when,
+  // from the `marks[].figure` stage pointer (proposal 47). VIDEO_DEMO_FIG_CUT_MS
+  // shortens spans to force the long-animation pause path for testing. -----
   const cutMs = Number(process.env.VIDEO_DEMO_FIG_CUT_MS) || 0;
-  const occurs = deriveFigureOccurrences(manifest.marks, ctx.figureIds, t0, t1, manifest.duration, cutMs);
+  const occurs = deriveFigureOccurrences(manifest.marks, t0, t1, manifest.duration, cutMs);
 
   // ----- resolve the figures we need (cache-first; a real browser only for
   // misses → an animated clip if the figure registered the animation contract,
@@ -1195,11 +1178,13 @@ async function finalizeOutput(plan: Plan, tmpPath: string): Promise<void> {
     ) + "\n",
   );
   await rm(tmpPath, { force: true });
-  // Sweep stale video.<hash>.{mp4,json}; keep the pair just written.
-  for (const f of await readdir(plan.dir)) {
-    const isVideoArtifact = VIDEO_HASHED_RE.test(f) || /^video\.[0-9a-f]{16}\.json$/.test(f);
-    if (isVideoArtifact && f !== videoName && f !== sidecarName) await rm(join(plan.dir, f), { force: true });
-  }
+  // NOTE: we deliberately do NOT sweep other `video.<hash>.{mp4,json}` here. A
+  // full render is expensive (tens of minutes), and a different cut (full vs
+  // teaser) produces a different hash — auto-sweeping silently destroyed the
+  // other cut every render. Keeping them is cheap insurance; the author deletes
+  // stale renders by hand. (Downstream, copy-static's keep-rule will ship every
+  // `video.<hash>.mp4` present — so prune by hand before a deploy if you want a
+  // single canonical clip, or we wire a "newest wins" rule at copy-static time.)
   console.log(`render-video: wrote ${videoName} (+ ${sidecarName})`);
 }
 
@@ -1281,14 +1266,9 @@ async function main() {
     const produced = await timed(label, () => (useLayered ? renderLayered(plan) : renderSinglePass(plan)));
     await mkdir(cacheDir, { recursive: true });
     await Bun.write(cachePath, Bun.file(produced)); // produced === tmpPath
-    // Full renders are large — keep only the most-recent few (LRU by mtime) so a
-    // full cut + a teaser cut coexist, but stale keys don't accumulate forever.
-    const renders: { f: string; mtime: number }[] = [];
-    for (const f of await readdir(cacheDir)) {
-      if (/^render-[0-9a-f]{16}\.mp4$/.test(f)) renders.push({ f, mtime: (await stat(join(cacheDir, f))).mtimeMs });
-    }
-    renders.sort((a, b) => b.mtime - a.mtime);
-    for (const r of renders.slice(RENDER_CACHE_KEEP)) await rm(join(cacheDir, r.f), { force: true });
+    // No eviction: render caches are never auto-deleted. A full cut is expensive
+    // to regenerate, so we keep every one (the author prunes `.video-cache/` by
+    // hand if disk gets tight). Same posture as the figure cache.
   }
 
   await finalizeOutput(plan, tmpPath);

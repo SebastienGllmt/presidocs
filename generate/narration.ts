@@ -21,9 +21,37 @@
 // PARAGRAPH structure — a blank line (a paragraph break) in the source right
 // before a <mark> resets to a fresh start; soft single-newline line wrapping
 // does NOT. The first segment of every chapter is always a fresh start.
-export type Segment = { markName: string | null; text: string; continuesPrevious: boolean };
+//
+// `figure` / `step` are the orthogonal stage/control pointers (proposal 47):
+// `figure` is which figure is on the stage during this segment (decoupled from
+// `markName`, the read-along highlight); `step` is reserved for proposal 46's
+// per-step slideshow drive. Both are `null` when the `<mark>` omits the
+// attribute (= "leave the stage unchanged"); an explicit `figure="none"`/`""`
+// records a clear and is carried through as that literal string.
+export type Segment = {
+  markName: string | null;
+  figure: string | null;
+  step: string | null;
+  text: string;
+  continuesPrevious: boolean;
+};
 
-const markRegex = /<mark\s+name\s*=\s*(?:"([^"]*)"|'([^']*)')\s*\/?\s*>(?:\s*<\/mark\s*>)?/g;
+// Match a whole `<mark …>` boundary (self-closing or with an explicit close
+// tag), capturing its attribute blob — the individual attributes are then read
+// out of the blob by `readMarkAttr`, so they may appear in ANY order
+// (`<mark figure="x" name="y"/>` parses the same as `name`-first). `[^>]*?` is
+// lazy and the class excludes `>`, so it stops at the tag's own close.
+const markRegex = /<mark\s+([^>]*?)\s*\/?\s*>(?:\s*<\/mark\s*>)?/g;
+
+// Read one quoted attribute (single or double quotes) out of a `<mark>`'s
+// attribute blob, or null when the attribute is absent. The `(?:^|\s)` anchor
+// keeps `name` from matching the tail of an unrelated attribute (e.g. a
+// hypothetical `data-name`). An explicitly-empty value (`figure=""`) returns
+// "" (an explicit clear), distinct from null (absent).
+function readMarkAttr(attrs: string, name: string): string | null {
+  const m = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(attrs);
+  return m ? (m[1] ?? m[2] ?? "") : null;
+}
 
 function normalizeWhitespace(s: string): string {
   return s.replace(/\s+/g, " ").trim();
@@ -104,6 +132,13 @@ export function extractNarration(html: string): NarrationExtract {
 export function splitChapter(content: string): Segment[] {
   const out: Segment[] = [];
   let currentMark: string | null = null;
+  // The figure/step pointers carried by the mark that opened the current
+  // segment. Reset (to null) by every mark unless it re-states the attribute,
+  // mirroring the per-mark, annotate-the-change authoring (a segment with no
+  // `figure=` carries `null`; the sub-chapter-bounded stickiness is resolved
+  // downstream by the renderer/narrator, not here — see render-video.ts).
+  let currentFigure: string | null = null;
+  let currentStep: string | null = null;
   let lastEnd = 0;
   // First emitted segment of a chapter is always a fresh start; thereafter a
   // blank line before the mark flips the upcoming segment back to fresh.
@@ -113,7 +148,13 @@ export function splitChapter(content: string): Segment[] {
   const push = (rawText: string) => {
     const text = normalizeWhitespace(rawText);
     if (currentMark !== null || text) {
-      out.push({ markName: currentMark, text, continuesPrevious: !firstEmitted && !breakBeforeNext });
+      out.push({
+        markName: currentMark,
+        figure: currentFigure,
+        step: currentStep,
+        text,
+        continuesPrevious: !firstEmitted && !breakBeforeNext,
+      });
       firstEmitted = false;
     }
   };
@@ -124,7 +165,10 @@ export function splitChapter(content: string): Segment[] {
     // The whitespace at the end of `before` is the gap immediately preceding
     // THIS mark, so it decides whether the mark's segment is a fresh start.
     breakBeforeNext = blankLineBeforeMark(before);
-    currentMark = match[1] ?? match[2] ?? null;
+    const attrs = match[1] ?? "";
+    currentMark = readMarkAttr(attrs, "name");
+    currentFigure = readMarkAttr(attrs, "figure");
+    currentStep = readMarkAttr(attrs, "step");
     lastEnd = match.index + match[0].length;
   }
   push(content.slice(lastEnd));

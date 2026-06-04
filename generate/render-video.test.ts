@@ -13,7 +13,6 @@ import {
   deriveFigureOccurrences,
 } from "./render-video.ts";
 
-const FIGS = new Set(["fig-a", "fig-b"]);
 const mk = (name: string, time: number, chapter: string, figure?: string) =>
   ({ name, time, chapter, text: "", ...(figure !== undefined ? { figure } : {}) }) as never;
 
@@ -149,50 +148,39 @@ test("figureSegmentPlacement: a clip starting mid-segment is delayed (setpts)", 
   });
 });
 
-// --- figure occurrence derivation (proposal 47 pointer + legacy fallback) ----
+// --- figure occurrence derivation (proposal 47 stage pointer) ----------------
 
-test("deriveFigureOccurrences: legacy mode — figure-name marks, sticky to next", () => {
-  // No mark carries `figure` → legacy: fig-a from 1000 until fig-b at 3000; fig-b to duration.
-  const marks = [mk("intro", 0, "c1"), mk("fig-a", 1000, "c1"), mk("aside", 2000, "c1"), mk("fig-b", 3000, "c2")];
-  expect(deriveFigureOccurrences(marks, FIGS, 0, 10000, 10000)).toEqual([
-    { id: "fig-a", startMs: 1000, visEndMs: 3000 },
-    { id: "fig-b", startMs: 3000, visEndMs: 10000 },
-  ]);
-});
-
-test("deriveFigureOccurrences: explicit mode — lead-up staging + sticky within a sub-chapter", () => {
+test("deriveFigureOccurrences: lead-up staging + sticky within a sub-chapter", () => {
   // figure staged on the lead-up mark (500), carries across a no-attr mark, ends at the next change.
   const marks = [
     mk("lead", 500, "c1", "fig-a"),
     mk("more", 1500, "c1"), // unchanged → fig-a still staged
     mk("switch", 4000, "c1", "fig-b"),
   ];
-  expect(deriveFigureOccurrences(marks, FIGS, 0, 10000, 10000)).toEqual([
+  expect(deriveFigureOccurrences(marks, 0, 10000, 10000)).toEqual([
     { id: "fig-a", startMs: 500, visEndMs: 4000 },
     { id: "fig-b", startMs: 4000, visEndMs: 10000 },
   ]);
 });
 
-test("deriveFigureOccurrences: explicit mode — auto-clears at a sub-chapter boundary", () => {
+test("deriveFigureOccurrences: auto-clears at a sub-chapter boundary", () => {
   // fig-a staged in c1; c2 begins with nothing staged → stage clears at the boundary (3000).
   const marks = [mk("a", 1000, "c1", "fig-a"), mk("b", 3000, "c2"), mk("c", 5000, "c2")];
-  expect(deriveFigureOccurrences(marks, FIGS, 0, 10000, 10000)).toEqual([
+  expect(deriveFigureOccurrences(marks, 0, 10000, 10000)).toEqual([
     { id: "fig-a", startMs: 1000, visEndMs: 3000 },
   ]);
 });
 
-test("deriveFigureOccurrences: explicit mode — figure='none' clears early", () => {
+test("deriveFigureOccurrences: figure='none' clears early", () => {
   const marks = [mk("a", 1000, "c1", "fig-a"), mk("off", 2000, "c1", "none"), mk("c", 3000, "c1")];
-  expect(deriveFigureOccurrences(marks, FIGS, 0, 10000, 10000)).toEqual([
+  expect(deriveFigureOccurrences(marks, 0, 10000, 10000)).toEqual([
     { id: "fig-a", startMs: 1000, visEndMs: 2000 },
   ]);
 });
 
-test("deriveFigureOccurrences: explicit mode wins even when a name also matches a figure id", () => {
-  // Presence of ANY `figure` attr flips the post to explicit mode; the bare
-  // `fig-b` name no longer auto-stages (disambiguation, proposal 47 §6).
-  const marks = [mk("x", 0, "c1", "fig-a"), mk("fig-b", 2000, "c1")];
-  expect(deriveFigureOccurrences(marks, FIGS, 0, 5000, 5000)).toEqual([
-    { id: "fig-a", startMs: 0, visEndMs: 5000 },
-  ]);
+test("deriveFigureOccurrences: the stage defaults to empty (a bare name never auto-stages)", () => {
+  // No `figure` pointer anywhere → nothing is staged, even though "fig-b" is
+  // also a figure id. Staging is driven solely by the pointer (proposal 47).
+  const marks = [mk("x", 0, "c1"), mk("fig-b", 2000, "c1")];
+  expect(deriveFigureOccurrences(marks, 0, 5000, 5000)).toEqual([]);
 });

@@ -39,6 +39,51 @@ export function computeActiveMark<T extends Timed>(
   return active;
 }
 
+// Structural shape for `resolveActiveFigure`: a mark carries its time, the
+// leaf `chapter` it belongs to (the sub-chapter boundary key), and the optional
+// stage pointer `figure`. `ManifestMark` in narrator.ts satisfies this; the
+// unit test satisfies it with a plain literal.
+export type FigureStateMark = Timed & {
+  readonly chapter: string;
+  readonly figure?: string;
+};
+
+/**
+ * The figure on the stage at time `tMs` — the live-page twin of the video
+ * renderer's `deriveFigureOccurrences` (generate/render-video.ts), so the page
+ * and the video stage the same figure at the same instant by construction.
+ *
+ * Driven by the `marks[].figure` stage pointer (proposal 47): a `figure` value
+ * stages that figure; it is **sticky within a sub-chapter** and **auto-clears
+ * at each sub-chapter boundary** (a change in a mark's `chapter`); `figure: ""
+ * | "none"` clears it early; an absent attribute leaves the stage unchanged.
+ * The active figure at `tMs` is the staged value as of the latest mark at or
+ * before `tMs`; the stage defaults to empty.
+ *
+ * Returns the figure id, or null for an empty stage. Pure + O(active-index)
+ * (it scans only up to the active mark), suitable for the rAF tick.
+ */
+export function resolveActiveFigure<T extends FigureStateMark>(
+  marks: readonly T[],
+  tMs: Milliseconds,
+): string | null {
+  // Walk the staged figure up to `tMs`, resetting the stage at every
+  // sub-chapter boundary and applying each mark's pointer.
+  let cur: string | null = null;
+  let prevChapter: string | undefined;
+  for (const m of marks) {
+    if (m.time > tMs) break;
+    if (m.chapter !== prevChapter) {
+      cur = null; // a new sub-chapter resets the stage
+      prevChapter = m.chapter;
+    }
+    if (m.figure !== undefined) {
+      cur = m.figure === "" || m.figure === "none" ? null : m.figure;
+    }
+  }
+  return cur;
+}
+
 // Structural shape we need for `findActiveWord`. `ManifestWord` in
 // narrator.ts uses `t` (start) and `d` (duration); both are absolute ms
 // in the master track. We only read `t` here — `d` matters for visual

@@ -10,7 +10,6 @@ test("ships the per-post audio, manifest, and word-timed transcript", () => {
   expect(shouldShipGeneratedFile("manifest.f08390bb7a2d25d7.json")).toBe(true);
   expect(shouldShipGeneratedFile("manifest.json")).toBe(true); // dev bare-name fallback
   expect(shouldShipGeneratedFile("captions.vtt")).toBe(true);
-  expect(shouldShipGeneratedFile("video.f08390bb7a2d25d7.mp4")).toBe(true); // social-media video (proposals/41)
 });
 
 test("does NOT ship build-internal files or stray same-extension names", () => {
@@ -22,9 +21,11 @@ test("does NOT ship build-internal files or stray same-extension names", () => {
   expect(shouldShipGeneratedFile("subtitles.vtt")).toBe(false);
   // A stray .json that isn't a manifest must not be shipped.
   expect(shouldShipGeneratedFile("random.json")).toBe(false);
-  // The video's metadata sidecar is build-internal (the feed step reads it).
+  // The social-media video is a LOCAL artifact — never shipped to Cloudflare
+  // (large files, uploaded to platforms by hand). Neither the clip nor sidecar.
+  expect(shouldShipGeneratedFile("video.f08390bb7a2d25d7.mp4")).toBe(false);
   expect(shouldShipGeneratedFile("video.f08390bb7a2d25d7.json")).toBe(false);
-  // A stray .mp4 that isn't a content-addressed video must not be swept in.
+  // A stray .mp4 must not be swept in either.
   expect(shouldShipGeneratedFile("preview.mp4")).toBe(false);
 });
 

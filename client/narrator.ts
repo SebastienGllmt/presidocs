@@ -56,6 +56,16 @@ type ManifestMark = {
   // (`--align=NAME`); the drawer renders the segment text as one flat string
   // in that case, identical to the pre-feature behavior.
   words?: ManifestWord[];
+  // The stage/control pointer (proposal 47), orthogonal to `name` (the
+  // read-along highlight): which figure is on the stage during this segment.
+  // Absent = "leave the stage unchanged"; "none"/"" = an explicit clear.
+  // Resolved to an active figure at time t by `resolveActiveFigure`
+  // (shared/narratorTiming.ts), mirroring the video renderer so page and
+  // video agree. Consumed by the narration driver (proposal 46), not yet wired.
+  figure?: string;
+  // Reserved for proposal 46's per-step slideshow drive (advance the staged
+  // figure's journey to a labeled step). Parsed + carried but not yet acted on.
+  step?: string;
 };
 // `parentId`: present only on level-2 (sub-)chapters; names the
 // level-1 chapter they group under. Absent → a top-level chapter. The manifest

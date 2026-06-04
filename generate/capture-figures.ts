@@ -57,6 +57,14 @@ export async function captureFigures(
     });
     await page.goto(`${server.baseURL}/posts/${slug}`, { waitUntil: "load", timeout: 30_000 });
 
+    // Hide the fixed/sticky page chrome (the narration player dock + chapter
+    // strip) so it can't bleed into a figure's element screenshot when the
+    // figure's bounding box reaches the dock at the viewport bottom. These are
+    // page furniture, never part of a figure, so hiding them changes nothing in
+    // the captured figure itself. (Capture-logic changes like this invalidate
+    // the figure cache via render-video.ts `figureEnvHash`.)
+    await page.addStyleTag({ content: ".narrate-dock, .chapter-strip { display: none !important; }" });
+
     for (const id of ids) {
       const fig = page.locator(`#${cssEscape(id)}`);
       if ((await fig.count()) === 0) continue;

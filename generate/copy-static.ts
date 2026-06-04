@@ -33,7 +33,7 @@ import { join, relative } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { buildAuthorMap } from "../shared/authorProfile.ts";
 import { buildPublicPostVersionsMap } from "../shared/publicPostVersions.ts";
-import { MANIFEST_HASHED_RE, VIDEO_HASHED_RE } from "../shared/manifestFile.ts";
+import { MANIFEST_HASHED_RE } from "../shared/manifestFile.ts";
 
 const paths = resolveBlogPaths();
 const ROOT = paths.contentRoot;
@@ -63,9 +63,13 @@ export function shouldShipGeneratedFile(name: string): boolean {
     MANIFEST_HASHED_RE.test(name) ||
     name === "manifest.json" ||
     name === "captions.vtt" ||
-    name.endsWith(".mp3") ||
-    VIDEO_HASHED_RE.test(name) // social-media video (proposals/41); its .json
-    // metadata sidecar is build-internal (the feed step reads it) → not shipped.
+    name.endsWith(".mp3")
+    // The social-media video (`video.<hash>.mp4`, proposals/41/45) is a LOCAL
+    // artifact only — NOT shipped to Cloudflare. The files are large and the
+    // author uploads them to platforms by hand, so deploying/edge-serving them
+    // would be pure waste; its `.json` sidecar is likewise build-internal. (To
+    // edge-serve video again, re-add `VIDEO_HASHED_RE.test(name)` here plus the
+    // `video/mp4` MIME + Range path in createWorker.ts.)
   );
 }
 

@@ -582,6 +582,10 @@ type ChapterArtifact = {
     text: string;
     segmentStartInChapter: Milliseconds;
     words?: CachedWord[];
+    // The mark's stage/control pointer (proposal 47). Absent (undefined) =
+    // "leave the stage unchanged"; "none"/"" = an explicit clear; otherwise a
+    // `<figure id>`. Carried verbatim onto the manifest mark.
+    figure?: string;
   }[];
   trimMs: Milliseconds;
 };
@@ -720,6 +724,9 @@ for (const chapter of chapters) {
         text: seg.text,
         segmentStartInChapter: t,
         words: segmentWords[i] ?? undefined,
+        // null (attribute omitted) → undefined → omitted from the manifest
+        // (unchanged); "none"/""/`<id>` is carried through as the literal.
+        figure: seg.figure ?? undefined,
       });
     }
     t = asMs(t + segmentDurations[i]!);
@@ -774,7 +781,7 @@ const fullBuf = pipeline.concat(interleave(artifacts.map((a) => a.buffer), segme
 // times can be embedded as ID3 CHAP frames inside the MP3.
 const manifestChapters: { id: string; title: string; startTime: Milliseconds; endTime: Milliseconds; parentId?: string }[] = [];
 type ManifestWord = { s: number; e: number; t: Milliseconds; d: Milliseconds };
-const manifestMarks: { name: string; time: Milliseconds; chapter: string; text: string; words?: ManifestWord[] }[] = [];
+const manifestMarks: { name: string; time: Milliseconds; chapter: string; text: string; words?: ManifestWord[]; figure?: string }[] = [];
 // carry each chapter's (normalized) parent pointer into the
 // manifest. Absent on flat posts, so their manifest stays byte-identical.
 const parentById = new Map(chapters.map((c) => [c.id, c.parentId]));
@@ -814,6 +821,10 @@ for (const [i, a] of artifacts.entries()) {
       chapter: a.id,
       text: m.text,
       words: manifestWords,
+      // Only carry `figure` when the mark set it — conditional spread keeps the
+      // key ABSENT (not `figure: undefined`) for legacy posts, so their
+      // serialized manifest stays byte-identical (proposal 47 §6).
+      ...(m.figure !== undefined ? { figure: m.figure } : {}),
     });
   }
   offset = end;

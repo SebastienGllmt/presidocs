@@ -21,6 +21,61 @@ test("first segment of a chapter is always a fresh start", () => {
   expect(segs[0]!.continuesPrevious).toBe(false);
 });
 
+// --- figure / step pointers (proposal 47) -----------------------------------
+// The new attributes ride alongside `name` on the same `<mark>`; a mark that
+// omits them yields `null` (= "leave the stage unchanged").
+
+test("a mark with no figure/step pointer yields null for both (legacy mark)", () => {
+  const segs = splitChapter(`<mark name="a"/> Text.`);
+  expect(segs[0]!.figure).toBeNull();
+  expect(segs[0]!.step).toBeNull();
+  // The original (name, text, continuesPrevious) contract is untouched.
+  expect(segs[0]!.markName).toBe("a");
+});
+
+test("captures a figure pointer distinct from the highlight name", () => {
+  const segs = splitChapter(`<mark name="lead-para" figure="anatomy-figure"/> Setting it up.`);
+  expect(segs[0]!.markName).toBe("lead-para");
+  expect(segs[0]!.figure).toBe("anatomy-figure");
+  expect(segs[0]!.step).toBeNull();
+});
+
+test('figure="none" is captured verbatim as an explicit clear', () => {
+  const segs = splitChapter(`<mark name="wrap" figure="none"/> Clear the stage.`);
+  expect(segs[0]!.figure).toBe("none");
+});
+
+test('figure="" (empty) is captured as "" — an explicit clear, distinct from absent', () => {
+  const segs = splitChapter(`<mark name="wrap" figure=""/> Clear the stage.`);
+  expect(segs[0]!.figure).toBe("");
+});
+
+test("attributes parse in any order (figure before name)", () => {
+  const segs = splitChapter(`<mark figure="merge-figure" name="merge-step"/> Switch.`);
+  expect(segs[0]!.markName).toBe("merge-step");
+  expect(segs[0]!.figure).toBe("merge-figure");
+});
+
+test("captures all three pointers (name, figure, step) in mixed order", () => {
+  const segs = splitChapter(`<mark step="settled" figure="lifecycle-figure" name="para"/> Drive it.`);
+  expect(segs[0]!.markName).toBe("para");
+  expect(segs[0]!.figure).toBe("lifecycle-figure");
+  expect(segs[0]!.step).toBe("settled");
+});
+
+test("figure pointer survives single-quoted attrs and an explicit close tag", () => {
+  const segs = splitChapter(`<mark name='a' figure='fig-x'></mark> Body.`);
+  expect(segs[0]!.markName).toBe("a");
+  expect(segs[0]!.figure).toBe("fig-x");
+});
+
+test("a per-figure pointer is reset by the next mark that omits it", () => {
+  // The figure rides only its own mark's segment; the sub-chapter-bounded
+  // stickiness is resolved downstream (render-video / narratorTiming), not here.
+  const segs = splitChapter(`<mark name="a" figure="fig-x"/> One. <mark name="b"/> Two.`);
+  expect(segs.map((s) => s.figure)).toEqual(["fig-x", null]);
+});
+
 test("consecutive marks with soft line wraps all continue (no blank lines)", () => {
   // Mirrors the real authoring style: marks on their own line, prose wrapped
   // across single newlines. None of these are paragraph breaks.
