@@ -291,3 +291,58 @@ test("a tapped highlight opens its card as a top-layer popover placed below it",
     await ctx.close();
   }
 }, 90_000);
+
+// The canonical mobile interaction: the tap-to-popover comment flow as a state
+// machine — open, re-tap to close, tap a different highlight to swap. On mobile
+// only one card is ever a live popover (the column layout is desktop-only), so
+// these are genuine top-layer transitions, not column scroll-into-view. Two
+// comments are seeded far apart; we reload to a pristine reader state (a
+// freshly-submitted mobile card is left open, so the reload is what gives a
+// clean "reader taps existing highlights" start) and drive the gesture with
+// real `tap()`s. We assert on the open card's `position-anchor` — not just the
+// open count — so "swap" proves a *different* card surfaced, not the same one
+// reopened.
+test("tapping highlights drives the popover: open → re-tap closes → a different tap swaps", async () => {
+  const ctx = await newMobileContext(browser);
+  await authorize(ctx, "mobile-flow");
+  const page = await ctx.newPage();
+  try {
+    await gotoPost(page, "/posts/offer-files");
+    const blocks = await normalParagraphIndices(page);
+    expect(blocks.length, "post should have several normal paragraphs").toBeGreaterThan(2);
+    // Two threads far apart vertically → two distinct highlights to swap between.
+    await seedThreadViaUI(page, blocks[Math.floor(blocks.length * 0.3)]!, "mobile flow comment one");
+    await seedThreadViaUI(page, blocks[Math.floor(blocks.length * 0.6)]!, "mobile flow comment two");
+
+    // Reload → pristine reader state; confirm two highlights, nothing open.
+    await gotoPost(page, "/posts/offer-files");
+    await page.locator(".cmt-highlight").first().waitFor({ state: "attached", timeout: 15_000 });
+    const count = await page.locator(".cmt-highlight").count();
+    expect(count, "two seeded threads → two highlights").toBeGreaterThanOrEqual(2);
+    expect((await openPopover(page)).count, "nothing open on a fresh load").toBe(0);
+
+    // 1) Tap the first highlight → its card opens as a top-layer popover.
+    await tapHighlight(page, 0);
+    const first = await openPopover(page);
+    expect(first.count, "tapping highlight #1 opens exactly one popover").toBe(1);
+    expect(first.anchor, "the open card anchors to the tapped highlight").toBeTruthy();
+    expect(first.positionArea, "placed below via position-area block-end").toContain("block-end");
+
+    // 2) Tap the SAME highlight again → it toggles closed (the phone-friendly
+    //    dismiss; tap-outside is fiddly when the popover covers a screen strip).
+    await tapHighlight(page, 0);
+    expect((await openPopover(page)).count, "re-tapping the same highlight closes it").toBe(0);
+
+    // 3) Reopen the first, then tap the SECOND highlight → the popover swaps to
+    //    the other card (one-at-a-time), not a second one stacking open.
+    await tapHighlight(page, 0);
+    expect((await openPopover(page)).anchor, "first reopened").toBe(first.anchor);
+    await tapHighlight(page, 1);
+    const swapped = await openPopover(page);
+    expect(swapped.count, "still exactly one popover after the swap").toBe(1);
+    expect(swapped.anchor, "a DIFFERENT card surfaced (swap, not reopen)").not.toBe(first.anchor);
+    expect(swapped.positionArea, "the swapped-in card is also placed below its highlight").toContain("block-end");
+  } finally {
+    await ctx.close();
+  }
+}, 120_000);
