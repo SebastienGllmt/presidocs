@@ -88,6 +88,15 @@ export type FeedSite = {
    * itself is a post-deploy step (generate/websub-ping.ts), not emitted here.
    */
   hubUrl: string | null;
+  /**
+   * `<podcast:locked>` value (anti-hijack import signal). Defaults true; the
+   * `owner` attribute rides on it only when `ownerEmail` is set.
+   */
+  locked: boolean;
+  /** `<podcast:license>` identifier for the audio (e.g. `CC-BY-4.0`); null → omit. */
+  license: string | null;
+  /** Full-text URL for a custom `license` (optional for well-known ones). */
+  licenseUrl: string | null;
 };
 
 export type FeedPost = {
@@ -224,10 +233,27 @@ export function buildRssFeed(site: FeedSite, posts: FeedPost[]): string {
       ? `<itunes:owner><itunes:name>${escapeXml(site.author.name)}</itunes:name>` +
         `<itunes:email>${escapeXml(site.ownerEmail)}</itunes:email></itunes:owner>`
       : "";
+  // Channel host: name + X profile (href) + the author avatar (img) — the
+  // avatar already exists on disk (it's the Atom <logo>), so populating `img`
+  // lights up the host card in apps that render <podcast:person>.
   const person = site.author
     ? `<podcast:person role="host"${
         site.author.links.x ? ` href="${escapeXml(site.author.links.x)}"` : ""
-      }>${escapeXml(site.author.name)}</podcast:person>`
+      }${site.imageUrl ? ` img="${escapeXml(site.imageUrl)}"` : ""}>${escapeXml(
+        site.author.name,
+      )}</podcast:person>`
+    : "";
+  // <podcast:locked>: tell other hosts not to import this feed (anti-hijack).
+  // `owner` (an email used to verify a legitimate move) only when opted-in.
+  const locked = `<podcast:locked${
+    site.ownerEmail ? ` owner="${escapeXml(site.ownerEmail)}"` : ""
+  }>${site.locked ? "yes" : "no"}</podcast:locked>`;
+  // <podcast:license> for the audio. Well-known identifier needs no url;
+  // a custom abbreviation requires one (spec). Omitted entirely when unset.
+  const license = site.license
+    ? `<podcast:license${
+        site.licenseUrl ? ` url="${escapeXml(site.licenseUrl)}"` : ""
+      }>${escapeXml(site.license)}</podcast:license>`
     : "";
 
   const items = withAudio
@@ -286,6 +312,12 @@ export function buildRssFeed(site: FeedSite, posts: FeedPost[]): string {
     `<atom:link href="${escapeXml(feedUrl)}" rel="self" type="application/rss+xml"/>` +
     (site.hubUrl ? `<atom:link href="${escapeXml(site.hubUrl)}" rel="hub"/>` : "") +
     `<podcast:guid>${guid}</podcast:guid>` +
+    // medium=podcast tells apps this is spoken-word (e.g. don't reset playback
+    // speed the way they would for `music`); it's the default but stated so the
+    // signal is explicit.
+    `<podcast:medium>podcast</podcast:medium>` +
+    locked +
+    license +
     `<title>${escapeXml(site.title)}</title>` +
     `<link>${escapeXml(site.baseUrl)}/</link>` +
     `<description>${escapeXml(site.description)}</description>` +
@@ -585,6 +617,9 @@ async function main(): Promise<void> {
     explicit: cfg.explicit,
     tagYear: launchYear,
     hubUrl: cfg.hubUrl,
+    locked: cfg.locked,
+    license: cfg.license,
+    licenseUrl: cfg.licenseUrl,
   };
 
   await writeFile(join(distDir, "feed.xml"), buildAtomFeed(site, posts), "utf8");

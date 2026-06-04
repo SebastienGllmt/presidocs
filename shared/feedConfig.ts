@@ -27,6 +27,27 @@ export type FeedConfig = {
   /** Opt-in podcast owner contact (Apple directory submission). */
   ownerEmail: string | null;
   /**
+   * `<podcast:locked>` value. Defaults to `true` (`yes`) — the feed is
+   * single-owner and self-hosted, so the anti-hijack signal that rejects
+   * import into another hosting platform is a safe default (flip to migrate).
+   * Only an explicit `PODCAST_LOCKED=no` disables it. The `owner` attribute is
+   * emitted only when `ownerEmail` is set (reuses the existing opt-in; no new
+   * public-surface email).
+   */
+  locked: boolean;
+  /**
+   * Opt-in `<podcast:license>` for the audio/episodes. A lower-cased identifier
+   * from the Podcast Namespace license list (e.g. `CC-BY-4.0`) for a well-known
+   * public license, or a free-form abbreviation for a custom one. Null → omit
+   * the tag (no wrong default).
+   */
+  license: string | null;
+  /**
+   * URL to the full legal text for `license`. Optional for well-known licenses
+   * (clients resolve the identifier), REQUIRED by the spec for custom ones.
+   */
+  licenseUrl: string | null;
+  /**
    * Opt-in WebSub hub URL ([WebSub] — a `<link rel="hub">` the feeds declare so
    * subscribers' tools can get pushed updates instead of polling). Empty → no
    * hub link is emitted and the post-deploy ping is a no-op. Kept env-driven
@@ -79,5 +100,9 @@ export function resolveFeedConfig(env: Record<string, string | undefined> = proc
     explicit: (env.PODCAST_EXPLICIT ?? "").trim().toLowerCase() === "true",
     ownerEmail: (env.PODCAST_OWNER_EMAIL ?? "").trim() || null,
     hubUrl: (env.WEBSUB_HUB ?? "").trim() || null,
+    // Default locked; only an explicit "no" (case-insensitive) opts out.
+    locked: (env.PODCAST_LOCKED ?? "").trim().toLowerCase() !== "no",
+    license: (env.PODCAST_LICENSE ?? "").trim() || null,
+    licenseUrl: (env.PODCAST_LICENSE_URL ?? "").trim() || null,
   };
 }

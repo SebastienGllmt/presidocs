@@ -156,6 +156,31 @@ export function staticAssetContentTypeOverride(pathname: string): string | null 
   return null;
 }
 
+// The Podcast Namespace's "web app friendliness" guidance requires that the
+// public feed artifacts a *browser-based* podcast player fetches cross-origin
+// are CORS-readable: the feeds themselves and the <podcast:chapters> /
+// <podcast:transcript> targets. Without `Access-Control-Allow-Origin`, the
+// same-origin policy blocks those reads and chapters/captions silently fail to
+// load in that whole class of client. Returns the ACAO value to set, or null
+// to leave the response untouched.
+//
+// SCOPED DELIBERATELY to static, public, non-sensitive feed artifacts. It must
+// NEVER match an API/identity route (`/comments`, `/auth/*`, `/post-version`,
+// `/_a`, `/openapi.json`) — those are handled before the asset fall-through and
+// stay same-origin (Cross-Origin-Resource-Policy). Manifests and audio are also
+// excluded: only `/chapters.json` (not any `*.json`) and `.vtt` match.
+export function feedAssetCorsOrigin(pathname: string): string | null {
+  if (
+    pathname === "/feed.xml" ||
+    pathname === "/podcast.xml" ||
+    pathname.endsWith("/chapters.json") ||
+    pathname.endsWith(".vtt")
+  ) {
+    return "*";
+  }
+  return null;
+}
+
 export function createWorkerHandler(content: WorkerContent) {
   // Built once at module load — the maps are static for the lifetime of the
   // Worker (regenerated only when a new build is deployed).
@@ -320,19 +345,29 @@ export function createWorkerHandler(content: WorkerContent) {
       // see staticAssetContentTypeOverride. Don't depend on the binding default.
       const path = new URL(req.url).pathname;
       const overrideCt = staticAssetContentTypeOverride(path);
+      // Public feed sidecars get ACAO so browser-based podcast players can
+      // fetch them cross-origin (feedAssetCorsOrigin is scoped to those paths
+      // only; API/identity responses returned above never reach here).
+      const corsOrigin = feedAssetCorsOrigin(path);
+      const withCors = (res: Response): Response => {
+        if (corsOrigin) res.headers.set("Access-Control-Allow-Origin", corsOrigin);
+        return res;
+      };
       if (overrideCt && assetResponse.status === 200) {
         const headers = new Headers(assetResponse.headers);
         headers.set("Content-Type", overrideCt);
-        return withSecurityHeaders(
-          new Response(assetResponse.body, {
-            status: assetResponse.status,
-            statusText: assetResponse.statusText,
-            headers,
-          }),
+        return withCors(
+          withSecurityHeaders(
+            new Response(assetResponse.body, {
+              status: assetResponse.status,
+              statusText: assetResponse.statusText,
+              headers,
+            }),
+          ),
         );
       }
 
-      return withSecurityHeaders(await applyRangeSupport(req, assetResponse));
+      return withCors(withSecurityHeaders(await applyRangeSupport(req, assetResponse)));
     },
   };
 }

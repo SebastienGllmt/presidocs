@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { staticAssetContentTypeOverride } from "./createWorker.ts";
+import { staticAssetContentTypeOverride, feedAssetCorsOrigin } from "./createWorker.ts";
 
 // The prod Worker pins a Content-Type for assets the Static Assets binding's
 // extension default doesn't reliably give us. proposals/39 adds .vtt.
@@ -23,4 +23,28 @@ test("ordinary asset paths are left untouched (null → no override)", () => {
   expect(staticAssetContentTypeOverride("/generated/offer-files/full.f2985f8c0b4fd293.mp3")).toBeNull();
   expect(staticAssetContentTypeOverride("/generated/offer-files/chapters.json")).toBeNull();
   expect(staticAssetContentTypeOverride("/sitemap.xml")).toBeNull(); // only feed .xml paths are overridden
+});
+
+// Cross-origin readability for browser-based podcast players: the feeds and the
+// <podcast:chapters>/<podcast:transcript> targets get ACAO:*; nothing else does.
+
+test("feed sidecars are CORS-readable (ACAO:*) for browser podcast players", () => {
+  expect(feedAssetCorsOrigin("/feed.xml")).toBe("*");
+  expect(feedAssetCorsOrigin("/podcast.xml")).toBe("*");
+  expect(feedAssetCorsOrigin("/generated/offer-files/chapters.json")).toBe("*");
+  expect(feedAssetCorsOrigin("/generated/offer-files/captions.vtt")).toBe("*");
+});
+
+test("CORS is NOT granted to API/identity routes, audio, or other assets", () => {
+  // API/identity responses (handled before the asset fall-through; must stay same-origin).
+  expect(feedAssetCorsOrigin("/comments")).toBeNull();
+  expect(feedAssetCorsOrigin("/auth/me")).toBeNull();
+  expect(feedAssetCorsOrigin("/post-version")).toBeNull();
+  expect(feedAssetCorsOrigin("/openapi.json")).toBeNull();
+  // Only `/chapters.json`, not any `*.json` — manifests stay same-origin.
+  expect(feedAssetCorsOrigin("/generated/offer-files/manifest.f2985f8c0b4fd293.json")).toBeNull();
+  // Audio + article HTML + sitemap: not feed sidecars.
+  expect(feedAssetCorsOrigin("/generated/offer-files/full.f2985f8c0b4fd293.mp3")).toBeNull();
+  expect(feedAssetCorsOrigin("/posts/offer-files")).toBeNull();
+  expect(feedAssetCorsOrigin("/sitemap.xml")).toBeNull();
 });

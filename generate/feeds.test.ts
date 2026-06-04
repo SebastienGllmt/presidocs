@@ -22,6 +22,9 @@ const SITE: FeedSite = {
   explicit: false,
   tagYear: 2026,
   hubUrl: null,
+  locked: true,
+  license: null,
+  licenseUrl: null,
 };
 
 const POST_WITH_AUDIO: FeedPost = {
@@ -191,6 +194,50 @@ test("RSS: alternateEnclosure advertises stable + hashed sources with SRI integr
   expect(xml).toContain("<itunes:duration>2455</itunes:duration>");
   expect(xml).toContain('<podcast:chapters url="https://blog.example.com/generated/offer-files/chapters.json" type="application/json+chapters"/>');
   expect(xml).toContain("<pubDate>Fri, 22 May 2026 18:40:13 GMT</pubDate>");
+});
+
+test("RSS: channel declares medium=podcast (spoken-word) + locked=yes by default", () => {
+  const xml = buildRssFeed(SITE, [POST_WITH_AUDIO]);
+  expect(xml).toContain("<podcast:medium>podcast</podcast:medium>");
+  expect(xml).toContain("<podcast:locked>yes</podcast:locked>");
+});
+
+test("RSS: locked owner attr is opt-in, and PODCAST_LOCKED=no is respected", () => {
+  // No owner email by default → bare <podcast:locked>yes</podcast:locked>.
+  expect(buildRssFeed(SITE, [POST_WITH_AUDIO])).not.toContain("podcast:locked owner");
+  // Owner email opted in → it rides on the locked tag (verifies a legit move).
+  const withOwner = buildRssFeed({ ...SITE, ownerEmail: "owner@example.com" }, [POST_WITH_AUDIO]);
+  expect(withOwner).toContain('<podcast:locked owner="owner@example.com">yes</podcast:locked>');
+  // Explicit opt-out.
+  expect(buildRssFeed({ ...SITE, locked: false }, [POST_WITH_AUDIO])).toContain(
+    "<podcast:locked>no</podcast:locked>",
+  );
+});
+
+test("RSS: license is opt-in — well-known needs no url, custom carries one", () => {
+  // Unset → tag omitted entirely (no wrong default).
+  expect(buildRssFeed(SITE, [POST_WITH_AUDIO])).not.toContain("podcast:license");
+  // Well-known identifier: clients resolve it, so no url attribute.
+  expect(buildRssFeed({ ...SITE, license: "CC-BY-4.0" }, [POST_WITH_AUDIO])).toContain(
+    "<podcast:license>CC-BY-4.0</podcast:license>",
+  );
+  // Custom license: the url is required by the spec and is emitted.
+  expect(
+    buildRssFeed(
+      { ...SITE, license: "my-blog-license-v1", licenseUrl: "https://example.org/license.pdf" },
+      [POST_WITH_AUDIO],
+    ),
+  ).toContain(
+    '<podcast:license url="https://example.org/license.pdf">my-blog-license-v1</podcast:license>',
+  );
+});
+
+test("RSS: channel <podcast:person> carries the author avatar (img)", () => {
+  const xml = buildRssFeed(SITE, [POST_WITH_AUDIO]);
+  expect(xml).toContain(
+    '<podcast:person role="host" href="https://x.com/SebastienGllmt" ' +
+      'img="https://blog.example.com/assets/authors/sebastiengllmt.png">Sebastien Guillemot</podcast:person>',
+  );
 });
 
 test("RSS: itunes:image only emitted for a real cover (avatar is NOT used)", () => {

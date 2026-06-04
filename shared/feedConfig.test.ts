@@ -35,3 +35,23 @@ test("http loopback is allowed (local dev, never published)", () => {
 test("a non-loopback host that merely starts with 127 is NOT exempt", () => {
   expect(() => resolveFeedConfig({ SITE_URL: "http://127.example.com" })).toThrow(/https/);
 });
+
+test("locked defaults to yes (true); only an explicit 'no' opts out", () => {
+  expect(resolveFeedConfig({}).locked).toBe(true);
+  expect(resolveFeedConfig({ PODCAST_LOCKED: "yes" }).locked).toBe(true);
+  expect(resolveFeedConfig({ PODCAST_LOCKED: "no" }).locked).toBe(false);
+  expect(resolveFeedConfig({ PODCAST_LOCKED: "NO" }).locked).toBe(false); // case-insensitive
+});
+
+test("license + licenseUrl are opt-in (null unless set)", () => {
+  expect(resolveFeedConfig({}).license).toBeNull();
+  expect(resolveFeedConfig({}).licenseUrl).toBeNull();
+  const wellKnown = resolveFeedConfig({ PODCAST_LICENSE: "CC-BY-4.0" });
+  expect(wellKnown.license).toBe("CC-BY-4.0");
+  expect(wellKnown.licenseUrl).toBeNull();
+  const custom = resolveFeedConfig({
+    PODCAST_LICENSE: "my-blog-license-v1",
+    PODCAST_LICENSE_URL: "https://example.org/license.pdf",
+  });
+  expect(custom.licenseUrl).toBe("https://example.org/license.pdf");
+});
