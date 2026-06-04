@@ -348,6 +348,58 @@ test("tapping highlights drives the popover: open → re-tap closes → a differ
   }
 }, 120_000);
 
+// Anti-stacking + light-dismiss — the mobile counterpart to the desktop
+// "overlapping comments cascade" guard. On DESKTOP two comments on the same
+// passage anchor to the same `top` and `adjustCardStacking` cascades them so
+// they don't overlap. On MOBILE there is no cascade: `adjustCardStacking`
+// early-returns (`if (this.isMobile) return`) and cards are one-at-a-time
+// top-layer popovers. So the invariant to guard here is the inverse of the
+// desktop one — even when two comments share a passage, the screen never shows
+// two stacked cards: at most one popover is open at any moment, and each
+// highlight independently surfaces its own card. Also covers platform
+// light-dismiss: tapping outside the popover closes it.
+test("same-passage comments never stack on mobile — one popover at a time, tap-outside dismisses", async () => {
+  const ctx = await newMobileContext(browser);
+  await authorize(ctx, "mobile-overlap");
+  const page = await ctx.newPage();
+  try {
+    await gotoPost(page, "/posts/offer-files");
+    const blocks = await normalParagraphIndices(page);
+    expect(blocks.length, "post should have several normal paragraphs").toBeGreaterThan(2);
+    // Two threads on the SAME block — the desktop-cascade scenario.
+    const same = blocks[Math.floor(blocks.length * 0.4)]!;
+    await seedThreadViaUI(page, same, "same-passage comment one");
+    await seedThreadViaUI(page, same, "same-passage comment two");
+
+    // Reload → pristine reader state; confirm two distinct highlights, none open.
+    await gotoPost(page, "/posts/offer-files");
+    await page.locator(".cmt-highlight").first().waitFor({ state: "attached", timeout: 15_000 });
+    expect(await page.locator(".cmt-highlight").count(), "two threads → two highlights").toBeGreaterThanOrEqual(2);
+    expect((await openPopover(page)).count, "nothing open on a fresh load").toBe(0);
+
+    // Tapping the first surfaces exactly one popover (never two stacked).
+    await tapHighlight(page, 0);
+    const a = await openPopover(page);
+    expect(a.count, "the first same-passage highlight opens exactly one popover").toBe(1);
+
+    // Tapping the second swaps to the other card — still exactly one, not a stack.
+    await tapHighlight(page, 1);
+    const b = await openPopover(page);
+    expect(b.count, "the second still shows exactly one popover — no stacking").toBe(1);
+    expect(b.anchor, "it surfaced the OTHER same-passage thread, not the same one").not.toBe(a.anchor);
+
+    // Light-dismiss: a tap outside any popover (the article heading) closes it —
+    // the platform behavior the popover model relies on for tap-away.
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior }));
+    await page.waitForTimeout(200);
+    await page.locator("h1").first().tap({ force: true });
+    await page.waitForTimeout(400);
+    expect((await openPopover(page)).count, "tapping outside light-dismisses the open popover").toBe(0);
+  } finally {
+    await ctx.close();
+  }
+}, 120_000);
+
 // Media emulation: `prefers-reduced-motion` and `prefers-color-scheme` carried
 // by the device context. happy-dom has no media model, and these `@media` rules
 // only resolve in a real engine — so this is the device tier's job.
