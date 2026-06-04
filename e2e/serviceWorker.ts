@@ -119,6 +119,56 @@ test("a previously-visited post still loads offline — network-first nav falls 
   }
 }, 120_000);
 
+// The OTHER half of "is this a PWA": the Web App Manifest + installability
+// shell (`shared/injectPwaHead.ts` + the served `/manifest.webmanifest`). The SW
+// tests above cover the *runtime* half; this covers the *install* half. It's a
+// dev:edge concern specifically — the head injection is a post-build rewrite, so
+// the fast `bun run dev` server (which serves source HTML) carries none of it;
+// only the built + wrangler-served pages do. Asserts the served page advertises
+// the manifest (+ theme-color + apple-touch-icon, the iOS-only icon the manifest
+// array doesn't cover), and that the manifest itself is fetchable and carries
+// the fields a browser needs to offer "Install": name, root `start_url`/`scope`/
+// `id`, `display: standalone`, and 192px + 512px icons.
+test("the built pages are an installable PWA — manifest linked, served, and installable-shaped", async () => {
+  const ctx = await browser.newContext();
+  try {
+    const page = await ctx.newPage();
+    await page.goto(`${server.baseURL}/`, { waitUntil: "load", timeout: 30_000 });
+
+    const head = await page.evaluate(() => ({
+      manifestHref: document.querySelector('link[rel="manifest"]')?.getAttribute("href") ?? null,
+      themeColor: document.querySelector('meta[name="theme-color"]')?.getAttribute("content") ?? null,
+      appleTouchIcon: document.querySelector('link[rel="apple-touch-icon"]')?.getAttribute("href") ?? null,
+    }));
+    expect(head.manifestHref, "served page links the engine-fixed manifest URL").toBe("/manifest.webmanifest");
+    expect(head.themeColor, "served page carries a theme-color").toBeTruthy();
+    expect(head.appleTouchIcon, "served page carries an apple-touch-icon (iOS home-screen)").toBeTruthy();
+
+    // Fetch the manifest the link points at and validate the install contract.
+    const m = await page.evaluate(async (href) => {
+      const res = await fetch(href, { cache: "no-store" });
+      return { ok: res.ok, status: res.status, json: res.ok ? await res.json() : null };
+    }, head.manifestHref!);
+    expect(m.ok, `/manifest.webmanifest is served (status ${m.status})`).toBe(true);
+
+    const man = m.json as Record<string, unknown> & { icons?: Array<{ sizes?: string }> };
+    expect(typeof man.name === "string" && (man.name as string).length > 0, "manifest has a name").toBe(true);
+    // Root entry point + identity — the engine pins these to "/" for stable
+    // app identity and a post-list start.
+    expect(man.start_url, "start_url is the origin root").toBe("/");
+    expect(man.scope, "scope is the origin root").toBe("/");
+    expect(man.id, "id is pinned to / for stable app identity").toBe("/");
+    // A no-browser-chrome reading surface.
+    expect(man.display, "display is standalone").toBe("standalone");
+    // Installable icon set: Chromium wants a 192 and a 512.
+    const sizes = (man.icons ?? []).map((i) => i.sizes ?? "");
+    expect(sizes.some((s) => s.includes("192")), `manifest has a 192px icon (${JSON.stringify(sizes)})`).toBe(true);
+    expect(sizes.some((s) => s.includes("512")), `manifest has a 512px icon (${JSON.stringify(sizes)})`).toBe(true);
+  } finally {
+    await ctx.close();
+  }
+}, 120_000);
+
 // Cross-deploy cache reap (proposal 22 §1, contract 3). Each deploy stamps the
 // SW with a fresh `VERSION` (`Date.now()` at build/copy time), so the caches are
 // keyed `static-<VERSION>` / `runtime-<VERSION>`; `activate` deletes every cache
