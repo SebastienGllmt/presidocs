@@ -400,6 +400,102 @@ test("same-passage comments never stack on mobile — one popover at a time, tap
   }
 }, 120_000);
 
+// The hide-all FAB's interaction with an open popover, and its persistence.
+// Pressing the FAB doesn't just flatten highlights — it also dismisses any open
+// popover (otherwise the top-layer card floats over the dimmed article), and the
+// choice is written to localStorage so it survives a reload. Both are mobile-
+// specific: the FAB only exists below 1100px, and the popover only exists on
+// mobile. (The sibling FAB test above covers the mobile-only + aria-pressed
+// toggle; this covers the flow.)
+test("the hide-all FAB dismisses an open popover and the choice persists across reload", async () => {
+  const ctx = await newMobileContext(browser);
+  await authorize(ctx, "mobile-fab-dismiss");
+  const page = await ctx.newPage();
+  try {
+    await gotoPost(page, "/posts/offer-files");
+    const blocks = await normalParagraphIndices(page);
+    await seedThreadViaUI(page, blocks[Math.floor(blocks.length * 0.4)]!, "fab dismiss comment");
+
+    // Reload → pristine reader state, then open the popover.
+    await gotoPost(page, "/posts/offer-files");
+    await page.locator(".cmt-highlight").first().waitFor({ state: "attached", timeout: 15_000 });
+    await tapHighlight(page, 0);
+    expect((await openPopover(page)).count, "the highlight's popover is open before pressing the FAB").toBe(1);
+
+    // Press the FAB → it flattens highlights AND dismisses the open popover.
+    const fab = page.getByRole("button", { name: "Toggle comment highlights" });
+    await fab.waitFor({ state: "visible", timeout: 10_000 });
+    await fab.tap({ force: true });
+    await page.waitForTimeout(400);
+    const after = await page.evaluate(() => ({
+      open: [...document.querySelectorAll<HTMLElement>(".cmt-card")].filter((c) => c.matches(":popover-open")).length,
+      hidden: document.body.classList.contains("cmt-highlights-hidden"),
+      pressed: document.querySelector(".cmt-hide-all-fab")?.getAttribute("aria-pressed"),
+    }));
+    expect(after.open, "pressing the FAB dismisses the open popover").toBe(0);
+    expect(after.hidden, "highlights are flattened (body.cmt-highlights-hidden)").toBe(true);
+    expect(after.pressed, "the FAB reports its pressed state").toBe("true");
+
+    // Reload → the hidden choice persists (written to localStorage).
+    await gotoPost(page, "/posts/offer-files");
+    await page.waitForTimeout(600);
+    const persisted = await page.evaluate(() => ({
+      hidden: document.body.classList.contains("cmt-highlights-hidden"),
+      pressed: document.querySelector(".cmt-hide-all-fab")?.getAttribute("aria-pressed"),
+    }));
+    expect(persisted.hidden, "the hidden choice survives a reload").toBe(true);
+    expect(persisted.pressed, "the FAB restores its pressed state from storage").toBe("true");
+  } finally {
+    await ctx.close();
+  }
+}, 120_000);
+
+// The mobile sign-in / identity bar (`.cmt-identity`, a `position: fixed` pill
+// top-right on mobile) is hidden while a comment popover is open — the popover's
+// auto-placement can land in the upper viewport, so overlapping the bar would be
+// clutter. It re-appears the moment the popover closes. Driven by
+// `body.cmt-mobile-popover-active` (toggled in `setActiveCard`). Logged in (the
+// minted session), so the bar renders as the signed-in ID badge.
+test("the mobile identity bar hides while a comment popover is open", async () => {
+  const ctx = await newMobileContext(browser);
+  await authorize(ctx, "mobile-identity");
+  const page = await ctx.newPage();
+  try {
+    await gotoPost(page, "/posts/offer-files");
+    const blocks = await normalParagraphIndices(page);
+    await seedThreadViaUI(page, blocks[Math.floor(blocks.length * 0.4)]!, "identity-bar comment");
+
+    await gotoPost(page, "/posts/offer-files");
+    await page.locator(".cmt-highlight").first().waitFor({ state: "attached", timeout: 15_000 });
+
+    const identity = () => page.evaluate(() => {
+      const id = document.querySelector<HTMLElement>(".cmt-identity");
+      return {
+        display: id ? getComputedStyle(id).display : "absent",
+        popoverActive: document.body.classList.contains("cmt-mobile-popover-active"),
+      };
+    });
+
+    const before = await identity();
+    expect(before.display, "the identity bar is visible before any popover opens").not.toBe("none");
+    expect(before.popoverActive, "no popover active yet").toBe(false);
+
+    await tapHighlight(page, 0);
+    expect((await openPopover(page)).count, "a popover is open").toBe(1);
+    const during = await identity();
+    expect(during.popoverActive, "body.cmt-mobile-popover-active is set while open").toBe(true);
+    expect(during.display, "the identity bar is hidden while the popover is open").toBe("none");
+
+    await tapHighlight(page, 0); // re-tap closes
+    expect((await openPopover(page)).count, "the popover is closed").toBe(0);
+    const after = await identity();
+    expect(after.popoverActive, "the active flag clears on close").toBe(false);
+    expect(after.display, "the identity bar re-appears once the popover closes").not.toBe("none");
+  } finally {
+    await ctx.close();
+  }
+}, 120_000);
+
 // Media emulation: `prefers-reduced-motion` and `prefers-color-scheme` carried
 // by the device context. happy-dom has no media model, and these `@media` rules
 // only resolve in a real engine — so this is the device tier's job.
