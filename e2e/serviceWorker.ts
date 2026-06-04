@@ -119,6 +119,48 @@ test("a previously-visited post still loads offline — network-first nav falls 
   }
 }, 120_000);
 
+// The offline guarantee is only useful if the page also *runs* offline — its
+// content-addressed JS/CSS must be there too, not just the HTML. Those take the
+// SW's other caching branch: `cacheFirst` (hash-named `…-<8hex>.js|css`,
+// `/assets/`, content-hashed `/generated/`), where a URL change is the only way
+// bytes change, so a cache hit is correctness-safe forever. This asserts that
+// branch end to end: a hashed chunk the page loads is put into the SW cache on
+// the online visit, then served from cache while offline (distinct from the
+// network-first HTML path the previous test covers).
+test("content-addressed assets are cache-first — a hashed chunk is cached and served offline", async () => {
+  const ctx = await browser.newContext();
+  try {
+    const page = await loadControlled(ctx, `${server.baseURL}/`);
+    // Visit a post online so its hashed JS/CSS load through the SW's cacheFirst.
+    await page.goto(`${server.baseURL}/posts/offer-files`, { waitUntil: "load", timeout: 30_000 });
+
+    // Discover a real content-addressed asset the page actually loaded.
+    const assetUrl = await page.evaluate(() => {
+      const urls: string[] = [];
+      document.querySelectorAll<HTMLScriptElement>("script[src]").forEach((s) => urls.push(s.src));
+      document.querySelectorAll<HTMLLinkElement>("link[href]").forEach((l) => urls.push(l.href));
+      return urls.find((u) => /\/[^/]*-[a-z0-9]{8}\.(?:js|css)(?:\?|$)/.test(u)) ?? null;
+    });
+    expect(assetUrl, "the page loads a content-addressed (hash-named) asset").toBeTruthy();
+
+    // cacheFirst put it into a SW cache during the online load.
+    const cached = await page.evaluate(async (u) => !!(await caches.match(u)), assetUrl!);
+    expect(cached, "the hashed asset is in the SW cache after the online visit").toBe(true);
+
+    // Offline, the SW serves it from cache (no network) with real bytes.
+    await ctx.setOffline(true);
+    const r = await page.evaluate(async (u) => {
+      const res = await fetch(u);
+      return { ok: res.ok, len: (await res.text()).length };
+    }, assetUrl!);
+    expect(r.ok, "the hashed asset resolves offline (served from the SW cache)").toBe(true);
+    expect(r.len, "the offline asset has real bytes, not an empty/error body").toBeGreaterThan(0);
+    await ctx.setOffline(false);
+  } finally {
+    await ctx.close();
+  }
+}, 120_000);
+
 // The OTHER half of "is this a PWA": the Web App Manifest + installability
 // shell (`shared/injectPwaHead.ts` + the served `/manifest.webmanifest`). The SW
 // tests above cover the *runtime* half; this covers the *install* half. It's a
