@@ -60,6 +60,115 @@ async function gotoFirstPost(page: Page): Promise<void> {
   await gotoPost(page, new URL(href!, server.baseURL).pathname);
 }
 
+/** Indices of normal article paragraphs (real prose, not inside a figure). */
+async function normalParagraphIndices(page: Page): Promise<number[]> {
+  return page.evaluate(() => {
+    const blocks = [...document.querySelectorAll<HTMLElement>("[data-comment-block-id]")];
+    const out: number[] = [];
+    blocks.forEach((b, i) => {
+      if (
+        b.tagName === "P" &&
+        !b.closest("figure") &&
+        !b.closest(".narrate-drawer") &&
+        (b.textContent ?? "").trim().length > 80
+      ) {
+        out.push(i);
+      }
+    });
+    return out;
+  });
+}
+
+/**
+ * Drive the real comment-creation UI on the `blockIndex`-th block — the same
+ * "comment fixture" `commentPositioning.e2e.ts` uses. It works unchanged under
+ * the mobile context: the selection is a programmatic `Range` (viewport-
+ * agnostic) and the action-bar → draft → submit path is width-independent, so a
+ * comment seeds at phone width exactly as it does on desktop. The *interaction*
+ * we actually test on a real device — the tap that opens the popover — is driven
+ * by `page.tap()` below, not here.
+ */
+async function seedThreadViaUI(page: Page, blockIndex: number, body: string): Promise<void> {
+  const ok = await page.evaluate((idx) => {
+    const block = [...document.querySelectorAll<HTMLElement>("[data-comment-block-id]")][idx];
+    if (!block) return false;
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    let best: Node | null = null;
+    let n: Node | null;
+    while ((n = walker.nextNode())) {
+      if (!best || (n.textContent ?? "").trim().length > (best.textContent ?? "").trim().length) best = n;
+    }
+    if (!best) return false;
+    const range = document.createRange();
+    range.setStart(best, 0);
+    range.setEnd(best, Math.min(28, (best.textContent ?? "").length));
+    const sel = window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return true;
+  }, blockIndex);
+  expect(ok, `block ${blockIndex} should be a commentable text block`).toBe(true);
+
+  await page.locator(".cmt-action-bar:not([hidden]) .cmt-action-btn").waitFor({ state: "visible", timeout: 5000 });
+  // Handler is on mousedown (so the selection isn't lost to focus first).
+  await page.evaluate(() =>
+    document.querySelector(".cmt-action-btn")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })),
+  );
+
+  const draft = page.locator('.cmt-card[data-draft="true"]');
+  await draft.locator("textarea").waitFor({ state: "visible", timeout: 5000 });
+  await draft.locator("textarea").fill(body);
+  await draft.locator(".cmt-reply-submit").click();
+  await page.locator('.cmt-card[data-draft="true"]').waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
+}
+
+/** Open + position state of the currently-open popover card (mobile = one at a time). */
+async function openPopover(page: Page): Promise<{ count: number; anchor: string | null; positionArea: string | null; cardTop: number | null }> {
+  return page.evaluate(() => {
+    const open = [...document.querySelectorAll<HTMLElement>(".cmt-card")].filter((c) => c.matches(":popover-open"));
+    const c = open[0];
+    return {
+      count: open.length,
+      anchor: c ? c.style.getPropertyValue("position-anchor").trim() : null,
+      positionArea: c ? getComputedStyle(c).getPropertyValue("position-area").trim() : null,
+      cardTop: c ? Math.round(c.getBoundingClientRect().top) : null,
+    };
+  });
+}
+
+/**
+ * Tap the `index`-th comment highlight on a touch device, reliably.
+ *
+ * Two emulation gotchas make a naive `locator.tap()` flaky for these inline
+ * spans:
+ *   1. Hit-test: a highlight is an inline run, and a highlight low in the
+ *      article can land under the fixed narration dock — Playwright's
+ *      actionability then reports the `<p>` (or the dock) "intercepts pointer
+ *      events" and the tap never fires. So we `{ force: true }` and dispatch the
+ *      touch at the span's centre (the same reason the 44px FAB needs force).
+ *   2. Stale point: the engine sets `html { scroll-behavior: smooth }`, so a
+ *      plain `scrollIntoView` animates — a force-tap fired before it settles
+ *      lands at the pre-scroll coordinate and is lost. We scroll **instantly**
+ *      (`behavior: "instant"`) and let it settle, so the centre we tap is final.
+ */
+async function tapHighlight(page: Page, index: number): Promise<void> {
+  await page.evaluate((i) => {
+    const el = document.querySelectorAll<HTMLElement>(".cmt-highlight")[i];
+    el?.scrollIntoView({ block: "center", behavior: "instant" as ScrollBehavior });
+  }, index);
+  await page.waitForTimeout(350);
+  await page.locator(".cmt-highlight").nth(index).tap({ force: true });
+  await page.waitForTimeout(400);
+}
+
+/** Add a minted dev session to a context so it can seed comments. */
+async function authorize(ctx: import("playwright").BrowserContext, tag: string): Promise<void> {
+  const cookie = await mintSessionCookie(resolveBlogDir(), `${tag}-${++nonce}-${server.baseURL.split(":").pop()}`);
+  await ctx.addCookies([
+    { name: cookie.name, value: cookie.value, domain: "localhost", path: "/", httpOnly: true, sameSite: "Lax" },
+  ]);
+}
+
 test("the mobile context emulates a real touch device (coarse pointer, no hover, device-width)", async () => {
   const ctx = await newMobileContext(browser);
   const page = await ctx.newPage();
@@ -100,10 +209,7 @@ test("the hide-all-highlights FAB is mobile-only and toggles on TAP", async () =
 
   // Mobile: the FAB is exposed and a real touch tap toggles aria-pressed.
   const ctx = await newMobileContext(browser);
-  const cookie = await mintSessionCookie(resolveBlogDir(), `mobile-fab-${++nonce}-${server.baseURL.split(":").pop()}`);
-  await ctx.addCookies([
-    { name: cookie.name, value: cookie.value, domain: "localhost", path: "/", httpOnly: true, sameSite: "Lax" },
-  ]);
+  await authorize(ctx, "mobile-fab");
   const page = await ctx.newPage();
   try {
     await gotoFirstPost(page);
@@ -124,3 +230,64 @@ test("the hide-all-highlights FAB is mobile-only and toggles on TAP", async () =
     await ctx.close();
   }
 }, 60_000);
+
+// Tap-to-popover placement on a REAL touch device. This is the device-emulated
+// successor to the old `commentPositioning.e2e.ts` "mobile popover anchors below
+// its highlight" test, which faked mobile by resizing a *desktop* context (a
+// fine pointer with hover) and opened the card with a mouse `.click()`. Here the
+// context is a genuine phone (coarse pointer, no hover, touch) and the card is
+// opened by a real `tap()`.
+//
+// Regression guard for two spec bugs the original test caught: `span-inline`
+// (not a real `position-area` keyword → the declaration is dropped and the
+// value computes to `none`) and the desktop `top: anchor(top)` leaking into
+// `:popover-open` (which would pin the popover at the anchor's top instead of
+// letting `position-area: block-end span-all` place it below).
+//
+// Seeding note: the comment is seeded at phone width (the fixture works
+// unchanged — see `seedThreadViaUI`), then we RELOAD so the page opens in a
+// pristine reader state (comments rehydrated from the CRDT store, nothing
+// open). On mobile a freshly-submitted card is left open as its popover, so the
+// reload is what gives a clean "reader taps an existing highlight" starting
+// point. The tap itself is a plain `page.tap()` (no `{ force }`, no manual
+// `scrollIntoView`): a highlight is a normal-size inline span, so Playwright's
+// actionability scroll + hit-test resolve it correctly — and a manual
+// pre-scroll would make the immediately-following tap land stale (the click
+// fires at the pre-scroll point). Contrast the FAB above, a 44px `position:
+// fixed` target that genuinely needs `{ force }`.
+test("a tapped highlight opens its card as a top-layer popover placed below it", async () => {
+  const ctx = await newMobileContext(browser);
+  await authorize(ctx, "mobile-popover");
+  const page = await ctx.newPage();
+  try {
+    await gotoPost(page, "/posts/offer-files");
+    const blocks = await normalParagraphIndices(page);
+    expect(blocks.length, "post should have several normal paragraphs").toBeGreaterThan(2);
+    await seedThreadViaUI(page, blocks[Math.floor(blocks.length * 0.4)]!, "mobile tap-to-popover placement");
+
+    // Reload → pristine reader state (nothing open).
+    await gotoPost(page, "/posts/offer-files");
+    const hl = page.locator(".cmt-highlight").first();
+    await hl.waitFor({ state: "attached", timeout: 15_000 });
+
+    // Real touch tap opens the popover. Assert visible first.
+    await hl.waitFor({ state: "visible", timeout: 15_000 });
+    const before = await openPopover(page);
+    expect(before.count, "nothing is open before the tap").toBe(0);
+
+    await tapHighlight(page, 0);
+
+    const r = await openPopover(page);
+    const hlBottom = await hl.evaluate((el) => Math.round(el.getBoundingClientRect().bottom));
+    expect(r.count, "tapping a highlight opens exactly one popover").toBe(1);
+    // It's genuinely top-layer (the Popover API `:popover-open` state).
+    expect(r.positionArea, "position-area should resolve to block-end, not be dropped").toContain("block-end");
+    // Placed BELOW the anchor, not pinned at its top via a leaked desktop `top`.
+    expect(
+      r.cardTop!,
+      `popover should sit below the highlight (card ${r.cardTop} vs highlight bottom ${hlBottom})`,
+    ).toBeGreaterThanOrEqual(hlBottom - 4);
+  } finally {
+    await ctx.close();
+  }
+}, 90_000);

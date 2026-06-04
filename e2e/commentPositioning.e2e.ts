@@ -255,55 +255,12 @@ test("[chromium] an in-progress draft anchors to its selection (no scroll-to-top
   }
 }, 90_000);
 
-// Mobile (<1100px): a tapped highlight opens its card as a top-layer popover
-// placed BELOW the anchor via `position-area: block-end span-all`. Regression
-// guard for two spec bugs: `span-inline` (not a real keyword → declaration
-// dropped) and the desktop `top: anchor(top)` leaking into `:popover-open`
-// (which would offset the popover instead of letting position-area place it).
-test("[chromium] mobile popover anchors below its highlight (position-area, not leaked top)", async () => {
-  const browser = await chromium.launch({ executablePath: CHROME, args: ["--no-sandbox"] });
-  try {
-    const cookie = await mintSessionCookie(resolveBlogDir(), `mobpop-${++nonce}-${server.baseURL.split(":").pop()}`);
-    const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
-    await ctx.addCookies([{ name: cookie.name, value: cookie.value, domain: "localhost", path: "/", httpOnly: true, sameSite: "Lax" }]);
-    const page = await ctx.newPage();
-    await gotoPost(page, "/posts/offer-files");
-
-    // Seed one comment using the wide-mode column UI.
-    const blocks = await normalParagraphIndices(page);
-    await seedThreadViaUI(page, blocks[Math.floor(blocks.length * 0.4)]!, "mobile popover test");
-
-    // Switch to narrow (popover mode), bring the highlight to mid-viewport so
-    // there's room below it, and tap it open.
-    await page.setViewportSize({ width: 800, height: 800 });
-    await page.waitForTimeout(300);
-    await page.evaluate(() => document.querySelector(".cmt-highlight")!.scrollIntoView({ block: "center" }));
-    await page.waitForTimeout(300);
-    await page.locator(".cmt-highlight").first().click();
-    await page.waitForTimeout(400);
-
-    const r = await page.evaluate(() => {
-      const card = document.querySelector<HTMLElement>(".cmt-card")!;
-      const hl = document.querySelector<HTMLElement>(".cmt-highlight")!;
-      return {
-        open: card.matches(":popover-open"),
-        positionArea: getComputedStyle(card).getPropertyValue("position-area").trim(),
-        cardTop: Math.round(card.getBoundingClientRect().top),
-        hlBottom: Math.round(hl.getBoundingClientRect().bottom),
-      };
-    });
-
-    expect(r.open, "tapping a highlight opens its popover").toBe(true);
-    // position-area resolved (a dropped/invalid value computes to `none`).
-    expect(r.positionArea, "position-area should resolve (block-end), not be dropped").toContain("block-end");
-    // Placed below the anchor, not pinned at the anchor's top via a leaked `top`.
-    expect(r.cardTop, `popover should sit below the highlight (card ${r.cardTop} vs highlight bottom ${r.hlBottom})`).toBeGreaterThanOrEqual(r.hlBottom - 4);
-
-    await ctx.close();
-  } finally {
-    await browser.close();
-  }
-}, 90_000);
+// The mobile popover's below-the-highlight placement is now covered on a REAL
+// device (coarse pointer + touch `tap()`) in `e2e/mobile.e2e.ts` —
+// "a tapped highlight opens its card as a top-layer popover placed below it".
+// It used to live here, faking mobile by resizing this desktop context to
+// 800px (which keeps a fine pointer + hover) and opening with a mouse click;
+// that under-tested the touch path, so it moved to the device-emulated tier.
 
 // The column's permanent "header" surfaces (identity card, version banner,
 // version history, unresolved count) live in a fixed rail pinned to the top
