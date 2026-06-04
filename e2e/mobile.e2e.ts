@@ -17,6 +17,7 @@ import type { Browser, Page } from "playwright";
 import {
   launchChrome,
   mintSessionCookie,
+  MOBILE_DEVICE,
   newMobileContext,
   resolveBlogDir,
   startBlogServer,
@@ -346,3 +347,79 @@ test("tapping highlights drives the popover: open → re-tap closes → a differ
     await ctx.close();
   }
 }, 120_000);
+
+// Media emulation: `prefers-reduced-motion` and `prefers-color-scheme` carried
+// by the device context. happy-dom has no media model, and these `@media` rules
+// only resolve in a real engine — so this is the device tier's job.
+//
+// Reduced motion: the engine honors it. Site-wide, base.css drops
+// `html { scroll-behavior: smooth }` to `auto` under
+// `@media (prefers-reduced-motion: reduce)`; and the mobile comment UI's card
+// animation (`.cmt-card { transition: top 180ms }`) is cancelled to `none` by
+// comments.css. We read both, and prove the *emulation* drives them by
+// contrasting a plain (no-preference) mobile context where scroll-behavior is
+// still `smooth`.
+//
+// Colour scheme: the engine is **light-only by design** — the article never
+// flips to dark, and the dock/player are forced dark unconditionally (NOT gated
+// on `prefers-color-scheme`), so the look can't change with the OS. There are no
+// dark theme tokens to "respond." So the faithful assertion is the inverse: with
+// the OS asking for dark (`matchMedia('(prefers-color-scheme: dark)')` true), the
+// document still declares no `color-scheme` (computed `normal`) — i.e. the
+// light-only decision holds under emulation, rather than inventing a dark theme
+// the engine doesn't ship.
+test("media emulation: reduced-motion is honored; colour-scheme stays light-only by design", async () => {
+  // --- Reduced-motion + dark context ---------------------------------------
+  const ctx = await browser.newContext({ ...MOBILE_DEVICE, reducedMotion: "reduce", colorScheme: "dark" });
+  await authorize(ctx, "mobile-media");
+  const page = await ctx.newPage();
+  try {
+    await gotoPost(page, "/posts/offer-files");
+
+    const env = await page.evaluate(() => ({
+      reduce: matchMedia("(prefers-reduced-motion: reduce)").matches,
+      dark: matchMedia("(prefers-color-scheme: dark)").matches,
+      scrollBehavior: getComputedStyle(document.documentElement).scrollBehavior,
+      colorScheme: getComputedStyle(document.documentElement).colorScheme,
+    }));
+    // Emulation is real (a desktop context can't fake these media features).
+    expect(env.reduce, "prefers-reduced-motion: reduce is emulated").toBe(true);
+    expect(env.dark, "prefers-color-scheme: dark is emulated").toBe(true);
+    // base.css honors reduced motion: smooth → auto site-wide.
+    expect(env.scrollBehavior, "reduced motion drops smooth scrolling to auto").toBe("auto");
+    // Light-only by design: the OS asks for dark, the engine ships no
+    // `color-scheme`, so the document stays light (computed `normal`).
+    expect(env.colorScheme, "engine declares no color-scheme — light-only, doesn't flip to dark").toBe("normal");
+
+    // The mobile comment UI's card animation is suppressed under reduced motion:
+    // `.cmt-card`'s default `transition: top 180ms` becomes `none` (0s). Seed one
+    // card to read the live computed value (not a static rule).
+    const blocks = await normalParagraphIndices(page);
+    await seedThreadViaUI(page, blocks[Math.floor(blocks.length * 0.4)]!, "reduced-motion card");
+    const cardTransition = await page
+      .locator(".cmt-card")
+      .first()
+      .evaluate((el) => getComputedStyle(el).transitionDuration);
+    expect(cardTransition, "the card's top-animation is cancelled under reduced motion").toBe("0s");
+  } finally {
+    await ctx.close();
+  }
+
+  // --- Contrast: a plain mobile context has NO reduced-motion / dark ---------
+  // Proves the assertions above track the emulated preferences, not a constant.
+  const plain = await newMobileContext(browser);
+  const ppage = await plain.newPage();
+  try {
+    await gotoPost(ppage, "/posts/offer-files");
+    const env = await ppage.evaluate(() => ({
+      reduce: matchMedia("(prefers-reduced-motion: reduce)").matches,
+      dark: matchMedia("(prefers-color-scheme: dark)").matches,
+      scrollBehavior: getComputedStyle(document.documentElement).scrollBehavior,
+    }));
+    expect(env.reduce, "no reduced-motion preference by default").toBe(false);
+    expect(env.dark, "no dark preference by default").toBe(false);
+    expect(env.scrollBehavior, "without reduced motion, scrolling is smooth").toBe("smooth");
+  } finally {
+    await plain.close();
+  }
+}, 90_000);
