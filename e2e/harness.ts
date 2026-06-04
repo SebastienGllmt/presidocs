@@ -32,7 +32,7 @@
 // channel.
 
 import { spawn, type Subprocess } from "bun";
-import { chromium, type Browser, type BrowserType } from "playwright";
+import { chromium, devices, type Browser, type BrowserContext, type BrowserType } from "playwright";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -144,6 +144,35 @@ export async function launchChrome(): Promise<Browser> {
   return executablePath
     ? browser.launch({ executablePath, args })
     : browser.launch({ channel: "chrome", args });
+}
+
+/**
+ * A representative mobile device for the mobile e2e tier. Playwright's device
+ * descriptors carry a full emulation profile — a small device-width viewport,
+ * a mobile user-agent, `deviceScaleFactor`, and crucially `isMobile: true` +
+ * `hasTouch: true`. That last pair is what a bare narrow `viewport` does NOT
+ * give you: a real **coarse pointer with no hover** (`@media (pointer: coarse)`
+ * / `(hover: none)`) and touch input (`page.tap()`, touch events) — the surface
+ * the blog's mobile-only UI uses (the hide-all FAB hidden ≥1100px, the
+ * tap-to-popover comment cards). Pixel 5 is a Chromium-default descriptor, which
+ * matches this Chromium-only harness (`isMobile` is a Chromium feature).
+ *
+ * Use it via `newMobileContext`; contrast it against the default desktop
+ * `browser.newContext({ viewport: { width: 1400, height: 900 } })` the other
+ * tiers use.
+ */
+export const MOBILE_DEVICE = devices["Pixel 5"];
+
+/**
+ * A touch-enabled mobile browser context (see {@link MOBILE_DEVICE}). Spread
+ * `extra` last to override any field (e.g. `{ locale }`) without losing the
+ * device profile.
+ */
+export function newMobileContext(
+  browser: Browser,
+  extra: Parameters<Browser["newContext"]>[0] = {},
+): Promise<BrowserContext> {
+  return browser.newContext({ ...MOBILE_DEVICE, ...extra });
 }
 
 /** Pick a free TCP port by binding to :0 and reading the assigned port back. */

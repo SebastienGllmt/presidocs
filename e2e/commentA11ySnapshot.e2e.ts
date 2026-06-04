@@ -4,14 +4,15 @@
 // (articleA11y.e2e.ts: complementary, never feed) are already guarded. This
 // locks the per-CARD a11y shape — the cheapest-highest-value real-browser
 // assertion left, and one happy-dom can't make (it builds no a11y tree):
-//   1. Each rendered card is an <article> (so AT announces "article", a
-//      discrete annotation) — and carries NO aria-posinset / aria-setsize.
-//      Those attributes belong to a `feed`/`listitem` ("item X of Y"); their
-//      ABSENCE is the regression guard against a future contributor turning the
-//      column into a feed (the same misread articleA11y.e2e.ts guards at the
-//      column level — see methodology → Testing layout).
-//   2. The "hide all highlights" control exposes a real toggle state
-//      (aria-pressed) that flips on click — a button that toggles must say so.
+// each rendered card is an <article> (so AT announces "article", a discrete
+// annotation) — and carries NO aria-posinset / aria-setsize. Those attributes
+// belong to a `feed`/`listitem` ("item X of Y"); their ABSENCE is the
+// regression guard against a future contributor turning the column into a feed
+// (the same misread articleA11y.e2e.ts guards at the column level — see
+// methodology → Testing layout).
+//
+// (The mobile-only hide-all-highlights FAB and its aria-pressed toggle are
+// covered, with a real touch tap, in the mobile tier — mobile.e2e.ts.)
 //
 // Deferred (kept out so this stays deterministic): the version-history
 // <details> expanded/collapsed snapshot. That control renders only for the
@@ -176,36 +177,3 @@ test("each comment card is an <article> with no aria-posinset/aria-setsize", asy
     await page.close();
   }
 }, 90_000); // real seeding (browser launch + 2 CRDT-uploaded comments) > 5s default
-
-test("the hide-all-highlights control exposes aria-pressed and toggles it", async () => {
-  // The hide-all FAB is a MOBILE control — `@media (min-width: 1100px)` hides it
-  // (comments.css), so it's only in the a11y tree below that width. It mounts on
-  // any commentable post regardless of whether comments exist, so no seeding is
-  // needed — we just need the player/comment system to boot.
-  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
-  const cookie = await mintSessionCookie(resolveBlogDir(), `fab-${++nonce}-${server.baseURL.split(":").pop()}`);
-  await ctx.addCookies([
-    { name: cookie.name, value: cookie.value, domain: "localhost", path: "/", httpOnly: true, sameSite: "Lax" },
-  ]);
-  const page = await ctx.newPage();
-  try {
-    await gotoPost(page, "/");
-    const href = await page.locator('a[href*="/posts/"]').first().getAttribute("href");
-    expect(href, "landing should link to a post").toBeTruthy();
-    await gotoPost(page, new URL(href!, server.baseURL).pathname);
-
-    // getByRole queries the computed a11y tree, so this also asserts the FAB is
-    // actually exposed (visible) at mobile width.
-    const fab = page.getByRole("button", { name: "Toggle comment highlights" });
-    await fab.waitFor({ state: "visible", timeout: 15_000 });
-    // A toggle button MUST expose its pressed state (WAI-ARIA): present + boolean.
-    const before = await fab.getAttribute("aria-pressed");
-    expect(before === "true" || before === "false", "aria-pressed is a boolean").toBe(true);
-    await fab.click();
-    const after = await fab.getAttribute("aria-pressed");
-    expect(after === "true" || after === "false").toBe(true);
-    expect(after, "clicking flips the pressed state").not.toBe(before);
-  } finally {
-    await page.close();
-  }
-}, 60_000);
