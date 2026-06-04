@@ -16,7 +16,8 @@
 import "./shikwasa-vendor.css";
 import { Player, Chapter } from "shikwasa";
 import { asMs, msToSeconds, secondsToMs, asSeconds, type Milliseconds } from "../shared/time.ts";
-import { computeActiveMark, findActiveWord } from "../shared/narratorTiming.ts";
+import { computeActiveMark, findActiveWord, stagedFigureAt, figureSeekPlan } from "../shared/narratorTiming.ts";
+import { getFigureJourney, type FigureJourney } from "./figureAnimation.ts";
 import { emitNarrationPlay, emitNarrationQuartile } from "./analytics.ts";
 import { QUARTILES, type PlayTrigger, type Quartile } from "../shared/analyticsSchema.ts";
 import {
@@ -175,6 +176,36 @@ class Narrator {
   // Cached progress-bar element so the rAF ticker can update its width directly
   // (see comment on `updateBar` for why we drive the bar ourselves).
   private playedBarEl: HTMLElement | null = null;
+
+  // ----- Narration figure driver (proposal 46) -----------------------------
+  // The figure currently on the stage *and driven* by the narration clock,
+  // resolved from the timeline's figure pointer (`resolveActiveFigure`), NOT
+  // from the active mark's `name` (47 decoupled them). `null` = empty stage.
+  private stagedFigureId: string | null = null;
+  // The claimed journey for `stagedFigureId` (undefined-on-page figures and
+  // figures with no registered journey leave this null — nothing to drive).
+  private stagedJourney: FigureJourney | null = null;
+  // Master-track time (ms) at which the current figure's span began (its
+  // staging mark — `stagedFigureAt().sinceMs`, NOT the tick we noticed it). The
+  // journey is advanced by `tMs - figureStagedAtMs`, so the figure rides the
+  // audio clock, is frame-perfect on pause (clock frozen), and a scrub into the
+  // middle of a span resumes the figure mid-animation rather than from frame 1.
+  private figureStagedAtMs: Milliseconds = asMs(0);
+  // Last journey position we seeked to. `figureSeekPlan` reads it to decide
+  // forward-step vs. reset()+replay (a loop wrap or backward scrub); a fresh
+  // claim sets it to +Infinity to force the reset-and-sweep-from-0.
+  private figureLastSeekMs = 0;
+  // Step ceiling for forward seeks (rule 3: advance no coarser than this so
+  // every timeline `.call()` is crossed). Matches the capture/conformance fps.
+  private static readonly FIGURE_STEP_MS = 1000 / 30;
+  // §6 interactive detach: a click on the staged figure's own controls hands
+  // control to the figure's handlers; the driver stops advancing it (holding
+  // the reader's hand-set state). Re-attach happens when the figure is re-staged
+  // (the claim path `reset()`s from a clean baseline). Tracked so we can detach
+  // the listener when the stage changes.
+  private figureDetached = false;
+  private figureDetachEl: HTMLElement | null = null;
+  private figureDetachHandler: ((e: Event) => void) | null = null;
 
   constructor(
     private manifestUrl: string,
@@ -1161,6 +1192,7 @@ class Narrator {
     this.stopTicker();
     this.narrationRoot.classList.remove("narrating");
     this.setActive(null);
+    this.releaseStagedFigure();
     this.setPlaybackState("none");
   }
 
@@ -1212,6 +1244,9 @@ class Narrator {
     const active = computeActiveMark(this.manifest.marks, tMs);
     this.setActive(active ? active.name : null);
     this.updateActiveWord(active?.name ?? null, tMs);
+    // Drive the staged figure off the SAME clock — keyed off the timeline's
+    // figure pointer, independent of the `name` highlight above (47).
+    this.updateActiveFigure(tMs);
     this.maybeEmitQuartile(tMs);
 
     // Drive the lock-screen / Now-Playing scrubber off the same canonical
@@ -1278,6 +1313,102 @@ class Narrator {
       }
     }
     this.activeId = id;
+  }
+
+  // The narration figure driver (proposal 46 §2). Runs every rAF tick from
+  // `updateActive`. Resolves which figure the timeline stages at `tMs` (the
+  // `figure` pointer, NOT the `name` highlight) and, when it has a registered
+  // journey, owns that journey's clock: claim on stage-on (`reset()`, which
+  // trips the figure's `driven` guard so its own scroll/narration self-play
+  // stands down), advance by forward seek from the audio clock, loop if the
+  // staged span outlasts one play-through, release on stage-off. Pause is
+  // implicit: the ticker stops when audio pauses, so the figure holds its frame.
+  private updateActiveFigure(tMs: Milliseconds) {
+    if (!this.manifest) return;
+    // Reduced motion (rule 5): no real-time animation. The narration driver
+    // stands down entirely so it never `reset()`s a figure to frame 1 and then
+    // freezes it; each figure's own triggers render its settled state instead.
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      if (this.stagedFigureId !== null || this.stagedJourney) this.releaseStagedFigure();
+      return;
+    }
+
+    const { id: stagedId, sinceMs } = stagedFigureAt(this.manifest.marks, tMs);
+    if (stagedId !== this.stagedFigureId) {
+      // Stage changed: release the previous journey, then claim the new one.
+      this.releaseStagedFigure();
+      this.stagedFigureId = stagedId;
+      const journey = stagedId ? getFigureJourney(stagedId) : undefined;
+      if (stagedId && journey) {
+        this.stagedJourney = journey;
+        this.figureStagedAtMs = sinceMs ?? tMs; // span start, for mid-span resume
+        this.attachFigureDetachListener(stagedId);
+        // Force a reset()+forward-sweep from frame 0 to the current offset into
+        // the span (claiming the figure stands its self-play down via `driven`).
+        this.figureLastSeekMs = Number.POSITIVE_INFINITY;
+        this.advanceStagedFigure(tMs);
+      }
+      return;
+    }
+
+    // Same figure still staged — advance it from the audio clock.
+    if (!this.stagedJourney || this.figureDetached) return; // empty stage / no journey / reader took over
+    this.advanceStagedFigure(tMs);
+  }
+
+  // Advance the staged journey to the audio clock's position. Loops while the
+  // staged span outlasts one play-through (`elapsed % durationMs`), and applies
+  // the forward-only seek plan (small steps; reset()+replay on a wrap or scrub)
+  // — see `figureSeekPlan`.
+  private advanceStagedFigure(tMs: Milliseconds) {
+    const journey = this.stagedJourney;
+    if (!journey) return;
+    const dur = journey.durationMs;
+    if (dur <= 0) return;
+    const elapsed = Math.max(0, tMs - this.figureStagedAtMs);
+    const target = elapsed % dur;
+    const plan = figureSeekPlan(this.figureLastSeekMs, target, Narrator.FIGURE_STEP_MS);
+    if (plan.reset) journey.reset();
+    for (const p of plan.seeks) journey.seek(p);
+    this.figureLastSeekMs = target;
+  }
+
+  // Release the currently-staged journey: drop the detach listener and forget
+  // the journey. The figure HOLDS its last frame (we don't re-`reset()` it) —
+  // an empty stage on the live page just means "stop driving," and the figure
+  // stays in the DOM showing where it was left.
+  private releaseStagedFigure() {
+    this.detachFigureDetachListener();
+    this.stagedFigureId = null;
+    this.stagedJourney = null;
+    this.figureDetached = false;
+    this.figureLastSeekMs = 0;
+  }
+
+  // §6: clicking a control inside the staged figure detaches the driver so the
+  // figure's own handlers own its state (the driver stops seeking it). The
+  // trigger is a concrete event set — a click landing on an interactive control
+  // (button/tab/input/link), not hover or scroll.
+  private attachFigureDetachListener(figureId: string) {
+    const el = document.getElementById(figureId);
+    if (!el) return;
+    const handler = (e: Event) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest("button, [role='tab'], input, select, a")) {
+        this.figureDetached = true;
+      }
+    };
+    el.addEventListener("click", handler);
+    this.figureDetachEl = el;
+    this.figureDetachHandler = handler;
+  }
+
+  private detachFigureDetachListener() {
+    if (this.figureDetachEl && this.figureDetachHandler) {
+      this.figureDetachEl.removeEventListener("click", this.figureDetachHandler);
+    }
+    this.figureDetachEl = null;
+    this.figureDetachHandler = null;
   }
 
   // Build the slide-in drawer that lists the full spoken script grouped by

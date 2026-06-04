@@ -67,21 +67,97 @@ export function resolveActiveFigure<T extends FigureStateMark>(
   marks: readonly T[],
   tMs: Milliseconds,
 ): string | null {
-  // Walk the staged figure up to `tMs`, resetting the stage at every
-  // sub-chapter boundary and applying each mark's pointer.
+  return stagedFigureAt(marks, tMs).id;
+}
+
+/** The staged figure at time `tMs` AND the start of its current on-stage span. */
+export interface StagedFigure {
+  /** The figure id on the stage, or null for an empty stage. */
+  readonly id: string | null;
+  /**
+   * The mark time at which `id` was staged — the start of its current on-stage
+   * span (the same `[mark.time, …)` span the video renderer derives). null when
+   * the stage is empty.
+   *
+   * The narration driver (proposal 46) advances a staged journey by
+   * `tMs - sinceMs`, so scrubbing into the *middle* of a staged span resumes
+   * the figure mid-animation rather than restarting it from frame 0 — page and
+   * video then show the figure at the same point of its journey for the same
+   * playhead. Re-stating the *same* figure id mid-span does NOT move `sinceMs`
+   * (the span is continuous); a sub-chapter boundary or a different id does.
+   */
+  readonly sinceMs: Milliseconds | null;
+}
+
+/**
+ * The staged figure at `tMs` together with when its span began. Same
+ * sub-chapter-bounded walk as `resolveActiveFigure` (which delegates here for
+ * the id) — see {@link resolveActiveFigure} for the staging model. Pure +
+ * O(active-index), suitable for the rAF tick.
+ */
+export function stagedFigureAt<T extends FigureStateMark>(
+  marks: readonly T[],
+  tMs: Milliseconds,
+): StagedFigure {
   let cur: string | null = null;
+  let since: Milliseconds | null = null;
   let prevChapter: string | undefined;
   for (const m of marks) {
     if (m.time > tMs) break;
     if (m.chapter !== prevChapter) {
       cur = null; // a new sub-chapter resets the stage
+      since = null;
       prevChapter = m.chapter;
     }
     if (m.figure !== undefined) {
-      cur = m.figure === "" || m.figure === "none" ? null : m.figure;
+      const next = m.figure === "" || m.figure === "none" ? null : m.figure;
+      // Only a CHANGE moves the span start — re-stating the same id keeps the
+      // span (and so the journey's elapsed clock) continuous.
+      if (next !== cur) {
+        cur = next;
+        since = next === null ? null : m.time;
+      }
     }
   }
-  return cur;
+  return { id: cur, sinceMs: since };
+}
+
+/** The seek actions the narration driver applies on one tick (see figureSeekPlan). */
+export interface FigureSeekPlan {
+  /** Whether to `reset()` the journey to frame 0 before applying `seeks`. */
+  readonly reset: boolean;
+  /** Absolute journey positions (ms) to `seek()` in order; the last is the target. */
+  readonly seeks: number[];
+}
+
+/**
+ * Plan how to move a figure's journey from its last seeked position to a new
+ * target, honoring the forward-only contract (proposal 43 rule 3): advance only
+ * forward, in steps no coarser than `stepMs` (so every timeline `.call()` is
+ * crossed), and reach an *earlier* point only by `reset()` + forward replay —
+ * never a backward `seek()`.
+ *
+ * - `target >= last` → forward: small steps from `last` up to and including `target`.
+ * - `target < last` → a loop wrap or a backward scrub: `reset` to frame 0, then
+ *   forward-replay up to `target`.
+ *
+ * Callers compute `target = elapsed % durationMs` so a span that outlasts one
+ * play-through loops (the wrap makes `target < last`, which trips `reset`); a
+ * fresh claim passes `last = +Infinity` to force the reset-and-sweep-from-0.
+ *
+ * Pure so the driver's whole seek decision is unit-testable without a browser.
+ */
+export function figureSeekPlan(
+  lastPosMs: number,
+  targetPosMs: number,
+  stepMs: number,
+): FigureSeekPlan {
+  const reset = targetPosMs < lastPosMs;
+  const from = reset ? 0 : lastPosMs;
+  const seeks: number[] = [];
+  for (let p = from + stepMs; p < targetPosMs; p += stepMs) seeks.push(p);
+  seeks.push(targetPosMs); // land exactly on the target
+  return { reset, seeks };
 }
 
 // Structural shape we need for `findActiveWord`. `ManifestWord` in

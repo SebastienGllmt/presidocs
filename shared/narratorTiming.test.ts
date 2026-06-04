@@ -10,6 +10,8 @@ import {
   computeActiveMark,
   findActiveWord,
   resolveActiveFigure,
+  stagedFigureAt,
+  figureSeekPlan,
   type FigureStateMark,
   type Timed,
   type WordTimed,
@@ -144,4 +146,84 @@ test("resolveActiveFigure — the stage defaults to empty (no pointer → no fig
 
 test("resolveActiveFigure — empty marks is null, not throw", () => {
   expect(resolveActiveFigure([], asMs(1000))).toBeNull();
+});
+
+// --- stagedFigureAt (proposal 46 mid-span resume) ---------------------------
+// Same staging walk as resolveActiveFigure, but also reports WHEN the current
+// span began (`sinceMs`) so the narration driver can advance the journey by
+// `tMs - sinceMs` and resume mid-animation on a scrub. `.id` must always agree
+// with resolveActiveFigure (which delegates here).
+
+test("stagedFigureAt — sinceMs is the staging mark, carried across no-attr marks", () => {
+  const marks = [fm(500, "c1", "fig-a"), fm(1500, "c1"), fm(4000, "c1", "fig-b")];
+  expect(stagedFigureAt(marks, asMs(2000))).toEqual({ id: "fig-a", sinceMs: asMs(500) });
+  // Carried by the attr-less mark at 1500 — the span still starts at 500.
+  expect(stagedFigureAt(marks, asMs(4000))).toEqual({ id: "fig-b", sinceMs: asMs(4000) });
+});
+
+test("stagedFigureAt — empty stage reports null since", () => {
+  const marks = [fm(0, "c1"), fm(1000, "c1", "none")];
+  expect(stagedFigureAt(marks, asMs(0))).toEqual({ id: null, sinceMs: null });
+  expect(stagedFigureAt(marks, asMs(1000))).toEqual({ id: null, sinceMs: null });
+});
+
+test("stagedFigureAt — a sub-chapter boundary restarts the span", () => {
+  // fig-a rides into c2 only if re-stated; here c2 re-stages it, so the span
+  // restarts at the boundary mark (matches the renderer's per-sub-chapter span).
+  const marks = [fm(1000, "c1", "fig-a"), fm(3000, "c2", "fig-a")];
+  expect(stagedFigureAt(marks, asMs(2000))).toEqual({ id: "fig-a", sinceMs: asMs(1000) });
+  expect(stagedFigureAt(marks, asMs(3500))).toEqual({ id: "fig-a", sinceMs: asMs(3000) });
+});
+
+test("stagedFigureAt — re-stating the same id mid-span does NOT move sinceMs", () => {
+  const marks = [fm(1000, "c1", "fig-a"), fm(2000, "c1", "fig-a")];
+  // Continuous span — the journey clock must not jump back to 2000.
+  expect(stagedFigureAt(marks, asMs(2500))).toEqual({ id: "fig-a", sinceMs: asMs(1000) });
+});
+
+test("stagedFigureAt — .id always matches resolveActiveFigure", () => {
+  const marks = [fm(500, "c1", "fig-a"), fm(1500, "c1", "none"), fm(2500, "c2", "fig-b")];
+  for (const t of [0, 500, 1000, 1500, 2000, 2500, 9000]) {
+    expect(stagedFigureAt(marks, asMs(t)).id).toBe(resolveActiveFigure(marks, asMs(t)));
+  }
+});
+
+// --- figureSeekPlan (proposal 46 forward-only advance) ----------------------
+// The driver's whole seek decision, made pure. Step = 10 in these cases for
+// readable grids; the driver passes 1000/30.
+
+test("figureSeekPlan — a small forward step is a single seek, no reset", () => {
+  // delta (4) < step (10): land straight on the target.
+  expect(figureSeekPlan(100, 104, 10)).toEqual({ reset: false, seeks: [104] });
+});
+
+test("figureSeekPlan — a large forward jump is broken into <=step increments", () => {
+  // e.g. a stalled/backgrounded tab resuming: never a coarse jump (rule 3).
+  expect(figureSeekPlan(100, 135, 10)).toEqual({ reset: false, seeks: [110, 120, 130, 135] });
+});
+
+test("figureSeekPlan — a loop wrap (target < last) resets and replays from 0", () => {
+  // elapsed % dur wrapped past the end → reset() then forward to the small target.
+  expect(figureSeekPlan(990, 12, 10)).toEqual({ reset: true, seeks: [10, 12] });
+});
+
+test("figureSeekPlan — a fresh claim (last = +Infinity) resets and sweeps from 0", () => {
+  expect(figureSeekPlan(Number.POSITIVE_INFINITY, 25, 10)).toEqual({
+    reset: true,
+    seeks: [10, 20, 25],
+  });
+});
+
+test("figureSeekPlan — claim at offset 0 just resets and holds frame 0", () => {
+  expect(figureSeekPlan(Number.POSITIVE_INFINITY, 0, 10)).toEqual({ reset: true, seeks: [0] });
+});
+
+test("figureSeekPlan — no movement re-seeks the same position (idempotent)", () => {
+  expect(figureSeekPlan(100, 100, 10)).toEqual({ reset: false, seeks: [100] });
+});
+
+test("figureSeekPlan — the last seek always lands exactly on the target", () => {
+  for (const [last, target] of [[0, 33], [100, 100], [990, 5], [7, 200]] as const) {
+    expect(figureSeekPlan(last, target, 1000 / 30).seeks.at(-1)).toBe(target);
+  }
 });

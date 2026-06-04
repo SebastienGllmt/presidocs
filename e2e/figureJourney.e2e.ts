@@ -167,3 +167,88 @@ test("registered figure journeys conform to the contract", async () => {
     await page.close();
   }
 }, 120_000);
+
+// proposal 46 §7 — once a DRIVER has claimed a figure (the narration/video
+// driver calls `reset()`), the figure's own live triggers — scroll-into-view
+// (IntersectionObserver) and the `.narration-active` class toggle
+// (MutationObserver) — must NO-OP. This is the regression guard for the bug
+// behind the original offerMerge issue (proposal 44 §1): a figure with a
+// missing/ineffective `driven` guard would let its self-play mutate the DOM and
+// race the driver's scrubbing. The structural/determinism test above never
+// fires a live trigger, so it can't see this — this test does.
+//
+// The check: after `reset()`, fire both triggers and let any erroneous live
+// tween / IO callback / loop scheduler run, then assert the journey is
+// untouched — its frame-0 render is byte-identical to a clean claim (no
+// live-tween inline-style residue), and a forward pass still lands on the same
+// deterministic end frame. A live path that ignored `driven` would leave inline
+// styles on elements the journey doesn't touch, diverging frame 0.
+test("a claimed figure ignores its live triggers (driven guard holds)", async () => {
+  const page = await browser.newPage({ viewport: { width: 1366, height: 1200 } });
+  try {
+    await openPost(page, "offer-files");
+    const ids: string[] = await page.evaluate(() => [
+      ...(window as unknown as { __presidocsFigures: Map<string, unknown> }).__presidocsFigures.keys(),
+    ]);
+    expect(ids.length, "offer-files registers figure journeys").toBeGreaterThan(0);
+    // merge-figure is the original offending figure — make sure it's covered.
+    expect(ids, "offer-files embeds the merge figure").toContain("merge-figure");
+
+    for (const id of ids) {
+      const result = await page.evaluate(async (figId) => {
+        const j = (window as any).__presidocsFigures.get(figId);
+        const el = document.getElementById(figId);
+        if (!el) return { skipped: true as const };
+        const step = 1000 / 30;
+        const n = Math.max(1, Math.ceil(j.durationMs / step));
+        const pass = (): string => {
+          for (let i = 0; i <= n; i++) j.seek(Math.min(i * step, j.durationMs));
+          return el.outerHTML;
+        };
+        // Measure (frame 0, end) for a claimed figure, optionally firing its
+        // live triggers between the claim and the capture. Both runs share an
+        // IDENTICAL history (a warm-up forward pass then a fresh claim) so any
+        // `immediateRender:false` inline residue is the same in both — the ONLY
+        // variable is whether the live triggers fired. A live path that ignored
+        // `driven` would mutate DOM the journey doesn't control (e.g. an intro
+        // stagger on elements outside the tour), diverging frame 0.
+        const measure = async (fire: boolean) => {
+          j.reset();
+          pass(); // warm-up: normalize immediateRender:false residue
+          j.reset(); // claim fresh — driven guard is now set
+          if (fire) {
+            el.scrollIntoView();
+            el.classList.remove("narration-active");
+            el.classList.add("narration-active"); // false→true edge the MutationObserver watches
+            await new Promise((r) => setTimeout(r, 500)); // let any rogue tween / IO / loop run
+            el.classList.remove("narration-active"); // compare rendered state, not the class attr
+          }
+          j.reset();
+          j.seek(0);
+          const frame0 = el.outerHTML;
+          const end = pass();
+          return { frame0, end };
+        };
+        const base = await measure(false);
+        const trig = await measure(true);
+        return {
+          skipped: false as const,
+          frame0Match: trig.frame0 === base.frame0,
+          endMatch: trig.end === base.end,
+        };
+      }, id);
+
+      if (result.skipped) continue;
+      expect(
+        result.frame0Match,
+        `${id}: live triggers after reset() left no residue — the figure's self-play (IO/narration-active) must stand down once a driver claims it (missing/ineffective \`driven\` guard?)`,
+      ).toBe(true);
+      expect(
+        result.endMatch,
+        `${id}: forward-pass end frame stays deterministic after live triggers fire`,
+      ).toBe(true);
+    }
+  } finally {
+    await page.close();
+  }
+}, 120_000);
