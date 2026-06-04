@@ -252,3 +252,117 @@ test("a claimed figure ignores its live triggers (driven guard holds)", async ()
     await page.close();
   }
 }, 120_000);
+
+// proposal 48 §7.3 — the per-step (slideshow) driving test bed. `lifecycle-figure`
+// (offer-files) is annotated with `step=` cues (semantic labels created…settled,
+// renamed from the old positional step-0…step-N). This exercises the live
+// narrator's STEPPED mode (`advanceStagedFigure` with an active step) the way
+// the existing tests exercise the journey: driving the figure DIRECTLY via
+// page.evaluate (real audio-synced playback can't run headless — Shikwasa's
+// detached <audio> + the dev server 404ing the WAV — so that is the manual
+// sanity step). We replicate exactly what the driver's stepped branch does:
+// target = steps[label].endMs, reached forward-only (reset()+small-step sweep,
+// the figureSeekPlan discipline), then HOLD — and assert the three properties
+// the stepped mode promises: it holds at endMs (re-seek is idempotent), it
+// advances forward across cues, and the held frame is a pure function of the
+// active step (so scrubbing/replay is deterministic, §4.3).
+test("lifecycle-figure: stepped driving holds at steps[label].endMs and advances forward-only", async () => {
+  const page = await browser.newPage({ viewport: { width: 1366, height: 1200 } });
+  try {
+    await openPost(page, "offer-files");
+
+    // The semantic labels the annotation renamed to (offerLifecycle.ts §7.3).
+    const LABELS = ["created", "encoded", "posted", "indexed", "book", "settled"];
+
+    const out = await page.evaluate((labels) => {
+      const j = (window as any).__presidocsFigures.get("lifecycle-figure");
+      const el = document.getElementById("lifecycle-figure")!;
+      const STEP_MS = 1000 / 30; // Narrator.FIGURE_STEP_MS
+
+      const steps: { label: string; startMs: number; endMs: number }[] = j.steps;
+      const stepLabels = steps.map((s) => s.label);
+
+      const sweepTo = (target: number) => {
+        for (let p = STEP_MS; p < target; p += STEP_MS) j.seek(p);
+        j.seek(target); // land exactly on the target, no coarse jump
+      };
+      // Drive to a label exactly as advanceStagedFigure's stepped branch does:
+      // target = steps[label].endMs, reached by reset()+forward small-step sweep
+      // (a fresh claim path — forward-only). A full warm-up sweep FIRST
+      // normalizes GSAP's `immediateRender:false` inline-style residue across
+      // every stage (else a label early in the timeline leaves later stages
+      // un-touched, and the held frame would depend on prior history rather than
+      // the target — the documented e2e gotcha). After warm-up the held frame is
+      // a pure function of the active step, which is the property §4.3 promises.
+      const driveTo = (label: string): string => {
+        const target = steps.find((s) => s.label === label)!.endMs;
+        j.reset();
+        sweepTo(j.durationMs); // warm-up: touch every stage once
+        j.reset();
+        sweepTo(target); // claim + forward-only sweep to the step, then hold
+        return el.outerHTML;
+      };
+
+      // 1) Hold idempotency: re-seeking the SAME step's endMs (the driver's
+      //    `target === figureLastSeekMs` early-out would skip it entirely) must
+      //    not change the rendered frame.
+      const held = driveTo("posted");
+      j.seek(steps.find((s) => s.label === "posted")!.endMs);
+      const heldAgain = el.outerHTML;
+
+      // 2) Forward advance across cues + determinism: walk all labels in order,
+      //    twice, capturing the held frame at each. The two passes must match
+      //    (held frame is a pure function of the active step — §4.3 scrub
+      //    robustness), and consecutive labels must differ (the figure actually
+      //    steps).
+      const pass = () => labels.map((l) => driveTo(l));
+      const run1 = pass();
+      const run2 = pass();
+
+      // 3) Forward-only replay: reaching an EARLIER label after a LATER one
+      //    (the driver reset()s + replays) lands on the same frame as reaching
+      //    it fresh — never a stale later frame.
+      driveTo("settled");
+      const backToCreated = driveTo("created");
+
+      return {
+        stepLabels,
+        durationMs: j.durationMs,
+        lastEndMs: steps[steps.length - 1]!.endMs,
+        holdIdempotent: heldAgain === held,
+        run1,
+        run2,
+        backToCreated,
+        freshCreated: run1[0]!,
+      };
+    }, LABELS);
+
+    // The rename landed: the journey exposes the semantic labels (not step-0…N).
+    expect(out.stepLabels, "lifecycle-figure exposes the semantic step labels").toEqual(
+      expect.arrayContaining(LABELS),
+    );
+    // Last step ends at durationMs (so driving to "settled" rests on the end frame).
+    expect(out.lastEndMs, "last step endMs === durationMs").toBe(out.durationMs);
+
+    // 1) Holding at a step's endMs is idempotent (the early-out is safe).
+    expect(out.holdIdempotent, "re-driving the same step holds the frame").toBe(true);
+
+    // 2) Determinism across passes + actual forward motion between cues.
+    expect(out.run2, "held frame at each step is deterministic across passes").toEqual(out.run1);
+    for (let i = 1; i < out.run1.length; i++) {
+      expect(
+        out.run1[i]!,
+        `stepping from "${LABELS[i - 1]}" to "${LABELS[i]}" advances the figure`,
+      ).not.toBe(out.run1[i - 1]!);
+    }
+
+    // 3) Forward-only: replaying back to an earlier label is reset()+replay, so
+    //    it matches the fresh render of that label (not the later frame).
+    expect(
+      out.backToCreated,
+      "driving back to an earlier step replays forward to the same frame",
+    ).toBe(out.freshCreated);
+  } finally {
+    await page.close();
+  }
+}, 120_000);

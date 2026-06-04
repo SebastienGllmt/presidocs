@@ -46,6 +46,11 @@ export function computeActiveMark<T extends Timed>(
 export type FigureStateMark = Timed & {
   readonly chapter: string;
   readonly figure?: string;
+  // The per-step slideshow pointer (proposal 48), orthogonal to `figure`:
+  // which labeled step of the staged figure's journey to drive to. Absent =
+  // "no step cue this mark"; "none"/"" clears stepped mode. Resolved into the
+  // active step alongside the staged figure by `stagedFigureAt`.
+  readonly step?: string;
 };
 
 /**
@@ -87,13 +92,25 @@ export interface StagedFigure {
    * (the span is continuous); a sub-chapter boundary or a different id does.
    */
   readonly sinceMs: Milliseconds | null;
+  /**
+   * The active step label driving the staged figure (proposal 48), or null for
+   * none (continuous/free-run mode). It is the latest `step` value set *within
+   * the current staged-figure span* (since `sinceMs`); it resets to null
+   * whenever the figure id changes or a sub-chapter boundary clears the stage
+   * (a step belongs to the figure it was cued on), and `step: "" | "none"`
+   * clears it explicitly. The narration driver (proposal 48) reads this: a
+   * non-null step switches the figure from continuous free-run to "advance to
+   * the labeled step's `endMs` and hold."
+   */
+  readonly step: string | null;
 }
 
 /**
- * The staged figure at `tMs` together with when its span began. Same
- * sub-chapter-bounded walk as `resolveActiveFigure` (which delegates here for
- * the id) — see {@link resolveActiveFigure} for the staging model. Pure +
- * O(active-index), suitable for the rAF tick.
+ * The staged figure at `tMs`, when its span began, AND the active step cue
+ * driving it (proposal 48). Same sub-chapter-bounded walk as
+ * `resolveActiveFigure` (which delegates here for the id) — see
+ * {@link resolveActiveFigure} for the staging model and {@link StagedFigure}
+ * for the `step` semantics. Pure + O(active-index), suitable for the rAF tick.
  */
 export function stagedFigureAt<T extends FigureStateMark>(
   marks: readonly T[],
@@ -101,12 +118,14 @@ export function stagedFigureAt<T extends FigureStateMark>(
 ): StagedFigure {
   let cur: string | null = null;
   let since: Milliseconds | null = null;
+  let step: string | null = null;
   let prevChapter: string | undefined;
   for (const m of marks) {
     if (m.time > tMs) break;
     if (m.chapter !== prevChapter) {
       cur = null; // a new sub-chapter resets the stage
       since = null;
+      step = null; // …and the step cue (it belonged to the cleared figure)
       prevChapter = m.chapter;
     }
     if (m.figure !== undefined) {
@@ -116,10 +135,19 @@ export function stagedFigureAt<T extends FigureStateMark>(
       if (next !== cur) {
         cur = next;
         since = next === null ? null : m.time;
+        step = null; // a new figure id starts in continuous mode (no step yet)
       }
     }
+    // The step pointer is evaluated AFTER `figure` so a single mark that both
+    // re-stages a figure and names a step (the "re-stage + step in one mark"
+    // case, proposal 48 §5) records that step rather than having the figure
+    // change clear it. `none`/`""` clears stepped mode; an absent attribute
+    // leaves the current step unchanged (sticky within the span, like figure).
+    if (m.step !== undefined) {
+      step = m.step === "" || m.step === "none" ? null : m.step;
+    }
   }
-  return { id: cur, sinceMs: since };
+  return { id: cur, sinceMs: since, step };
 }
 
 /** The seek actions the narration driver applies on one tick (see figureSeekPlan). */

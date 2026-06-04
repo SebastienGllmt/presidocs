@@ -64,8 +64,10 @@ type ManifestMark = {
   // (shared/narratorTiming.ts), mirroring the video renderer so page and
   // video agree. Consumed by the narration driver (proposal 46), not yet wired.
   figure?: string;
-  // Reserved for proposal 46's per-step slideshow drive (advance the staged
-  // figure's journey to a labeled step). Parsed + carried but not yet acted on.
+  // The per-step slideshow pointer (proposal 48): advance the staged figure's
+  // journey to a labeled step and hold. Resolved into the active step alongside
+  // the staged figure by `stagedFigureAt`; consumed by `advanceStagedFigure`'s
+  // stepped mode. "none"/"" clears stepped mode (back to continuous free-run).
   step?: string;
 };
 // `parentId`: present only on level-2 (sub-)chapters; names the
@@ -1333,7 +1335,7 @@ class Narrator {
       return;
     }
 
-    const { id: stagedId, sinceMs } = stagedFigureAt(this.manifest.marks, tMs);
+    const { id: stagedId, sinceMs, step } = stagedFigureAt(this.manifest.marks, tMs);
     if (stagedId !== this.stagedFigureId) {
       // Stage changed: release the previous journey, then claim the new one.
       this.releaseStagedFigure();
@@ -1343,30 +1345,62 @@ class Narrator {
         this.stagedJourney = journey;
         this.figureStagedAtMs = sinceMs ?? tMs; // span start, for mid-span resume
         this.attachFigureDetachListener(stagedId);
-        // Force a reset()+forward-sweep from frame 0 to the current offset into
-        // the span (claiming the figure stands its self-play down via `driven`).
+        // Force a reset()+forward-sweep from frame 0 to the current target
+        // (claiming the figure stands its self-play down via `driven`). In
+        // stepped mode the target is the step's endMs; in continuous mode it's
+        // the offset into the span. +Infinity never equals a finite target, so
+        // the claim always resets and sweeps regardless of mode.
         this.figureLastSeekMs = Number.POSITIVE_INFINITY;
-        this.advanceStagedFigure(tMs);
+        this.advanceStagedFigure(tMs, step);
       }
       return;
     }
 
-    // Same figure still staged — advance it from the audio clock.
+    // Same figure still staged — advance it from the audio clock (or hold at
+    // its step, in stepped mode).
     if (!this.stagedJourney || this.figureDetached) return; // empty stage / no journey / reader took over
-    this.advanceStagedFigure(tMs);
+    this.advanceStagedFigure(tMs, step);
   }
 
-  // Advance the staged journey to the audio clock's position. Loops while the
-  // staged span outlasts one play-through (`elapsed % durationMs`), and applies
-  // the forward-only seek plan (small steps; reset()+replay on a wrap or scrub)
-  // — see `figureSeekPlan`.
-  private advanceStagedFigure(tMs: Milliseconds) {
+  // Advance the staged journey for this tick, in one of two modes (proposal 48
+  // §4), chosen by whether the active mark carries a `step` cue for the staged
+  // figure:
+  //   - Stepped (step != null): target = `steps[label].endMs` — play *through*
+  //     the labeled segment and HOLD on its final frame (no loop). A missing
+  //     label degrades gracefully (warn + hold the current frame). An early-out
+  //     skips re-seeking when the target hasn't moved (a still-active step).
+  //   - Continuous (step == null): free-run by the audio clock, looping while
+  //     the staged span outlasts one play-through (`elapsed % durationMs`).
+  // Both apply the forward-only seek plan (small steps; reset()+replay on a wrap
+  // or a backward scrub) — see `figureSeekPlan`.
+  private advanceStagedFigure(tMs: Milliseconds, step: string | null) {
     const journey = this.stagedJourney;
     if (!journey) return;
     const dur = journey.durationMs;
     if (dur <= 0) return;
-    const elapsed = Math.max(0, tMs - this.figureStagedAtMs);
-    const target = elapsed % dur;
+
+    let target: number;
+    if (step !== null) {
+      // Stepped mode: drive to the labeled step's endMs and hold.
+      const found = journey.steps.find((s) => s.label === step);
+      if (!found) {
+        // Author typo / renamed label: don't throw and don't free-run — hold
+        // the current frame so a missing label degrades gracefully (§4.2).
+        console.warn(
+          `Narration step "${step}" not found in figure "${this.stagedFigureId}" journey — holding current frame`,
+        );
+        return;
+      }
+      target = found.endMs;
+      // Idempotent hold: the same step still active → target unchanged → skip
+      // the (no-op) re-seek (§4.3). +Infinity (a fresh claim) never matches.
+      if (target === this.figureLastSeekMs) return;
+    } else {
+      // Continuous mode (proposal 46): free-run + loop by the audio clock.
+      const elapsed = Math.max(0, tMs - this.figureStagedAtMs);
+      target = elapsed % dur;
+    }
+
     const plan = figureSeekPlan(this.figureLastSeekMs, target, Narrator.FIGURE_STEP_MS);
     if (plan.reset) journey.reset();
     for (const p of plan.seeks) journey.seek(p);

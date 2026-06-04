@@ -24,11 +24,18 @@ const m = (time: number, name: string): Timed & { name: string } => ({
 
 const w = (t: number): WordTimed => ({ t: asMs(t) });
 
-// A mark with a chapter + optional figure pointer, for resolveActiveFigure.
-const fm = (time: number, chapter: string, figure?: string): FigureStateMark => ({
+// A mark with a chapter + optional figure / step pointers, for
+// resolveActiveFigure / stagedFigureAt.
+const fm = (
+  time: number,
+  chapter: string,
+  figure?: string,
+  step?: string,
+): FigureStateMark => ({
   time: asMs(time),
   chapter,
   ...(figure !== undefined ? { figure } : {}),
+  ...(step !== undefined ? { step } : {}),
 });
 
 test("computeActiveMark — null when cursor is before the first mark", () => {
@@ -156,29 +163,29 @@ test("resolveActiveFigure — empty marks is null, not throw", () => {
 
 test("stagedFigureAt — sinceMs is the staging mark, carried across no-attr marks", () => {
   const marks = [fm(500, "c1", "fig-a"), fm(1500, "c1"), fm(4000, "c1", "fig-b")];
-  expect(stagedFigureAt(marks, asMs(2000))).toEqual({ id: "fig-a", sinceMs: asMs(500) });
+  expect(stagedFigureAt(marks, asMs(2000))).toEqual({ id: "fig-a", sinceMs: asMs(500), step: null });
   // Carried by the attr-less mark at 1500 — the span still starts at 500.
-  expect(stagedFigureAt(marks, asMs(4000))).toEqual({ id: "fig-b", sinceMs: asMs(4000) });
+  expect(stagedFigureAt(marks, asMs(4000))).toEqual({ id: "fig-b", sinceMs: asMs(4000), step: null });
 });
 
 test("stagedFigureAt — empty stage reports null since", () => {
   const marks = [fm(0, "c1"), fm(1000, "c1", "none")];
-  expect(stagedFigureAt(marks, asMs(0))).toEqual({ id: null, sinceMs: null });
-  expect(stagedFigureAt(marks, asMs(1000))).toEqual({ id: null, sinceMs: null });
+  expect(stagedFigureAt(marks, asMs(0))).toEqual({ id: null, sinceMs: null, step: null });
+  expect(stagedFigureAt(marks, asMs(1000))).toEqual({ id: null, sinceMs: null, step: null });
 });
 
 test("stagedFigureAt — a sub-chapter boundary restarts the span", () => {
   // fig-a rides into c2 only if re-stated; here c2 re-stages it, so the span
   // restarts at the boundary mark (matches the renderer's per-sub-chapter span).
   const marks = [fm(1000, "c1", "fig-a"), fm(3000, "c2", "fig-a")];
-  expect(stagedFigureAt(marks, asMs(2000))).toEqual({ id: "fig-a", sinceMs: asMs(1000) });
-  expect(stagedFigureAt(marks, asMs(3500))).toEqual({ id: "fig-a", sinceMs: asMs(3000) });
+  expect(stagedFigureAt(marks, asMs(2000))).toEqual({ id: "fig-a", sinceMs: asMs(1000), step: null });
+  expect(stagedFigureAt(marks, asMs(3500))).toEqual({ id: "fig-a", sinceMs: asMs(3000), step: null });
 });
 
 test("stagedFigureAt — re-stating the same id mid-span does NOT move sinceMs", () => {
   const marks = [fm(1000, "c1", "fig-a"), fm(2000, "c1", "fig-a")];
   // Continuous span — the journey clock must not jump back to 2000.
-  expect(stagedFigureAt(marks, asMs(2500))).toEqual({ id: "fig-a", sinceMs: asMs(1000) });
+  expect(stagedFigureAt(marks, asMs(2500))).toEqual({ id: "fig-a", sinceMs: asMs(1000), step: null });
 });
 
 test("stagedFigureAt — .id always matches resolveActiveFigure", () => {
@@ -186,6 +193,91 @@ test("stagedFigureAt — .id always matches resolveActiveFigure", () => {
   for (const t of [0, 500, 1000, 1500, 2000, 2500, 9000]) {
     expect(stagedFigureAt(marks, asMs(t)).id).toBe(resolveActiveFigure(marks, asMs(t)));
   }
+});
+
+// --- stagedFigureAt: the step pointer (proposal 48) -------------------------
+// `step` is the latest label set within the current staged-figure span. It is
+// sticky like `figure`, resets on a figure-id change or a sub-chapter boundary,
+// and is cleared by `step="none"`/`""`. The driver reads it to switch the
+// staged figure from continuous free-run to advance-to-step-and-hold.
+
+test("stagedFigureAt — step set on the staging mark (re-stage + step in one mark)", () => {
+  const marks = [fm(500, "c1", "fig-a", "phase-a")];
+  expect(stagedFigureAt(marks, asMs(600))).toEqual({
+    id: "fig-a",
+    sinceMs: asMs(500),
+    step: "phase-a",
+  });
+});
+
+test("stagedFigureAt — step is carried across attr-less marks (sticky in the span)", () => {
+  const marks = [fm(500, "c1", "fig-a", "phase-a"), fm(1500, "c1")];
+  // The attr-less mark leaves both figure and step unchanged.
+  expect(stagedFigureAt(marks, asMs(2000))).toEqual({
+    id: "fig-a",
+    sinceMs: asMs(500),
+    step: "phase-a",
+  });
+});
+
+test("stagedFigureAt — a later mark advances the step (figure carried, step only)", () => {
+  // step without figure drives the carried figure (proposal 48 §5).
+  const marks = [fm(500, "c1", "fig-a", "phase-a"), fm(2000, "c1", undefined, "phase-b")];
+  expect(stagedFigureAt(marks, asMs(1000)).step).toBe("phase-a");
+  expect(stagedFigureAt(marks, asMs(2000))).toEqual({
+    id: "fig-a", // unchanged — only the step advanced
+    sinceMs: asMs(500),
+    step: "phase-b",
+  });
+});
+
+test('stagedFigureAt — step="none" clears stepped mode (back to continuous)', () => {
+  const marks = [fm(500, "c1", "fig-a", "phase-a"), fm(2000, "c1", undefined, "none")];
+  expect(stagedFigureAt(marks, asMs(1000)).step).toBe("phase-a");
+  // Figure stays staged; only the step is cleared (figure unchanged).
+  expect(stagedFigureAt(marks, asMs(2500))).toEqual({
+    id: "fig-a",
+    sinceMs: asMs(500),
+    step: null,
+  });
+});
+
+test('stagedFigureAt — step="" also clears stepped mode', () => {
+  const marks = [fm(500, "c1", "fig-a", "phase-a"), fm(2000, "c1", undefined, "")];
+  expect(stagedFigureAt(marks, asMs(2500)).step).toBeNull();
+});
+
+test("stagedFigureAt — a figure-id change resets the step (step belongs to its figure)", () => {
+  const marks = [fm(500, "c1", "fig-a", "phase-a"), fm(2000, "c1", "fig-b")];
+  expect(stagedFigureAt(marks, asMs(1000)).step).toBe("phase-a");
+  // Staging a different figure with no step starts it in continuous mode.
+  expect(stagedFigureAt(marks, asMs(2500))).toEqual({
+    id: "fig-b",
+    sinceMs: asMs(2000),
+    step: null,
+  });
+});
+
+test("stagedFigureAt — a sub-chapter boundary clears the step", () => {
+  // fig-a re-stated in c2 (so the figure rides on), but a boundary clears the
+  // step — a forgotten step cue can't bleed across a section.
+  const marks = [fm(500, "c1", "fig-a", "phase-a"), fm(2000, "c2", "fig-a")];
+  expect(stagedFigureAt(marks, asMs(1000)).step).toBe("phase-a");
+  expect(stagedFigureAt(marks, asMs(2500))).toEqual({
+    id: "fig-a",
+    sinceMs: asMs(2000), // span restarts at the boundary
+    step: null, // …and the step is cleared
+  });
+});
+
+test("stagedFigureAt — re-stating the same figure id keeps the step (continuous span)", () => {
+  // Same id re-stated mid-span does not move sinceMs and must not drop the step.
+  const marks = [fm(500, "c1", "fig-a", "phase-a"), fm(2000, "c1", "fig-a")];
+  expect(stagedFigureAt(marks, asMs(2500))).toEqual({
+    id: "fig-a",
+    sinceMs: asMs(500),
+    step: "phase-a",
+  });
 });
 
 // --- figureSeekPlan (proposal 46 forward-only advance) ----------------------

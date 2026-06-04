@@ -6,6 +6,8 @@
 
 import { test, expect } from "bun:test";
 import { extractNarration, splitChapter, type Segment } from "./narration.ts";
+import { computeCacheKey, computeTextHash, type TtsCacheIdentity } from "./tts-cache.ts";
+import { type AudioFormat } from "./audio-pipeline.ts";
 
 const flags = (segs: Segment[]) => segs.map((s) => s.continuesPrevious);
 const names = (segs: Segment[]) => segs.map((s) => s.markName);
@@ -54,6 +56,66 @@ test("attributes parse in any order (figure before name)", () => {
   const segs = splitChapter(`<mark figure="merge-figure" name="merge-step"/> Switch.`);
   expect(segs[0]!.markName).toBe("merge-step");
   expect(segs[0]!.figure).toBe("merge-figure");
+});
+
+// --- cache-neutrality invariant (proposal 48 §2 / §7.1, REQUIRED) -----------
+// Adding or changing `step=`/`figure=` annotations MUST NOT invalidate the
+// per-segment TTS audio cache (a MOSS re-render is minutes per segment) nor the
+// forced-alignment cache (qwen3). It holds by construction: the spoken `text`
+// is the prose BETWEEN marks; the `<mark …>` tag — name/figure/step — is never
+// part of `text`. Both caches are keyed only off `text`: TTS via
+// `computeCacheKey(identity, seg.text)`, alignment via the same `computeCacheKey`
+// + `computeTextHash(seg.text)` (see generate.ts ~L682-684, aligner-cache.ts).
+// So if `Segment[].text` is identical across two sources that differ only in
+// step=/figure=, every segment's TTS key AND alignment key are identical too.
+// This is the regression guard that a future narration.ts refactor can't
+// silently fold an attribute into the spoken text and bust every cache.
+const cacheFmt: AudioFormat = { sampleRate: 22050, channels: 1, bitsPerSample: 16 };
+const cacheIdentity: TtsCacheIdentity = {
+  providerName: "moss",
+  voice: "narrator",
+  rate: 180,
+  format: cacheFmt,
+  localLexiconXml: null,
+};
+
+test("step=/figure= annotations are TTS/alignment-cache-neutral (segment text + keys unchanged)", () => {
+  // Same prose, three escalating annotation states: bare, +figure, +figure+step
+  // (in mixed attribute order, with an explicit clear). Only the <mark> blobs
+  // differ; the spoken prose between marks is byte-identical.
+  const bare =
+    `<mark name="intro"/> Welcome to the lifecycle. ` +
+    `<mark name="post"/> First the offer is posted. ` +
+    `<mark name="settle"/> Then it settles and we are done.`;
+  const annotated =
+    `<mark name="intro" figure="lifecycle-figure"/> Welcome to the lifecycle. ` +
+    `<mark name="post" figure="lifecycle-figure" step="posted"/> First the offer is posted. ` +
+    `<mark step="settled" name="settle" figure="lifecycle-figure"/> Then it settles and we are done.`;
+
+  const a = splitChapter(bare);
+  const b = splitChapter(annotated);
+
+  // Sanity: the annotations DID parse (so we're really testing neutrality, not
+  // two identical inputs) — figure/step land on the segments…
+  expect(b.map((s) => s.figure)).toEqual([
+    "lifecycle-figure",
+    "lifecycle-figure",
+    "lifecycle-figure",
+  ]);
+  expect(b.map((s) => s.step)).toEqual([null, "posted", "settled"]);
+  // …while the bare source carries no pointers.
+  expect(a.every((s) => s.figure === null && s.step === null)).toBe(true);
+
+  // The load-bearing assertion: spoken text is identical segment-for-segment.
+  expect(a.map((s) => s.text)).toEqual(b.map((s) => s.text));
+
+  // Therefore each segment's TTS cache key AND alignment keys are identical.
+  for (let i = 0; i < a.length; i++) {
+    const ta = a[i]!.text;
+    const tb = b[i]!.text;
+    expect(computeCacheKey(cacheIdentity, ta)).toBe(computeCacheKey(cacheIdentity, tb));
+    expect(computeTextHash(ta)).toBe(computeTextHash(tb)); // alignment bucket key
+  }
 });
 
 test("captures all three pointers (name, figure, step) in mixed order", () => {
