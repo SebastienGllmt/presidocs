@@ -24,6 +24,9 @@ export const MANIFEST_HASHED_RE = /^manifest\.[0-9a-f]{16}\.json$/;
 /** Matches a content-addressed full-track audio filename (`full.<16 hex>.<ext>`). */
 export const FULL_AUDIO_HASHED_RE = /^full\.[0-9a-f]{16}\.[a-z0-9]+$/i;
 
+/** Matches a content-addressed social-media video filename (`video.<16 hex>.mp4|webm`). */
+export const VIDEO_HASHED_RE = /^video\.[0-9a-f]{16}\.(mp4|webm)$/;
+
 export function manifestFileName(hash: string): string {
   return `manifest.${hash}.json`;
 }

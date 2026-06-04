@@ -179,6 +179,20 @@ export async function renderShareCard(input: ShareCardInput): Promise<Uint8Array
   return png;
 }
 
+// Generic satori→resvg renderer (same font/wasm path as the share card), so
+// other build steps (e.g. generate/render-video.ts) can rasterize their own
+// plain-object element trees without duplicating the font/wasm bootstrap.
+export async function renderElementToPng(
+  element: unknown,
+  width: number,
+  height: number,
+): Promise<Uint8Array> {
+  const fonts = await loadFonts();
+  await ensureResvg();
+  const svg = await satori(element as Parameters<typeof satori>[0], { width, height, fonts });
+  return new Resvg(svg, { fitTo: { mode: "width", value: width } }).render().asPng();
+}
+
 // --- build driver ------------------------------------------------------------
 
 // The blog name from the landing index.html <title> (engine stays content-

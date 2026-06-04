@@ -18,6 +18,11 @@ test("any .vtt transcript is pinned to text/vtt (not octet-stream/plain)", () =>
   );
 });
 
+test("social-media video is pinned to video/mp4|webm (proposals/41)", () => {
+  expect(staticAssetContentTypeOverride("/generated/offer-files/video.f08390bb7a2d25d7.mp4")).toBe("video/mp4");
+  expect(staticAssetContentTypeOverride("/generated/offer-files/video.f08390bb7a2d25d7.webm")).toBe("video/webm");
+});
+
 test("ordinary asset paths are left untouched (null → no override)", () => {
   expect(staticAssetContentTypeOverride("/posts/offer-files")).toBeNull();
   expect(staticAssetContentTypeOverride("/generated/offer-files/full.f2985f8c0b4fd293.mp3")).toBeNull();

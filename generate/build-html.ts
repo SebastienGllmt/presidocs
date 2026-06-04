@@ -65,7 +65,11 @@ async function assertLayerOrderInBuiltHtml(
 }
 
 async function main(): Promise<void> {
-  const entries = process.argv.slice(2);
+  // `_`-prefixed entries are fixtures/drafts: the dev route table serves them
+  // (post-routes.ts globs posts/**/*.html, so e.g. the figure-journey
+  // conformance fixture is reachable in dev), but they must NOT reach dist/ and
+  // be deployed. Filter them out of the production build here.
+  const entries = process.argv.slice(2).filter((e) => !basename(e).startsWith("_"));
   if (entries.length === 0) {
     console.error(
       "Usage: bun engine/generate/build-html.ts <entry.html> [<entry.html> ...]",

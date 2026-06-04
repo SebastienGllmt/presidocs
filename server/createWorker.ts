@@ -153,6 +153,10 @@ export function staticAssetContentTypeOverride(pathname: string): string | null 
   if (pathname === "/feed.xml") return "application/atom+xml; charset=utf-8";
   if (pathname === "/podcast.xml") return "application/rss+xml; charset=utf-8";
   if (pathname.endsWith(".vtt")) return "text/vtt; charset=utf-8";
+  //  - .mp4/.webm social-media video (proposals/41). Range support is generic
+  //    (applyRangeSupport below), so scrubbing works once the MIME is correct.
+  if (pathname.endsWith(".mp4")) return "video/mp4";
+  if (pathname.endsWith(".webm")) return "video/webm";
   return null;
 }
 
