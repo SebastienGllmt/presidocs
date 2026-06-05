@@ -19,6 +19,7 @@ import { asMs, msToSeconds, secondsToMs, asSeconds, type Milliseconds } from "..
 import { computeActiveMark, findActiveWord, stagedFigureAt, figureSeekPlan } from "../shared/narratorTiming.ts";
 import { getFigureJourney, type FigureJourney } from "./figureAnimation.ts";
 import { emitNarrationPlay, emitNarrationQuartile } from "./analytics.ts";
+import { copyToClipboard } from "./clipboard.ts";
 import { QUARTILES, type PlayTrigger, type Quartile } from "../shared/analyticsSchema.ts";
 import {
   SPOKEN_ID_PREFIX,
@@ -94,6 +95,20 @@ function formatClockTime(ms: Milliseconds) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+// Speaker-with-waves glyph, drawn in `currentColor` so it inherits whatever
+// muted tone its host (a labeled divider or a heading) carries and the hover
+// rule can brighten it. Shared by the two "play narration from here" buttons —
+// the divider speaker (`.divider-speaker`) and the heading speaker
+// (`.heading-speaker`) — so the icon can't drift between them. The intrinsic
+// 14px size suits the divider; heading CSS overrides it to an em size so it
+// scales with the heading it sits beside.
+const SPEAKER_GLYPH_SVG =
+  '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">' +
+  '<path d="M8 2.2 4.3 5.3H1.6v5.4h2.7L8 13.8z" fill="currentColor"/>' +
+  '<path d="M10.6 5.4a3.3 3.3 0 0 1 0 5.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>' +
+  '<path d="M12.4 3.4a5.8 5.8 0 0 1 0 9.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>' +
+  "</svg>";
+
 // Register the chapter plugin once for the lifetime of the page.
 Player.use(Chapter);
 
@@ -112,6 +127,9 @@ class Narrator {
   // every rAF tick, so we only scroll the active pill into view when the
   // active chapter actually changes — not on every frame.
   private lastActiveChapterId: string | null = null;
+  // Timer that clears the transient "Copied" state on a dev-only segment-name
+  // label after a click. One shared handle: only one label flashes at a time.
+  private nameCopyTimer: number | null = null;
   // Chapter strip's hold-to-scroll arrows (desktop only) + their flex wrapper,
   // and the rAF handle for an in-progress hold.
   private navEl: HTMLElement | null = null;
@@ -293,6 +311,7 @@ class Narrator {
     this.setupKeyboardShortcuts();
     this.buildDrawer(manifest);
     this.setupDividerSpeakers();
+    this.setupHeadingSpeakers();
     void this.maybeEnableAuthorTools();
     this.applyHashIfMatching();
     window.addEventListener("hashchange", () => this.applyHashIfMatching());
@@ -1079,48 +1098,75 @@ class Narrator {
       if (divider.querySelector(".divider-speaker")) continue; // idempotent
       if (!this.firstMarkAfter(divider)) continue; // no narration below → no button
       const label = (divider.textContent ?? "").trim();
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "divider-speaker";
-      btn.title = "Play narration from here";
-      btn.setAttribute(
-        "aria-label",
-        label ? `Play narration from "${label}"` : "Play narration from here",
-      );
-      // Speaker-with-waves glyph in currentColor so it inherits the divider's
-      // muted tone and the hover rule can brighten it.
-      btn.innerHTML =
-        '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">' +
-        '<path d="M8 2.2 4.3 5.3H1.6v5.4h2.7L8 13.8z" fill="currentColor"/>' +
-        '<path d="M10.6 5.4a3.3 3.3 0 0 1 0 5.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>' +
-        '<path d="M12.4 3.4a5.8 5.8 0 0 1 0 9.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>' +
-        "</svg>";
-      btn.addEventListener("click", () => {
-        // Recompute on click — the article DOM can change after setup (e.g.
-        // figures enhance asynchronously). Cheap: one pass over the marks.
-        const m = this.firstMarkAfter(divider);
-        if (!m) return;
-        // Nudge past the mark time, matching the chapter-jump offset, so a mark
-        // sitting exactly on a chapter boundary still lands inside the new
-        // chapter for the chapter plugin's `t >= startTime` range check.
-        this.seekToMs(asMs(m.time + 10));
-        this.player?.play();
-      });
       // The divider is a presentational labeled `<div>` — the prose face of a
       // narration part, deliberately NOT a heading (the prose outline must not
       // depend on whether a post has narration; see methodology) and NOT a
       // `role="separator"` (a widget role can't host a control). A plain `<div>`
       // isn't a widget role, so it validly hosts this button; the button's own
       // aria-label ("Play narration from …") carries the part name to AT.
-      divider.appendChild(btn);
+      divider.appendChild(this.buildSpeakerButton("divider-speaker", divider, label));
     }
   }
 
+  // The article's headings (`<h2>`/`<h3>`/`<h4>`, matching headerLinks.ts) get
+  // the same "play narration from here" affordance the labeled dividers carry —
+  // a speaker button to the heading's right that seeks to the first narration
+  // covering content at or below the heading, then plays. Headings aren't
+  // guaranteed to be a narration entry point (only part dividers anchor a mark
+  // by convention), but `firstMarkAfter` is defined for any element, so a
+  // heading with no `<mark>` of its own simply routes to the first spoken
+  // segment that follows it in document order. A heading with nothing narrated
+  // below it (e.g. a trailing one) gets no button. Mirrors setupDividerSpeakers.
+  private setupHeadingSpeakers() {
+    if (!this.manifest) return;
+    const headings = this.narrationRoot.querySelectorAll<HTMLElement>(
+      "h2, h3, h4",
+    );
+    for (const heading of headings) {
+      if (heading.querySelector(".heading-speaker")) continue; // idempotent
+      if (!this.firstMarkAfter(heading)) continue; // no narration below → no button
+      const label = (heading.textContent ?? "").trim();
+      heading.appendChild(this.buildSpeakerButton("heading-speaker", heading, label));
+    }
+  }
+
+  // Build a "play narration from here" speaker button anchored to `target`.
+  // Both the divider and heading speakers share this so the glyph, labelling,
+  // and seek behaviour can't drift between them. `firstMarkAfter` is recomputed
+  // on every click (not cached at setup) so the target stays correct if the
+  // article DOM changes after enhancement — e.g. a figure enhancing
+  // asynchronously, shifting which mark element is "first below".
+  private buildSpeakerButton(
+    className: string,
+    target: Element,
+    label: string,
+  ): HTMLButtonElement {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = className;
+    btn.title = "Play narration from here";
+    btn.setAttribute(
+      "aria-label",
+      label ? `Play narration from "${label}"` : "Play narration from here",
+    );
+    btn.innerHTML = SPEAKER_GLYPH_SVG;
+    btn.addEventListener("click", () => {
+      const m = this.firstMarkAfter(target);
+      if (!m) return;
+      // Nudge past the mark time, matching the chapter-jump offset, so a mark
+      // sitting exactly on a chapter boundary still lands inside the new chapter
+      // for the chapter plugin's `t >= startTime` range check.
+      this.seekToMs(asMs(m.time + 10));
+      this.player?.play();
+    });
+    return btn;
+  }
+
   // Thin wrapper around the pure helper in ./narratorDom.ts — keeps the
-  // existing `this.firstMarkAfter(divider)` call sites readable.
-  private firstMarkAfter(divider: Element): ManifestMark | null {
+  // `this.firstMarkAfter(el)` call sites (dividers and headings) readable.
+  private firstMarkAfter(el: Element): ManifestMark | null {
     if (!this.manifest) return null;
-    return firstMarkAfter(divider, this.manifest.marks, this.narrationRoot);
+    return firstMarkAfter(el, this.manifest.marks, this.narrationRoot);
   }
 
   private updateActiveChapter() {
@@ -1747,7 +1793,48 @@ class Narrator {
       return;
     }
     if (!isAuthor) return;
-    for (const [markName, seg] of this.segmentEls) this.addRegenButton(seg, markName);
+    for (const [markName, seg] of this.segmentEls) {
+      // Marks the segment as carrying author tools so the controls row widens
+      // to a third column for the name label (see narrator.css).
+      seg.classList.add("has-dev-tools");
+      this.addRegenButton(seg, markName);
+      this.addSegmentName(seg, markName);
+    }
+  }
+
+  // Author-only, dev-only segment-name label, gated identically to the regen
+  // button (localhost + isAuthor). Surfaces the mark `name` — the id a segment
+  // is keyed by — so the author can read straight off the drawer which segments
+  // to feed a manual re-roll (`generate --force-mark=<name>`) without digging
+  // through the post source. `user-select: all` (set in CSS) makes one click
+  // select the whole id for a clean copy into that command.
+  private addSegmentName(seg: HTMLElement, markName: string) {
+    const label = document.createElement("button");
+    label.type = "button";
+    label.className = "spoken-name";
+    label.textContent = markName;
+    label.title = `Copy segment name (--force-mark=${markName})`;
+    label.setAttribute("aria-label", `Copy segment name ${markName}`);
+    // Click copies the bare mark name — the exact `--force-mark=<name>` token —
+    // and flips the label to a "Copied" state briefly. A button (not the old
+    // span) so it's keyboard-focusable and the gesture reads as "actionable".
+    label.addEventListener("click", () => {
+      void copyToClipboard(markName).then((ok) => {
+        if (!ok) return;
+        label.classList.add("is-copied");
+        if (this.nameCopyTimer !== null) clearTimeout(this.nameCopyTimer);
+        this.nameCopyTimer = window.setTimeout(() => {
+          label.classList.remove("is-copied");
+          this.nameCopyTimer = null;
+        }, 1000);
+      });
+    });
+    // Visual placement is by CSS grid (sits between the play chip and the regen
+    // button), so DOM order only needs to keep it inside the segment. Insert
+    // right after the play chip so reading order is play → name → regen.
+    const play = seg.querySelector(".spoken-play");
+    if (play?.nextSibling) seg.insertBefore(label, play.nextSibling);
+    else seg.appendChild(label);
   }
 
   private addRegenButton(seg: HTMLElement, markName: string) {

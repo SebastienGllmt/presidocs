@@ -107,6 +107,71 @@ article .section-divider-labeled .divider-speaker:focus-visible {
 }
 article .section-divider-labeled .divider-speaker svg { display: block; }
 
+/* Speaker button injected by narrator.ts onto each <h2>/<h3>/<h4>: the heading
+   twin of the divider speaker, jumping the narration to the first spoken
+   segment at or below the heading. Sits inline just after the heading text (the
+   `.heading-link` deep-link affordance from headerLinks.ts lives in the left
+   gutter, so the two don't collide). Like that sibling link it stays hidden
+   until the reader hovers the heading or keyboard-focuses the button, keeping
+   the heading visually clean. Only present when narration is available — the
+   player never boots on a `data-narration="none"` post. */
+article h2 .heading-speaker,
+article h3 .heading-speaker,
+article h4 .heading-speaker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  margin-left: 0.35rem;
+  padding: 0.15rem 0.25rem;
+  border: 0;
+  background: transparent;
+  color: var(--page-fg-muted);
+  line-height: 0;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+}
+/* Match the heading-link's em-relative sizing so the glyph scales with the
+   heading it sits beside (the SVG's intrinsic 14px is tuned for the divider). */
+article h2 .heading-speaker svg,
+article h3 .heading-speaker svg,
+article h4 .heading-speaker svg {
+  display: block;
+  width: 0.7em;
+  height: 0.7em;
+}
+/* Reveal on hover anywhere over the heading, on hover over the button itself,
+   and on keyboard focus — symmetric with the `.heading-link` reveal rule. */
+article h2:hover .heading-speaker,
+article h3:hover .heading-speaker,
+article h4:hover .heading-speaker,
+.heading-speaker:hover,
+.heading-speaker:focus-visible {
+  opacity: 1;
+}
+.heading-speaker:hover {
+  color: #0969da;
+  background: rgba(31, 35, 40, 0.06);
+}
+.heading-speaker:focus-visible {
+  outline: 2px solid var(--page-fg-muted);
+  outline-offset: 2px;
+}
+/* Touch / no-hover devices never fire the hover trigger, so make the button
+   always-visible (slightly dimmed) and reachable from a tap — the same
+   accommodation `.heading-link` makes. */
+@media (hover: none) {
+  article h2 .heading-speaker,
+  article h3 .heading-speaker,
+  article h4 .heading-speaker {
+    opacity: 0.55;
+  }
+}
+
 figure {
   margin: 1.5em 0;
   padding: 16px;
@@ -987,8 +1052,13 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 
 .spoken-segment {
   display: grid;
-  grid-template-columns: auto 1fr;
-  align-items: start;
+  /* Two-row layout: a controls row (play fills the first column, the regen
+     chip is a fixed-width second column pinned right) over a full-width text
+     row. The `1fr auto` split is what makes every `.spoken-play` render at the
+     SAME width — the column flexes to the (fixed) drawer width minus the regen
+     chip, instead of shrink-wrapping each segment's timestamp string. */
+  grid-template-columns: 1fr auto;
+  align-items: center;
   gap: 8px 10px;
   padding: 10px 12px;
   margin: 2px 0;
@@ -1013,6 +1083,14 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 }
 
 .spoken-segment .spoken-play {
+  /* Fills the flexible first column of the controls row. A grid item is
+     blockified + stretched by default, so the chip spans the whole column
+     (constant width across segments) with its icon + timestamp tucked at the
+     left. `min-width: 0` lets it shrink rather than overflow on a narrow
+     drawer. */
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1039,10 +1117,19 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 /* Author-only, dev-only per-segment regenerate button. Injected at runtime
    (see narrator.ts maybeEnableAuthorTools); ordinary readers never see it. */
 .spoken-segment .spoken-regen {
+  /* Fixed-width chip in the controls row's second column, pinned to the right
+     edge (`justify-self: end`) so the play column takes all the remaining
+     width. The fixed `width` keeps the chip from reflowing the play column
+     between segments. The inter-control gap is the grid column-gap, so no
+     margin is needed here. */
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+  width: 24px;
+  box-sizing: border-box;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin-left: 4px;
   padding: 3px;
   border: 1px solid rgba(15, 25, 40, 0.1);
   border-radius: 999px;
@@ -1064,7 +1151,54 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   to { transform: rotate(360deg); }
 }
 
+/* Author-only, dev-only segment-name label (see narrator.ts addSegmentName).
+   Injected on the same localhost + isAuthor gate as the regen button, so
+   ordinary readers never see it. When present, the controls row gains a third
+   column to hold it: [play fills | name | regen]. Lets the author read off the
+   mark `name` to pass to a manual `generate --force-mark=<name>` re-roll. */
+.spoken-segment.has-dev-tools {
+  grid-template-columns: 1fr auto auto;
+}
+.spoken-segment.has-dev-tools .spoken-regen {
+  grid-column: 3;
+}
+.spoken-segment .spoken-name {
+  grid-column: 2;
+  grid-row: 1;
+  /* Reset the <button> chrome — it's a flat clickable id, not a chip. */
+  border: 0;
+  background: transparent;
+  padding: 2px 4px;
+  margin: 0;
+  border-radius: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.7rem;
+  color: var(--page-fg-muted);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+.spoken-segment .spoken-name:hover,
+.spoken-segment .spoken-name:focus-visible {
+  color: var(--page-fg);
+  background: rgba(15, 25, 40, 0.06);
+}
+/* Click-to-copy feedback: keep the id visible (the author still wants to read
+   it) and just tint it green with a trailing check while `.is-copied` is set
+   (cleared by a timer in narrator.ts). */
+.spoken-segment .spoken-name.is-copied {
+  color: #1a7f37;
+}
+.spoken-segment .spoken-name.is-copied::after {
+  content: " ✓";
+}
+
 .spoken-segment .spoken-text {
+  /* Full-width row beneath the controls, spanning both columns. */
+  grid-column: 1 / -1;
+  grid-row: 2;
   margin: 0;
   font-size: 0.92rem;
   line-height: 1.55;

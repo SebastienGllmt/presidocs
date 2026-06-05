@@ -366,3 +366,84 @@ test("lifecycle-figure: stepped driving holds at steps[label].endMs and advances
     await page.close();
   }
 }, 120_000);
+
+// proposal 48 §4.3 — stepped driving is **scrub-correct**: the figure's state is
+// a pure function of the active step at the playhead, not of how you got there.
+// Seeking the audio anywhere (forward, back, or jumping around) lands the figure
+// on that step's frame, via the driver's forward-only discipline (reset()+replay
+// when the target is behind). This test drives a *scrambled* order of step
+// targets through the EXACT `figureSeekPlan` logic `advanceStagedFigure` uses,
+// and asserts each landing matches the state reached by a fresh forward drive.
+//
+// It compares the figure's MEANINGFUL slideshow state — which stages are lit,
+// the connector fills, and the caption — NOT `outerHTML`: GSAP's
+// `immediateRender:false` leaves per-stage inline transform residue that depends
+// on which frames were visited and is irrelevant to what's displayed; comparing
+// it would flag false scrub "mismatches".
+test("lifecycle-figure: stepped driving is scrub-correct (state is a pure function of the active step)", async () => {
+  const page = await browser.newPage({ viewport: { width: 1366, height: 1200 } });
+  try {
+    await openPost(page, "offer-files");
+
+    const out = await page.evaluate(() => {
+      const j = (window as any).__presidocsFigures.get("lifecycle-figure");
+      const el = document.getElementById("lifecycle-figure")!;
+      const STEP_MS = 1000 / 30; // Narrator.FIGURE_STEP_MS
+      const steps: { label: string; startMs: number; endMs: number }[] = j.steps;
+      const endMsOf = (l: string) => steps.find((s) => s.label === l)!.endMs;
+
+      // The displayed slideshow state, residue-free: lit stages + link fills +
+      // caption. This is what the reader sees; transform residue is not.
+      const stateSig = () =>
+        JSON.stringify({
+          lit: [...el.querySelectorAll(".stage")].map((s) => s.classList.contains("lit")),
+          fills: [...el.querySelectorAll(".link-fill")].map((f) => (f as HTMLElement).style.width),
+          caption: el.querySelector("[data-caption]")?.innerHTML ?? "",
+        });
+
+      // Reference: the state when each step is reached FRESH (reset + forward
+      // sweep to its endMs) — the unambiguous "correct" frame for that step.
+      const labels = steps.map((s) => s.label);
+      const reference: Record<string, string> = {};
+      for (const l of labels) {
+        j.reset();
+        const t = endMsOf(l);
+        for (let p = STEP_MS; p < t; p += STEP_MS) j.seek(p);
+        j.seek(t);
+        reference[l] = stateSig();
+      }
+
+      // Stateful advance EXACTLY as advanceStagedFigure + figureSeekPlan: carry
+      // `lastSeek`; reset()+replay-from-0 when the target is behind (a scrub
+      // back), else forward small-steps. This IS the real scrub path.
+      let lastSeek = Infinity; // a fresh claim forces the reset-and-sweep
+      const advance = (target: number) => {
+        const reset = target < lastSeek;
+        const from = reset ? 0 : lastSeek;
+        if (reset) j.reset();
+        for (let p = from + STEP_MS; p < target; p += STEP_MS) j.seek(p);
+        j.seek(target);
+        lastSeek = target;
+      };
+
+      // A scramble — like a reader scrubbing the audio back and forth: forward,
+      // jump to the end, jump back, hop around. Every landing must equal the
+      // fresh reference for that step.
+      const scramble = ["created", "posted", "settled", "encoded", "book", "created", "indexed", "settled"];
+      const mismatches: string[] = [];
+      for (const l of scramble) {
+        advance(endMsOf(l));
+        if (stateSig() !== reference[l]) mismatches.push(l);
+      }
+      return { scramble, mismatches, refCount: Object.keys(reference).length };
+    });
+
+    expect(out.refCount, "lifecycle-figure has steps to scrub across").toBeGreaterThan(1);
+    expect(
+      out.mismatches,
+      `scrubbing to a step must land on that step's state regardless of history (mismatched: ${out.mismatches.join(", ") || "none"})`,
+    ).toEqual([]);
+  } finally {
+    await page.close();
+  }
+}, 120_000);

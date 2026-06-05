@@ -788,7 +788,7 @@ export function heldFrameIndex(posMs: number, fps: number, durationMs: number): 
  * `posMs` — the frame a `step` cue rests on (proposal 49 §3.2). One frame, cheap;
  * errors propagate (a failed extraction must not silently drop the figure).
  */
-async function extractHeldFrame(
+export async function extractHeldFrame(
   clip: { file: string; fps: number; durationMs: number },
   posMs: number,
   outFile: string,
