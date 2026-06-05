@@ -1,4 +1,4 @@
-// Conformance test for the FigureJourney contract (proposals/43).
+// Conformance test for the FigureJourney contract (methodology.md → "Animated figures" → "The FigureJourney contract").
 //
 // Loads a real post in Chromium and asserts that every figure which registered
 // a journey actually satisfies the contract: a well-formed `steps` map, and a
@@ -168,11 +168,11 @@ test("registered figure journeys conform to the contract", async () => {
   }
 }, 120_000);
 
-// proposal 50 §3.5 — once a DRIVER has claimed a figure (the narration/video
+// See the `figure-journey` skill — rule 7 (the `driven` guard): once a DRIVER has claimed a figure (the narration/video
 // driver calls `reset()`), the figure's own live triggers — scroll-into-view
 // (IntersectionObserver) and the `.narration-active` class toggle
 // (MutationObserver) — must NO-OP. This is the regression guard for the bug
-// behind the original offerMerge issue (proposal 50 §3.6): a figure with a
+// behind the original offerMerge issue (the `figure-journey` skill — rule 7): a figure with a
 // missing/ineffective `driven` guard would let its self-play mutate the DOM and
 // race the driver's scrubbing. The structural/determinism test above never
 // fires a live trigger, so it can't see this — this test does.
@@ -253,7 +253,7 @@ test("a claimed figure ignores its live triggers (driven guard holds)", async ()
   }
 }, 120_000);
 
-// proposal 50 §5.8 — the per-step (slideshow) driving test bed. `lifecycle-figure`
+// methodology.md → "Live figure driving" — the per-step (slideshow) driving test bed. `lifecycle-figure`
 // (offer-files) is annotated with `step=` cues (semantic labels created…settled,
 // renamed from the old positional step-0…step-N). This exercises the live
 // narrator's STEPPED mode (`advanceStagedFigure` with an active step) the way
@@ -367,7 +367,7 @@ test("lifecycle-figure: stepped driving holds at steps[label].endMs and advances
   }
 }, 120_000);
 
-// proposal 50 §5.3 — stepped driving is **scrub-correct**: the figure's state is
+// methodology.md → "Live figure driving" — stepped driving is **scrub-correct**: the figure's state is
 // a pure function of the active step at the playhead, not of how you got there.
 // Seeking the audio anywhere (forward, back, or jumping around) lands the figure
 // on that step's frame, via the driver's forward-only discipline (reset()+replay

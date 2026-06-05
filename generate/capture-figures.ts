@@ -23,7 +23,7 @@ import { CAPTURE_DEFAULTS } from "./capture-defaults.ts";
 
 /** A labeled step of a figure's journey (projected from GSAP labels), as the
  *  capture reads it from the registry. The renderer maps a `step=` cue's label
- *  to `endMs` and holds the figure there (proposal 50 §6). */
+ *  to `endMs` and holds the figure there (methodology.md → "Video export"). */
 export type CapturedStep = { label: string; startMs: number; endMs: number };
 
 export type FigureShot =

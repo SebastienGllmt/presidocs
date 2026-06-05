@@ -110,7 +110,7 @@ test("findActiveWord — empty words is -1, not throw", () => {
   expect(findActiveWord([], asMs(1000))).toBe(-1);
 });
 
-// --- resolveActiveFigure (proposal 50 §4) --------------------------------------
+// --- resolveActiveFigure (methodology.md → "Staging a figure from narration") --------------------------------------
 // "Which figure is on the stage at time t" — the live-page twin of the video
 // renderer's deriveFigureOccurrences. Each case probes the SAME datasets the
 // renderer's unit tests use (generate/render-video.test.ts), so the two must
@@ -155,7 +155,7 @@ test("resolveActiveFigure — empty marks is null, not throw", () => {
   expect(resolveActiveFigure([], asMs(1000))).toBeNull();
 });
 
-// --- stagedFigureAt (proposal 50 §5.1 mid-span resume) ---------------------------
+// --- stagedFigureAt (methodology.md → "Live figure driving" mid-span resume) ---------------------------
 // Same staging walk as resolveActiveFigure, but also reports WHEN the current
 // span began (`sinceMs`) so the narration driver can advance the journey by
 // `tMs - sinceMs` and resume mid-animation on a scrub. `.id` must always agree
@@ -195,7 +195,7 @@ test("stagedFigureAt — .id always matches resolveActiveFigure", () => {
   }
 });
 
-// --- stagedFigureAt: the step pointer (proposal 50 §5.3) -------------------------
+// --- stagedFigureAt: the step pointer (methodology.md → "Live figure driving") -------------------------
 // `step` is the latest label set within the current staged-figure span. It is
 // sticky like `figure`, resets on a figure-id change or a sub-chapter boundary,
 // and is cleared by `step="none"`/`""`. The driver reads it to switch the
@@ -221,7 +221,7 @@ test("stagedFigureAt — step is carried across attr-less marks (sticky in the s
 });
 
 test("stagedFigureAt — a later mark advances the step (figure carried, step only)", () => {
-  // step without figure drives the carried figure (proposal 50 §5.4).
+  // step without figure drives the carried figure (methodology.md → "Staging a figure from narration").
   const marks = [fm(500, "c1", "fig-a", "phase-a"), fm(2000, "c1", undefined, "phase-b")];
   expect(stagedFigureAt(marks, asMs(1000)).step).toBe("phase-a");
   expect(stagedFigureAt(marks, asMs(2000))).toEqual({
@@ -280,7 +280,7 @@ test("stagedFigureAt — re-stating the same figure id keeps the step (continuou
   });
 });
 
-// --- figureSeekPlan (proposal 50 §5.1 forward-only advance) ----------------------
+// --- figureSeekPlan (methodology.md → "Animated figures" → "The FigureJourney contract" forward-only advance) ----------------------
 // The driver's whole seek decision, made pure. Step = 10 in these cases for
 // readable grids; the driver passes 1000/30.
 

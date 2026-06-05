@@ -111,6 +111,24 @@ The first animated figure is the hash diagram in `posts/hash-functions.html`, im
 - **Reduced-motion aware.** Under `prefers-reduced-motion: reduce` the module skips the scramble/pop-in and renders the final fingerprint directly.
 - **CSP-clean by construction.** No inline `style=` (all classes, toggled in JS); dynamic visuals are GSAP CSSOM writes or class toggles, both ungoverned by `style-src`.
 
+### The FigureJourney contract (`client/figureAnimation.ts`)
+
+The hash diagram above syncs to narration through a bespoke `MutationObserver` hand-off. That works for one figure, but the moment the engine needs to *drive* a figure deterministically — to replay it on the audio clock, to step it through labeled states, and above all to **capture it offline as video frames** (see [Video export](#video-export-generaterender-videots)) — every figure has to expose its animation through one common surface. That surface is the **FigureJourney contract** in `client/figureAnimation.ts`: the standard by which a content-repo figure (a GSAP visualization enhancing a `<figure id="…">`) exposes its animation so the engine can drive and capture it. GSAP stays the animation engine; the contract is an **adapter surface** over it, not a replacement.
+
+**A pure renderer plus an external clock.** A journey is a finite, paused timeline that exposes only `reset()` (snap to first frame, taking exclusive control) and `seek(ms)` (render the frame at `ms`), plus a `durationMs` and a `steps[]` list of `{ label, startMs, endMs }` projected from the figure's GSAP labels. There is **no transport** (`play`/`pause`/`onComplete`) on the figure itself — playing, looping, holding, and stepping-on-cue are all the job of a **driver** that owns a clock and calls `seek()`: "pause" is the driver not advancing, "start" is it beginning to, "advance to a step" is it seeking to a labeled time. Figures register into a window registry keyed by the figure's element id (which is also its narration mark name), so a waiting driver discovers them by id and a `presidocs:figure-ready` event tells it when one is live. Three drivers consume the one primitive, each with its own clock: the **capture** driver (a fixed-fps virtual clock, in the video pipeline), the **narration** driver (a real-time rAF clock gated on the staged figure — see [Live figure driving](#live-figure-driving-the-narration-driver)), and **autoplay** (the figure's own scroll-into-view loop, which by decision stays inside the figure rather than becoming an engine driver).
+
+**Forward-seek only — a locked decision against random access.** A journey advances *monotonically*: to revisit an earlier point a driver calls `reset()` and replays forward in small steps, never a coarse backward jump or a Remotion-style random-access `render(t)`. This is a deliberate, GSAP-specific trade. Roughly half of our figures' meaning is **discrete, non-numeric state** — `textContent`, `classList`, `innerHTML` changes expressed via GSAP's `tl.call(...)` — which GSAP does not make cleanly random-access; forcing true `render(t)` would mean re-expressing every text/class change as a numeric-proxy `onUpdate`, a structural rewrite and a permanent authoring tax. The benefits random access buys (parallel/distributed capture, free backward scrubbing) are render-farm concerns we don't have, and forward-seek + replay covers every real case — click-to-step, narration stepping, looping — at millisecond replay cost. (For the same reason the contract avoids WAAP `currentTime` / Lottie `goToAndStop` naming, which imply random access.) Determinism falls out of the same discipline: GSAP-seeking a paused timeline at fixed fps is byte-reproducible in a way that fps-screenshotting a self-playing figure is not.
+
+**Interactive mode detaches the driver.** A figure auto-plays its journey by default; on the first reader interaction with its own controls (clicks, not hover/scroll) the active driver **detaches** and the figure's own handlers take over. "Resume journey" re-attaches a driver from a clean `reset()` baseline, discarding the user's hand-set state.
+
+**The authoring standard.** A figure only behaves under all three drivers if it follows a set of authoring rules — build the timeline `paused`, never reach a `Math.random`/wall-clock or a detached tween from a journey-reachable path, take exclusive control on `reset()` so self-play stands down for a driver, project steps from GSAP labels, bake a looping figure's loop-dwell into `durationMs`, and so on. These figure-authoring rules are maintained as the **`figure-journey` skill** (`.claude/skills/figure-journey/`), used to create and audit figures, rather than inlined here. The guarantee the standard provides: any conforming figure is **deterministically capturable and seekable** (so the video render is byte-reproducible and cache-safe) and **drivable** (so the live page and the video show the identical journey for the same playhead).
+
+**The conformance gate (`e2e/figureJourney.e2e.ts`).** The standard is enforced, not trusted to review. A headless e2e test (reusing the [e2e harness](#testing-layout)'s `startBlogServer` + `launchChrome`) loads each post, enumerates every registered journey, and per journey asserts the structural shape (`durationMs > 0`, `steps[0].startMs === 0`, contiguous increasing segments, last `endMs === durationMs`), that a `reset()` + forward `seek()` sweep across `[0, durationMs]` at capture fps throws nothing and yields **≥2 distinct frames**, and two deeper properties:
+- **Determinism** — two full passes are byte-identical at the end. This is the load-bearing catch for the no-random / no-wall-clock / no-`clearProps` / no-detached-tween rules: any of them leaking into a journey makes two passes diverge.
+- **Integrity** — `reset()` must not *collapse* the journey's distinct-frame count versus a pristine pass. This guards the one failure class determinism structurally **cannot** see: a build-once journey that calls `gsap.killTweensOf(...)` on shared elements in `reset()` reaches into its own paused timeline and silently **freezes** — and a frozen journey is still perfectly deterministic, so a determinism-only check passes it green. The integrity check is the regression guard for that whole class. (Figures that legitimately rebuild on `reset()` are exempt — they have no pristine pre-reset journey to compare against.)
+
+A figure that no published post embeds can still be exercised by the gate via a dev-only `_`-prefixed fixture post: the dev route table serves it, but the build skips it so it never deploys. The gate also covers the [stepped-driving](#live-figure-driving-the-narration-driver) and `reset()`-exclusive-control behaviours.
+
 ## SSML usage
 
 Although [SSML] has historically been used to represent spoken text concepts, it has been losing traction given newer LLM-based models tend to focus on natural language hints over SSML-like DSLs.
@@ -172,6 +190,47 @@ We want our spoken text to be able to highlight different parts of the HTML docu
 To facilitate this, blog content can be marked with `id`s in the HTML (ex: `<p id="foo">`), and spoken text can refer to these IDs using SSML `<mark>` tags (ex: `<mark name="foo"/>`. See [spec][SSML-mark] for more).
 
 These `<mark>` tags in the audio also act as natural splitting boundaries — they delimit the **segments** that are individually synthesized and individually cached (see [Audio caching](#audio-caching)), and they're the unit of per-mark navigation in the player.
+
+#### Staging a figure from narration (`marks[].figure`)
+
+A `<mark>` already names the element to **highlight** (`name`). To also say which [animated figure](#the-figurejourney-contract-clientfigureanimationts) is *on stage and driven* during a segment — for both the live page and the [video export](#video-export-generaterender-videots) — a mark carries a second, orthogonal pointer, **`figure`**:
+
+```
+<mark name="intro-para" figure="diagram-a"/>   stage diagram-a while reading the lead-up
+<mark name="next-step"  figure="diagram-b"/>   switch the stage to diagram-b
+<mark name="wrap-up"    figure="none"/>        clear the stage early
+<mark name="aside"/>                           no figure attr → carry the current stage
+```
+
+`figure` is **deliberately separate from `name`**, not an overload of it. The rejected alternative — a single pointer where a figure shows iff a mark's `name` equals a `<figure id>`, sticky until the next such mark — couples staging to the highlight and forces a figure to stay on screen until the *next* figure-mark, so the video renderer would pay a "figures never turn off" cost (a figure pinned on screen for long stretches it isn't being discussed). With two honest fields a segment can highlight prose while staging a figure, stage with no highlight at all, or clear the stage while a paragraph is still highlighted — staged ≠ highlighted.
+
+- **There is one staging model, no implicit fallback.** `figure` is the *sole* staging mechanism and the stage **defaults to empty**; there is no implicit name-matching to fall back on (which would silently re-introduce the coupling this design removes). A post must annotate to get figures in its video — the default is a safe blank stage.
+- **Visibility is sticky within a sub-chapter, auto-cleared at every sub-chapter boundary.** Omit the attr to carry the current figure, set an id to stage, `none`/`""` to clear. Crossing into a new sub-chapter resets the stage to none unless re-staged — so the worst case is a blank stage, never a stale figure two sections later.
+- **Staging holds a figure at frame 1** (its `reset()` state, paused); it does **not** seek the journey forward. *Advancing* a staged figure is a separate driving event (below), so staging never moves the reading playhead and never weakens the forward-seek invariant.
+- **One figure on stage at a time**; multi-stage is out of scope.
+
+A third pointer, **`step="<label>"`**, rides on the same mark to drive the staged figure to a labeled step (below). It is forward-only (consistent with the figure contract) and unambiguous by construction — "which figure does this step apply to?" is the same mark's `figure`.
+
+These fields have one source and three readers, kept in agreement by construction. The manifest emits each mark's optional `figure?`/`step?` via conditional-spread, so an un-annotated mark stays byte-identical and a `figure: ""`/`"none"` records an explicit clear. The narration parser (`generate/narration.ts`) reads each attribute independently (`markRegex` captures the whole tag, `readMarkAttr` reads each attr), so `name`/`figure`/`step` may appear in any order. The [video renderer](#video-export-generaterender-videots)'s `deriveFigureOccurrences` and the live narrator's `resolveActiveFigure`/`stagedFigureAt` (`shared/narratorTiming.ts`) then do the **same sub-chapter-bounded walk** over the same marks — they are deliberate twins, so the page and the video can never silently disagree about what is on stage at a given playhead. A figure's derived span runs `[mark.time, next figure change or sub-chapter boundary)`, which yields tight explicit spans and genuine empty stretches (versus a figure pinned for the whole post under a coupled model).
+
+#### Live figure driving (the narration driver)
+
+The live narrator drives each staged figure's journey off the audio clock, in the same rAF tick that tracks the active mark (`client/narrator.ts` `updateActiveFigure`, backed by pure, unit-tested helpers in `shared/narratorTiming.ts`). It is the live-page twin of the video pipeline's capture driver, so the two surfaces show the identical animation for the same playhead.
+
+- **It keys off the staged figure, not the mark name.** Each tick resolves `stagedFigureAt(marks, tMs) → { id, sinceMs, step }`. On a staged-id change it releases the previous journey and, if the new id has a registered journey, **claims** it (`journey.reset()`, which trips the figure's exclusive-control guard so any self-play stands down) and starts advancing; on `null` it releases (empty stage). The `name`-highlight path stays fully independent.
+- **Elapsed time is measured from the true span start** (`sinceMs`, the staging mark's time — continuous across attr-less carries, restarted at a sub-chapter boundary or id change), not from the tick the change was noticed. So scrubbing into the middle of a span resumes mid-animation, and a mid-span resume is still forward-only `reset()` + small-step replay.
+- **Continuous mode loops by `elapsed % durationMs`** when a span outlasts one play-through. Because a looping figure bakes its loop-dwell into `durationMs` (a figure-contract rule), the driven loop pauses on the held final frame exactly like the figure's own self-play — no snap between loops.
+- **The seek decision is a pure function**, `figureSeekPlan(lastPos, target, stepMs) → { reset, seeks[] }`: forward small steps when `target ≥ last`, `reset()` + replay-from-0 when `target < last` (a loop wrap or backward scrub); a fresh claim passes `last = +Infinity` to force a reset-and-sweep. Unit-tested.
+
+**Autoplay stays in the figure (option A).** Outside narration the reader's gaze is unknown, so each figure keeps its own `IntersectionObserver` "play on scroll-in, then loop" — autoplay is *not* relocated onto an engine driver. This was considered and **declined, not merely deferred**: autoplay has no external clock (it fits the engine-driver model least of the three consumers), moving it would touch every figure for no user-visible change, and "pure renderer" is unreachable regardless since interactivity stays in the figure — so removing only autoplay would yield a confusing pure-for-autoplay / stateful-for-interaction split. The one real win it offered (eliminating the missing-exclusive-control footgun) is already covered by the figure-contract rule plus the conformance gate.
+
+**Stepped (slideshow) mode.** When a staged figure has an active `step` cue the driver switches from continuous mode to **stepped mode**: it advances forward to the labeled step and **holds** until a later cue, walking the figure through its labeled states as the narration discusses them.
+- The resolver returns the latest `step` label set within the current staged span; it resets to `null` on a figure-id change or sub-chapter boundary, and `step="none"/""` clears it back to continuous.
+- The target is **`steps[label].endMs`, not `startMs`** (a locked choice): play *through* the labeled segment — transition and dwell — and rest on its final frame, because a cue means "we've reached this state." The last step's `endMs === durationMs`, so it lands on the final frame.
+- It reuses `figureSeekPlan` unchanged, early-outs when the target equals the last seek (an idempotent hold), and on a missing label `console.warn`s and holds (graceful). A mark may carry `step` without `figure` (drives the carried figure) or both (re-stage + step in one mark); a figure that never gets a cue is driven continuously, so `step` is opt-in per figure.
+- **Stepped figures don't loop** (they hold the target); continuous figures still loop. Scrub-correctness is free — the stepped position is a pure function of "the active step at time `t`," so seeking anywhere lands on the correct step's frame.
+
+**Interactive mode** detaches the active driver on reader interaction (steppers/tabs); the figure's own handlers take over, and "Resume journey" re-attaches from a clean `reset()` baseline. See [the FigureJourney contract](#the-figurejourney-contract-clientfigureanimationts).
 
 ### Word-level timing (drawer karaoke + subtitle sidecar)
 
@@ -348,6 +407,8 @@ If any of these change, the corresponding entries miss and are re-synthesized. N
 
 **The cross-post shared `common-terms.pls` is deliberately excluded from the cache key**, even though the merged lexicon (common + inline) is still what the TTS provider synthesizes against. Including it would mean editing one entry in `common-terms.pls` invalidates every cached segment across every post (which is unreasonably expensive). The tradeoff: after editing `common-terms.pls`, you need to wipe any relevant cache manually.
 
+**Adding or changing a `figure=`/`step=` annotation must not invalidate this cache, nor the [forced-alignment](#word-level-timing-drawer-karaoke--subtitle-sidecar) cache** — and it doesn't, by construction. The cache key is over the segment **text**, which is the prose *between* marks (string-sliced in `narration.ts`); the `<mark …>` tag — and therefore every attribute on it, including `figure`/`step` — is never part of the synthesized text, and the alignment cache buckets on that same text hash. So annotating a settled post with staging/stepping pointers costs only a cheap manifest-filename rehash (the manifest JSON gains the field), **not** an audio re-render or a re-alignment. The one thing that *does* cost a render is genuinely different: re-*segmenting* the prose into more marks (e.g. one mark per step) changes the segments' text, so the new segments synthesize once — an authoring cost, not a breach of this invariant. A test guards this rather than leaving it to reasoning (identical `Segment[].text` ⇒ identical TTS key + alignment text-hash across bare → +figure → +figure+step inputs).
+
 **Cache value** is the raw provider output bytes (working-format WAV), captured *before* trim / concat / encode. Those downstream ops are cheap and deterministic, so caching them would just bloat the cache without saving time.
 
 **Cache location** is `generated/.tts-cache/<text-hash>/<full-hash>.wav`, shared across all posts. The layout is two-layer:
@@ -456,6 +517,7 @@ The whole feature is gated on `"mediaSession" in navigator`, so pre-2021 Safari 
 - `audio` is a path under `/generated/<slug>/`, pointing at the **content-hashed** final track (`full.<hash>.mp3`, see [Serving generated audio](#serving-generated-audio-content-hashed-filenames--dev-range-support)); Content-Type is inferred
 - `audioDigest` is the **full** SHA-256 hex of the track bytes (the `full.<hash>` filename token is just its 16-hex prefix). It's part of the manifest's hashed fields, and it backs the [stable episode URL](#stable-shareable-episode-url-generatedslugepisodeext)'s `Repr-Digest` header and the feed's `<podcast:integrity>` — the two surfaces that need a full, algorithm-tagged digest rather than the truncated cache-bust token
 - The time of different marks is calculated taking into account trimming out silent audio (to avoid slowly going out of sync)
+- Each entry in `marks[]` is `{ name, time, chapter, text, words? }`, plus two optional figure pointers — **`figure?`** (the [staged figure](#staging-a-figure-from-narration-marksfigure) for the segment; `""`/`"none"` records an explicit clear) and **`step?`** (the labeled step to drive that figure to). Both are emitted by conditional-spread, so an un-annotated mark is byte-identical to one with no figure model at all — the fields add nothing to a post that doesn't stage figures. They're read by both the live narrator and the [video renderer](#video-export-generaterender-videots).
 
 ## Serving generated audio (content-hashed filenames + dev range support)
 
@@ -494,6 +556,113 @@ A regenerated episode therefore always reaches a revalidating client fresh while
 **Integrity surfaces.** `generate.ts` persists the track's **full** SHA-256 as `manifest.audioDigest` (the 16-hex filename token is its prefix; it's in the manifest's hashed fields so content-addressing still holds). From it the stable response carries a `Repr-Digest: sha-256=:<base64>:` header ([RFC9530] — representation-level, so it's valid unchanged on `206`/`304`), and the [podcast feed](#subscription-feeds-atom--podcast-rss-generatefeedsts) advertises a `<podcast:alternateEnclosure>` listing both the stable and the content-addressed URL as `<podcast:source>`s plus a `<podcast:integrity type="sri">`. Both formats are derived by `shared/audioDigest.ts` (kept out of the client bundle — only the pure `stableEpisodePath` derivation is shared with the copy button).
 
 **Rejected alternatives** (full treatment in [proposal 32 §4](proposals/32-stable-shareable-audio-url.md)): a **query param** (`full.mp3?v=<hash>`) backfires — a hand-copied URL freezes `?v=oldhash` and the CDN keys on the query, serving the stale entry forever; a **302 redirect** to the hashed file is fine for a browser copy but risks podcast clients persisting the *resolved* hashed URL (and `301`/`308` are heuristically cacheable, re-pinning a deleted hash), so direct-serve is safer on the surface we care most about; a **retention window** (keep old hashes) only delays the `404` and reintroduces the stale-file hazard the `dist/` mirror deliberately removes.
+
+## Video export (`generate/render-video.ts`)
+
+A narrated post can be rendered offline into a content-addressed `video.<hash>.mp4` that plays the narration with burned karaoke captions, a centred voice equalizer, chapter chrome, and each [figure](#the-figurejourney-contract-clientfigureanimationts) shown — animated, driven, and stepped — exactly as the live page shows it. The output is a **local-only** build artifact the author uploads to social platforms and prunes by hand; it is never served to readers (see [Copying static artifacts](#copying-static-artifacts-into-dist-generatecopy-staticts)). The renderer consumes only artifacts the rest of the build already emits — the [manifest](#manifest-format-generatedslugmanifesthashjson), the [audio track](#serving-generated-audio-content-hashed-filenames--dev-range-support), the [`captions.vtt`](#word-level-timing-drawer-karaoke--subtitle-sidecar) — plus a single headless figure-capture pass, and composites them with an ffmpeg filtergraph. There is no per-frame JS render loop.
+
+### Invocation: a manual CLI, never the build
+
+`generate/render-video.ts` is a single driver run as a **manual per-slug CLI from the content repo**: `bun run video <slug> [startMs] [endMs]` (the `"video"` script lives in the *content* repo's `package.json`; the engine repo has none). It runs after audio generation and [`share-card.ts`](#share-cards-generateshare-cardts) — it reuses the og PNG as the title card / vertical key art. It is **never run by the build**, so it can't fail a build: `generate.ts` neither reads a video gate nor invokes the renderer. A `VIDEO=off|full|teaser` gate is documented in `.env.example` but is **documentation-only — not wired** (the renderer never reads bare `process.env.VIDEO`); the author runs the CLI by hand.
+
+The pipeline is otherwise **fail-silent and degrading**: a capture failure for one figure falls back to a still rather than failing the render, and missing alignment data falls back to sentence-level captions instead of per-word.
+
+### Inputs and output geometry
+
+| Ingredient | Source on disk |
+| --- | --- |
+| Narration audio | `generated/<slug>/full.<hash>.mp3` (one `loudnorm` pass → AAC) |
+| Captions | `generated/<slug>/captions.vtt` (re-emitted as a karaoke `.ass` via `buildKaraokeAss`) |
+| Title / key art | `dist/assets/og/<slug>.png` (the [share card](#share-cards-generateshare-cardts)) |
+| Timeline | `manifest.<hash>.json` — `duration`, `chapters[]`, `marks[]` (incl. `words`/`figure`/`step`); authoritative, no timing recomputed from audio |
+| Figures | headless capture → `.video-cache/fig-<key>.{mp4,png}` (animated clips, not stills) |
+
+Everything except the figure capture is pre-existing and not rebuilt. Because figure timing, captions, chapters, word timings, and the staged figure all come from the same manifest the live narrator consumes, the video can never silently disagree with the page — the renderer's `deriveFigureOccurrences` and the page's `stagedFigureAt`/`resolveActiveFigure` are the deliberate [twins](#staging-a-figure-from-narration-marksfigure) described above.
+
+**Cut length.** The default cut is the **full** post: invoking with no time args renders `[0, duration]` (a 40-min post yields a 40-min video, whose home is YouTube/embedded playback). A shorter cut is just a manual `endMs`, which is **snapped forward to a mark** (`snapToMark`) so it never clips mid-word — there is no separate teaser *mode*. Both a full cut and a manually-windowed cut produce independently-hashed artifacts that coexist.
+
+**Aspect is fixed at 1080×1920 (9:16).** `render-video.ts` hardcodes the geometry and writes it into the sidecar; there is no `VIDEO_ASPECT` knob.
+
+### The visual layer model
+
+The renderer builds a layer model from the manifest, then composites with ffmpeg `overlay` + `enable='between(t,...)'` gates so plates appear and disappear on mark boundaries:
+
+- **Base** — the brand background.
+- **Chapter backgrounds + chapter slides** — satori plates, one per chapter, the slide crossfade peaking on its chapter boundary.
+- **Figure clips / stills** — composited on each figure's [derived span](#staging-a-figure-from-narration-marksfigure); `figureSegmentPlacement` places a layer within a segment.
+- **Voice equalizer** — a continuous `showfreqs` layer (below).
+- **Burned captions** — a karaoke `.ass` built from `marks[].words[]`, falling back to a sentence-level `captions.vtt` burn when word timings are absent.
+- **Chrome** — chapter title (top), author handle (bottom), and the CC-BY attribution / voice-synthesis line (see [Disclosure](#disclosure--licensing-of-the-clip)).
+
+### Two render paths: single-pass and layered
+
+The driver picks a path by input count (forceable with `VIDEO_RENDER=layered|single`):
+
+- **`renderSinglePass`** — one ffmpeg filtergraph for the whole span. Correct and fast for short/medium spans.
+- **`renderLayered`** — the full-length path. It exists because a single-pass full 40-min render opens ~85 image inputs through ~85 `overlay` filters all active for the whole duration, and `enable='between(...)'` skips the *compositing* but **not the input *decode*** — so every input keeps decoding for 40 min (measured ~0.09× realtime, ≈7 h; untenable).
+
+The layered plan splits layers by **shape, not by time**:
+- **Continuous layers** (must not seam across the whole timeline): the audio (one `loudnorm` pass), the voice equalizer (`showfreqs` carries temporal smoothing across frames), and the burned captions. These are rendered **once, end-to-end** in a single final composite pass — **never temporal-concatenated**, which would seam the equalizer and audio.
+- **Discrete layers** (bounded sub-spans): chapter backgrounds, slides, figure clips — placed on the timeline.
+
+So the layered render: (1) **capture once** — every figure plus all chapter plates; (2) **build the discrete visual track cheaply** — segment it (base + backgrounds + figures + slides, *no* audio/equalizer/captions) at **safe boundaries**, then **video-only** concat, where each small segment opens few inputs (`VIDEO_SEG_CONCURRENCY`, default 2, parallelizes the segment encodes); (3) **one cheap final composite pass** — the visual track + trimmed audio, where `loudnorm` → `showfreqs` equalizer → `.ass` caption burn → mux add the continuous layers exactly once so they never seam; (4) **hash + keep**. This takes the full ~40-min cut from ~7 h to ~32 min. Three pitfalls are locked in: `enable='between(...)'` does not stop input decode (segmenting into few-input graphs is what wins, not the gating); `loudnorm` runs once over the whole track, never per-segment (per-segment varies gain across seams); and visual cuts land in **mid-chapter dwell, never on a chapter boundary** (the slide crossfade straddles a boundary, so a cut there would tear it).
+
+### The voice visualizer (`showfreqs`)
+
+The "waveform" is a **frequency-spectrum equalizer** (symmetric bars bulging from centre), not a time-domain oscilloscope. It is native ffmpeg `showfreqs` inside the final composite — no browser, no extra input, deterministic. It reads the **loudness-normalized** audio (split *after* `loudnorm`, so a quiet narration still fills the band) **downmixed to mono** (a stereo feed makes `showfreqs` colour the second channel white); the audible track stays stereo, and the audio is pinned to stereo *before* the split so the split's layout negotiation succeeds. The shape is `showfreqs` → crop to the speech band → scale → mirror (low freq centred) → mirror vertically → temporal smoothing + soft alpha, a band centred so that changing its height never moves the captions below.
+
+**Why native, not the JS library.** Porting an ElevenLabs-style `live-waveform` component to a headless page (Web Audio `AnalyserNode` + `MediaRecorder`) looks right but runs ~1× realtime (≈ +40 min) and is **non-deterministic** (rAF jitter → no byte-identical rebuilds, so the cache can't trust it). A scrolling `showwavespic` would be cheap and deterministic but reads worse. Native `showfreqs` gives the wanted static look while staying in-pass, deterministic, and nearly free. All its knobs live in one place; changing any of them requires bumping `CACHE_VERSION` (below), else stale whole-render caches serve the old look.
+
+### Output, sidecar, and determinism
+
+The encoded bytes are hashed into `video.<hash>.mp4` (recognized by `VIDEO_HASHED_RE` in `shared/manifestFile.ts`). A `video.<hash>.json` sidecar records `{url,type,durationMs,width,height,bitrate,codecs}` so a future feed-side consumer (a `<podcast:alternateEnclosure>`) needn't re-probe with ffprobe. There is **no auto-sweep** — `finalizeOutput` keeps every render, because a full cut and a manually-windowed shorter cut have different hashes and must coexist (auto-sweeping would silently destroy the other cut); the author prunes `.video-cache/` by hand.
+
+Output is **bitexact-deterministic**: identical inputs produce byte-identical bytes. `-map_metadata -1` / `-map_chapters -1` strip the metadata copied from the inputs, **plus** ffmpeg bitexact flags (`-fflags +bitexact -flags:v/a +bitexact`) that also remove the muxer's own `encoder=Lavf<version>` container tag and the codec version SEI that `-map_metadata -1` leaves behind. Without bitexact the ffmpeg version leaks into the bytes and the hash would differ across ffmpeg builds; with it, identical inputs hash identically across builds and machines. This determinism is what makes the content-hash cache (below) safe, and it threads through every subsystem — figure capture is reproducible because the [FigureJourney contract](#the-figurejourney-contract-clientfigureanimationts) forbids random/wall-clock/detached-tween on a journey path, the equalizer is native precisely because the JS port was non-deterministic, and stepped scrub-correctness is inherent because position is a pure function of the active step.
+
+**Env knobs.** Only four are read: `VIDEO_FIGURES` (on|off — skip the headless capture), `VIDEO_RENDER` (force `layered`|`single`, default auto), `VIDEO_SEG_CONCURRENCY` (parallel segment encodes), and the test-only `VIDEO_DEMO_FIG_CUT_MS`. Bare `VIDEO` is doc-only; there is no `VIDEO_ASPECT` or waveform knob.
+
+### Caching and incremental rebuild
+
+Two content-addressed caches live under `generated/<slug>/.video-cache/`. What is cached is decided by where the cost actually sits: the satori plates and `.ass` build are sub-second (recompute beats lookup, not cached), but **figure capture** (real browser, ~20 s/figure) and the **final composite** (40-min `showfreqs` + caption burn) are expensive, so both are cached:
+
+- **`fig-<key>.{mp4,png}`** — `key = hash(figureEnvHash + figureId + figureSubtree)`, where `figureEnvHash` folds in the capture defaults, the content repo's `figures/` source, `client/figureAnimation.ts`, and the GSAP version, and `figureSubtree` is the figure's markup. Only **misses** boot a browser — if every figure hits, no browser or dev-server even starts, so iterating on *prose* (which changes neither env nor subtree) is free of re-capture.
+- **`render-<key>.mp4`** — `key = hash(all layer files by content + placements/timings + holds + composed-audio filename + burned `.ass` text + encode params + CACHE_VERSION)`. A no-op rebuild matches and skips the segments plus the 40-min encode (measured ~53.7 s → ~0.3 s, byte-identical output hash).
+
+Keys are conservative — a false miss merely re-renders, while a false hit would ship a stale video, so every pixel-affecting input folds in. `CACHE_VERSION` is the manual escape hatch (bump after an ffmpeg upgrade or any capture-param/equalizer change). Neither cache evicts; the author prunes by hand.
+
+**Why per-segment renders aren't cached.** A narration **hold** (silence spliced in when a figure animation outlasts its discussion span) shifts the video-time position of every later chapter, so changing one figure's clip length invalidates that segment *and every segment after it*. A correct per-segment key would have to include the whole hold layout — which the whole-render key already does, so the whole-render cache is the better-value place to cache. (Stepped sub-spans add no holds, so they don't compound this.)
+
+### Per-step video capture
+
+Stepped figures become **held-frame schedules** so the video matches the page by construction — the renderer shows the same per-step slideshow the live driver produces. Because the page-side stepped driver snaps to `steps[label].endMs` and holds (it applies the whole seek plan in one tick), a stepped figure in the video is a **sequence of held frames** — exactly the renderer's existing `still` layer, so no new compositor primitive is needed. A stepped figure decomposes into a continuous **prefix** `[spanStart, firstCue)` (the lead-up preview, kept as `loop`/`once`) plus one `still` per step at that label's held frame.
+
+The three pieces: `deriveFigureOccurrences` emits a per-occurrence `stepSpans[]` (a no-`step` figure → one `null` span = today's free-run, back-compatible; a stepped figure → a `null` prefix + one held span per cue); `captureFigures` returns each figure's server-side `label → endMs` map, and held frames are extracted from the **already-captured clip** via one `ffmpeg -ss … -frames:v 1` per distinct `(figure,label)` at `heldFrameIndex(endMs, fps, durationMs)` (pure index math; last step → final frame; a missing label `console.warn`s and uses the last frame, mirroring the page); and the compositor renders the `null` prefix as a `loop` and each labeled span as a deduped `still`. Stepped spans add **no** narration holds (a held frame has nothing to "finish"), so finer-grained per-step holds stay out of scope. The figure-capture cache auto-invalidates here for free, because `figureEnvHash` already hashes `capture-figures.ts`.
+
+**Snap-and-hold, not play-the-transition (locked).** The renderer snaps to each held frame exactly as the page does, reusing the `still` layer — the eased tween *into* each state is not shown as motion, because the page doesn't show it either. Playing the transition then freezing would read richer but would *diverge* from the page during the transition and would need a new layer mode; the held-frame schedule is the substrate that approach would extend if the slideshow ever reads too static.
+
+**The caption-lead gotcha.** Holding at `steps[label].endMs` rests on the *final* frame of the labeled segment, which is the *start* of the next label. So if a figure sets each step's caption with a `.call()` placed *at* the next label rather than in the step's own `onStart`, the held frame shows step *i*'s visual with step *i+1*'s caption. This affects **page and video identically** (both seek `endMs`), so it is not a renderer bug — the surfaces still agree; the fix is content-side (set a step's caption inside that step's own `onStart`).
+
+### Disclosure & licensing of the clip
+
+Consistent with the [podcast feed's content stance](#subscription-feeds-atom--podcast-rss-generatefeedsts), the video carries two one-line strings in its key-art/end-card and default description (neither build-blocking):
+
+- **Not "AI-generated content."** The clip is human-written, human-reviewed prose narrated in the author's *own* voice (TTS as a production convenience), so the video is **not** self-labelled as AI-generated on platform toggles — exactly as the feed deliberately does **not** emit `<podcast:txt purpose="ai-content">`. If voice-synthesis disclosure is wanted it goes in **prose** (the description / closing card), not a coarse "AI content" flag.
+- **CC-BY-4.0 attribution.** A social clip is the thing most likely to be re-shared stripped of context, so the key-art/end-card and default description carry a short attribution line (author + post URL).
+
+### Video pipeline tests
+
+- **`render-video.test.ts`** — the pure builders with no ffmpeg: `msToAssTime`, `chunkWords`, `buildKaraokeAss`, `snapToMark`, `computeCuts`, `figureSegmentPlacement`, `deriveFigureOccurrences` (including step cues / `stepSpans`), `heldFrameIndex`.
+- **`shared/narratorTiming.test.ts`** — `resolveActiveFigure`/`stagedFigureAt` (including `step`) and `figureSeekPlan` (forward / loop-wrap / backward-scrub).
+- **`generate/narration.test.ts`** — order-independent attribute parsing (`figure`/`step`, `none`/`""`) plus the [cache-neutrality invariant](#audio-caching).
+- **`e2e/figureJourney.e2e.ts`** — the [FigureJourney conformance gate](#the-figurejourney-contract-clientfigureanimationts): core conformance + determinism + integrity, the exclusive-control live-trigger test, and the stepped-driving / scrub-correctness tests.
+- **`e2e/videoStepRender.e2e.ts`** — the ffmpeg golden for synthetic held-frame extraction (catches a `select=eq(n,idx)` off-by-one); excluded from the default test glob.
+- **`copy-static.test.ts`** asserts the video is not shipped, and a `createWorker` MIME test covers the dormant `.mp4 → video/mp4` override.
+
+The full real-post render and audio-synced step-on-cue driving aren't covered by the headless harness (it can't drive the detached `<audio>` element), so they're verified by a manual render + playback.
+
+### Excluded from v1 / future directions
+
+None of these are built; none block anything. **Configurable aspect** (a 16:9 default for the long cut with 9:16/1:1 switchable) and a fuller **teaser mode** (an auto-selected `<mark name="soundbite"/>`/flagged-chapter span capped at ~60 s, shared with the feed's `<podcast:soundbite>`) are design intent only. **Wiring the `VIDEO` build-gate** so a build can opt into auto-rendering. **`og:video` / `<video>` surfacing** on the post page and share card (plus a `poster.<hash>.png`), gated behind re-enabling serving. **A background music / SFX track** (no multi-track audio model exists today). **Burned-subtitle themes, animated chapter transitions, intro/outro stings.** **Per-platform export presets.** **An author-supplied figure-poster override** for a figure whose static still is a weak frame (the still fallback is the only current path). **An ffmpeg filter-capability preflight** for the required filters. **A caption sidecar** alongside a *served* video — largely moot under the local-only decision, since the video isn't served and `captions.vtt` already ships for podcasts.
 
 ## Comments (`client/comments.ts`)
 
@@ -1409,6 +1578,8 @@ The Pages-with-Functions alternative was considered and rejected: it's a second 
 The include rule lives in one pure, unit-tested predicate (`shouldShipGeneratedFile`): the hashed manifest (by regex) or bare `manifest.json`, `full.<hash>.mp3` (by extension), and `captions.vtt` (the word-timed WebVTT transcript — shipped so the podcast feed's `<podcast:transcript type="text/vtt">` resolves; see [Word-level timing](#word-level-timing-drawer-karaoke--subtitle-sidecar) and [Subscription feeds](#subscription-feeds-atom--podcast-rss-generatefeedsts)). `manifest.json`/`captions.vtt` are matched by *exact name* so a stray `.json`/`.vtt` isn't swept in. Build-internal files under `generated/` are deliberately excluded: the `.tts-cache/` buckets, the dev-only `.comments-dev/` fs-adapter blobs, the per-slug `cache-keys.json` GC index, and dotfiles (notably macOS `._*` AppleDouble sidecars, which would otherwise match the `*.mp3` glob).
 
 **It mirrors, it doesn't merge.** `copy-static` wipes `dist/generated/` before repopulating it, so an artifact from a *prior* build can't survive into the new deploy. This is load-bearing for cache correctness: a plain copy only ever *adds*, so a superseded `manifest.<hash>.json` (or an old `full.<hash>.mp3`) left behind stays live at its URL, and any cache holding that URL keeps serving the stale track — content-addressing stops the current page from *requesting* the old file, but only deletion stops the server from *answering* it. (`feeds.ts` re-writes each post's `chapters.json` into the mirrored tree in a later build step.) Idempotent; safe to re-run.
+
+**The exported [video](#video-export-generaterender-videots) is deliberately *not* shipped.** `shouldShipGeneratedFile` returns `false` for a `video.<hash>.mp4`, so the rendered clip stays a local-only artifact the author uploads to platforms by hand (the re-enable instructions live next to the keep-rule in `copy-static.ts`, and a `copy-static.test.ts` case asserts the exclusion). The serving plumbing for it exists but is **dormant** as a consequence: `createWorker.ts` already carries the `.mp4 → video/mp4` / `.webm → video/webm` MIME override and generic `Range` support, and `VIDEO_HASHED_RE` (`shared/manifestFile.ts`) still recognizes the filename — but with the file never reaching `dist/`, none of it is reachable. Video CORS is likewise not applicable: `feedAssetCorsOrigin` covers the public feed sidecars (`/feed.xml`, `/podcast.xml`, `*/chapters.json`, `.vtt`) and no video, which is correct under local-only serving.
 
 ### Build-time HTML strip (`generate/strip-served-html.ts`)
 

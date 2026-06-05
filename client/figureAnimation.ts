@@ -1,4 +1,4 @@
-// Figure animation contract — the `FigureJourney`. See proposals/43.
+// Figure animation contract — the `FigureJourney`. See methodology.md → "Animated figures" → "The FigureJourney contract".
 //
 // A figure (a content-repo DOM/JS visualization, GSAP-driven) exposes its
 // animation as a PURE FORWARD RENDERER plus a label/segment map. The engine's
@@ -8,7 +8,7 @@
 // advance-to-step) is a *driver* concern (a driver advancing or not advancing
 // its clock), not the figure's. This keeps figures dumb and uniform.
 //
-// Locked decisions (proposals/43 §3, §9):
+// Locked decisions (methodology.md → "Animated figures" → "The FigureJourney contract"):
 //  - Forward-seek, not random-access. `seek()` is called monotonically forward
 //    between `reset()`s (a loop / "go to an earlier point" is reset()+forward).
 //    Advancement must be in steps small enough to cross every timeline callback;

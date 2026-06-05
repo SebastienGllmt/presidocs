@@ -58,14 +58,14 @@ type ManifestMark = {
   // (`--align=NAME`); the drawer renders the segment text as one flat string
   // in that case, identical to the pre-feature behavior.
   words?: ManifestWord[];
-  // The stage/control pointer (proposal 50 §4), orthogonal to `name` (the
+  // The stage/control pointer (methodology.md → "Staging a figure from narration"), orthogonal to `name` (the
   // read-along highlight): which figure is on the stage during this segment.
   // Absent = "leave the stage unchanged"; "none"/"" = an explicit clear.
   // Resolved to an active figure at time t by `resolveActiveFigure`
   // (shared/narratorTiming.ts), mirroring the video renderer so page and
-  // video agree. Consumed by the narration driver (proposal 50 §5.1).
+  // video agree. Consumed by the narration driver (methodology.md → "Live figure driving").
   figure?: string;
-  // The per-step slideshow pointer (proposal 50 §4.4): advance the staged figure's
+  // The per-step slideshow pointer (methodology.md → "Staging a figure from narration"): advance the staged figure's
   // journey to a labeled step and hold. Resolved into the active step alongside
   // the staged figure by `stagedFigureAt`; consumed by `advanceStagedFigure`'s
   // stepped mode. "none"/"" clears stepped mode (back to continuous free-run).
@@ -197,7 +197,7 @@ class Narrator {
   // (see comment on `updateBar` for why we drive the bar ourselves).
   private playedBarEl: HTMLElement | null = null;
 
-  // ----- Narration figure driver (proposal 50 §5.1) -----------------------------
+  // ----- Narration figure driver (methodology.md → "Live figure driving") -----------------------------
   // The figure currently on the stage *and driven* by the narration clock,
   // resolved from the timeline's figure pointer (`resolveActiveFigure`), NOT
   // from the active mark's `name` (47 decoupled them). `null` = empty stage.
@@ -1363,7 +1363,7 @@ class Narrator {
     this.activeId = id;
   }
 
-  // The narration figure driver (proposal 50 §5.1). Runs every rAF tick from
+  // The narration figure driver (methodology.md → "Live figure driving"). Runs every rAF tick from
   // `updateActive`. Resolves which figure the timeline stages at `tMs` (the
   // `figure` pointer, NOT the `name` highlight) and, when it has a registered
   // journey, owns that journey's clock: claim on stage-on (`reset()`, which
@@ -1408,7 +1408,7 @@ class Narrator {
     this.advanceStagedFigure(tMs, step);
   }
 
-  // Advance the staged journey for this tick, in one of two modes (proposal 50 §5.3)
+  // Advance the staged journey for this tick, in one of two modes (methodology.md → "Live figure driving")
   // chosen by whether the active mark carries a `step` cue for the staged
   // figure:
   //   - Stepped (step != null): target = `steps[label].endMs` — play *through*
@@ -1442,7 +1442,7 @@ class Narrator {
       // the (no-op) re-seek (§4.3). +Infinity (a fresh claim) never matches.
       if (target === this.figureLastSeekMs) return;
     } else {
-      // Continuous mode (proposal 50 §5.1): free-run + loop by the audio clock.
+      // Continuous mode (methodology.md → "Live figure driving"): free-run + loop by the audio clock.
       const elapsed = Math.max(0, tMs - this.figureStagedAtMs);
       target = elapsed % dur;
     }

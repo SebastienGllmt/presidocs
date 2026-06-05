@@ -156,7 +156,7 @@ test("figureSegmentPlacement: a clip starting mid-segment is delayed (setpts)", 
   });
 });
 
-// --- figure occurrence derivation (proposal 50 §4 stage pointer) ----------------
+// --- figure occurrence derivation (methodology.md → "Staging a figure from narration" stage pointer) ----------------
 
 test("deriveFigureOccurrences: lead-up staging + sticky within a sub-chapter", () => {
   // figure staged on the lead-up mark (500), carries across a no-attr mark, ends at the next change.
@@ -167,7 +167,7 @@ test("deriveFigureOccurrences: lead-up staging + sticky within a sub-chapter", (
   ];
   expect(deriveFigureOccurrences(marks, 0, 10000, 10000)).toEqual([
     // No step cues → each occurrence is one continuous `null` span (free-run),
-    // covering the whole occurrence — today's behavior (proposal 50 §6 back-compat).
+    // covering the whole occurrence — today's behavior (methodology.md → "Video export" back-compat).
     { id: "fig-a", startMs: 500, visEndMs: 4000, stepSpans: [{ label: null, startMs: 500, endMs: 4000 }] },
     { id: "fig-b", startMs: 4000, visEndMs: 10000, stepSpans: [{ label: null, startMs: 4000, endMs: 10000 }] },
   ]);
@@ -190,15 +190,15 @@ test("deriveFigureOccurrences: figure='none' clears early", () => {
 
 test("deriveFigureOccurrences: the stage defaults to empty (a bare name never auto-stages)", () => {
   // No `figure` pointer anywhere → nothing is staged, even though "fig-b" is
-  // also a figure id. Staging is driven solely by the pointer (proposal 50 §4).
+  // also a figure id. Staging is driven solely by the pointer (methodology.md → "Staging a figure from narration").
   const marks = [mk("x", 0, "c1"), mk("fig-b", 2000, "c1")];
   expect(deriveFigureOccurrences(marks, 0, 5000, 5000)).toEqual([]);
 });
 
-// --- per-step schedule within an occurrence (proposal 50 §6) -------------------
+// --- per-step schedule within an occurrence (methodology.md → "Video export") -------------------
 // The renderer-side twin of the page's stepped driving: each occurrence is
 // partitioned into a continuous (`null`) prefix + one held span per `step` cue,
-// mirroring `stagedFigureAt`'s step walk (proposal 50 §5.3).
+// mirroring `stagedFigureAt`'s step walk (methodology.md → "Live figure driving").
 
 test("deriveFigureOccurrences: step cues partition the span (prefix + one span per cue)", () => {
   const marks = [
@@ -274,7 +274,7 @@ test("deriveFigureOccurrences: a sub-chapter boundary clears the step schedule",
   ]);
 });
 
-// --- held-frame index math (proposal 50 §6.2) -------------------------------
+// --- held-frame index math (methodology.md → "Video export") -------------------------------
 // The clip is captured at `fps`, frames i=0..ceil(durationMs/1000·fps). The
 // frame holding a figure at journey position `posMs` is round(posMs/1000·fps),
 // clamped — and the last step (endMs===durationMs) must land on the final frame.

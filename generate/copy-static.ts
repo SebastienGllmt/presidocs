@@ -64,7 +64,7 @@ export function shouldShipGeneratedFile(name: string): boolean {
     name === "manifest.json" ||
     name === "captions.vtt" ||
     name.endsWith(".mp3")
-    // The social-media video (`video.<hash>.mp4`, proposals/41/45) is a LOCAL
+    // The social-media video (`video.<hash>.mp4`, methodology.md → "Copying static artifacts") is a LOCAL
     // artifact only — NOT shipped to Cloudflare. The files are large and the
     // author uploads them to platforms by hand, so deploying/edge-serving them
     // would be pure waste; its `.json` sidecar is likewise build-internal. (To
