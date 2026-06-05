@@ -1,5 +1,5 @@
 // Integration check for the video renderer's per-step held-frame extraction
-// (proposal 49 §3.2). The pure pieces are unit-tested in render-video.test.ts
+// (proposal 50 §6.2). The pure pieces are unit-tested in render-video.test.ts
 // (`heldFrameIndex`, `deriveFigureOccurrences` step schedule); what THAT can't
 // cover is the one ffmpeg-dependent step: does `extractHeldFrame` actually pull
 // the clip frame that `heldFrameIndex` names? An off-by-one in the
@@ -11,7 +11,7 @@
 // last step (`endMs===durationMs`) must land on the final frame, and the same
 // position must extract byte-identically. This is the automatable core of the
 // "stepped render" golden; the full real-post render stays the manual sanity
-// step (it needs GPU-generated audio/manifest + a ~min render — see proposal 49
+// step (it needs GPU-generated audio/manifest + a ~min render — see proposal 50 §6
 // §6 item 3).
 //
 // In the e2e tier (needs ffmpeg), excluded from the default `bun test` glob; run

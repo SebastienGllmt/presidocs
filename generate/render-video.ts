@@ -40,7 +40,7 @@ type FigureShot = import("./capture-figures.ts").FigureShot;
 type CapturedStep = import("./capture-figures.ts").CapturedStep;
 
 // =============================================================================
-// Caching + timing (incremental rebuild) — see proposal 45 §7
+// Caching + timing (incremental rebuild) — see proposal 50 §8
 // =============================================================================
 //
 // Two intermediates are content-addressed by their INPUTS (not, like the final
@@ -79,7 +79,7 @@ async function timed<T>(label: string, fn: () => Promise<T>): Promise<T> {
 // --- timeline types (subset of the manifest we consume) ----------------------
 
 type Word = { s: number; e: number; t: number; d: number };
-// `figure` is the stage/control pointer (proposal 47) — which figure is on the
+// `figure` is the stage/control pointer (proposal 50 §4) — which figure is on the
 // stage during this segment, distinct from `name` (the highlight target). A
 // figure id stages it; `"none"`/`""` clears it; absent leaves the stage
 // unchanged (see `deriveFigureOccurrences`).
@@ -236,10 +236,10 @@ export function snapToMark(marks: readonly Mark[], desiredMs: number): number {
 }
 
 /**
- * One labeled sub-span of a figure occurrence (proposal 49). `label: null` is a
+ * One labeled sub-span of a figure occurrence (proposal 50 §6). `label: null` is a
  * continuous (free-run) stretch; a non-null label means "hold the figure at
  * `steps[label].endMs`" for that stretch — the renderer-side twin of the page's
- * stepped driving (proposal 48). Spans partition the occurrence's
+ * stepped driving (proposal 50 §5.3). Spans partition the occurrence's
  * `[startMs, visEndMs)`, in `t0`-rebased video-relative ms, in forward order.
  */
 export type FigureStepSpan = { label: string | null; startMs: number; endMs: number };
@@ -249,7 +249,7 @@ export type FigureOccur = {
   startMs: number;
   visEndMs: number;
   /**
-   * The per-step schedule within this occurrence (proposal 49). A figure with no
+   * The per-step schedule within this occurrence (proposal 50 §6). A figure with no
    * `step=` cues yields a single `{ label: null, … }` span covering the whole
    * occurrence (today's free-run behavior). A stepped figure yields the
    * continuous prefix (`label: null`) followed by one span per `step` cue.
@@ -260,13 +260,13 @@ export type FigureOccur = {
 /**
  * Compute each figure's on-stage span (audio-rel ms within `[t0,t1)`, returned
  * as `startMs/visEndMs` rebased to `t0`), from the `marks[].figure` stage
- * pointer (proposal 47). A `figure` value stages that figure; it is sticky
+ * pointer (proposal 50 §4). A `figure` value stages that figure; it is sticky
  * *within a sub-chapter* and **auto-clears at each sub-chapter boundary** (a
  * change in a mark's `chapter`); `figure: "" | "none"` clears it early; an
  * absent attribute leaves the stage unchanged. This yields tight, explicit
  * on/off spans (and genuine empty-stage stretches), which is what lets the
  * layered renderer include a figure input only in the segments that actually
- * need it (proposal 45 §8). The stage defaults to empty, so a mark that never
+ * need it (proposal 50 §4.5). The stage defaults to empty, so a mark that never
  * sets `figure` shows no figure at all.
  *
  * `cutMs` (the `VIDEO_DEMO_FIG_CUT_MS` test knob) caps each span to force the
@@ -285,8 +285,8 @@ export function deriveFigureOccurrences(
   // (audio-ms) list of step transitions inside the span: `{label,atMs}` in order,
   // starting with the `null` (continuous) prefix; each entry runs until the next
   // one (or the span end). Mirrors the page's `stagedFigureAt` step walk
-  // (proposal 48): step only moves at a cue, `none`/"" → null, a figure-id change
-  // or sub-chapter boundary ends the span (and so the schedule). (proposal 49)
+  // (proposal 50 §5.3): step only moves at a cue, `none`/"" → null, a figure-id change
+  // or sub-chapter boundary ends the span (and so the schedule). (proposal 50 §6)
   const emit = (
     id: string,
     start: number,
@@ -619,7 +619,7 @@ async function findManifest(slug: string): Promise<{ manifest: Manifest; dir: st
 //     when the span is short (few inputs); the original v1 path.
 //   - layered (full length): the discrete visual layers are segmented per
 //     chapter and concatenated, then ONE final pass adds the continuous layers
-//     (audio + waveform + captions). See proposal 45. The reason the single
+//     (audio + waveform + captions). See proposal 50 §2.5. The reason the single
 //     graph does not scale is input-count × duration: a 40-min post opens ~83
 //     image inputs that all keep decoding for the whole run (an `enable` gate
 //     skips compositing, not decode). Segmenting means each small graph opens
@@ -716,7 +716,7 @@ function figureSubtree(html: string, id: string): string {
 /**
  * Resolve every figure to a still/clip, hitting `.video-cache/fig-<key>.*` first
  * and only booting a browser for cache misses (skipping it entirely when all
- * hit). Captures are deterministic (proposal 43), so a hit is byte-faithful.
+ * hit). Captures are deterministic (proposal 50 §9), so a hit is byte-faithful.
  */
 async function resolveFigureShots(
   slug: string,
@@ -770,7 +770,7 @@ async function resolveFigureShots(
   return out;
 }
 
-// --- per-step held frames (proposal 49) --------------------------------------
+// --- per-step held frames (proposal 50 §6.2) --------------------------------------
 
 /**
  * The clip frame index that holds a figure at journey position `posMs`. The clip
@@ -786,8 +786,9 @@ export function heldFrameIndex(posMs: number, fps: number, durationMs: number): 
 
 /**
  * Extract the single still PNG that holds a captured clip at journey position
- * `posMs` — the frame a `step` cue rests on (proposal 49 §3.2). One frame, cheap;
- * errors propagate (a failed extraction must not silently drop the figure).
+ * `posMs` — the frame a `step` cue rests on (proposal 50 §6.2). One frame, cheap.
+ * Throws on ffmpeg failure; the caller (`heldFrameFor`) catches it and degrades
+ * the span to the free-running clip rather than aborting the whole render.
  */
 export async function extractHeldFrame(
   clip: { file: string; fps: number; durationMs: number },
@@ -861,14 +862,14 @@ async function buildPlan(slug: string, t0: number, t1: number): Promise<Plan> {
   }
 
   // ----- figure occurrences (audio time): which figure is on the stage when,
-  // from the `marks[].figure` stage pointer (proposal 47). VIDEO_DEMO_FIG_CUT_MS
+  // from the `marks[].figure` stage pointer (proposal 50 §4). VIDEO_DEMO_FIG_CUT_MS
   // shortens spans to force the long-animation pause path for testing. -----
   const cutMs = Number(process.env.VIDEO_DEMO_FIG_CUT_MS) || 0;
   const occurs = deriveFigureOccurrences(manifest.marks, t0, t1, manifest.duration, cutMs);
 
   // ----- resolve the figures we need (cache-first; a real browser only for
   // misses → an animated clip if the figure registered the animation contract,
-  // else a settled still). See proposal 45 §7. -----
+  // else a settled still). See proposal 50 §8. -----
   const shots = new Map<string, FigureShot>();
   if (occurs.length > 0 && process.env.VIDEO_FIGURES !== "off") {
     const ids = [...new Set(occurs.map((o) => o.id))];
@@ -895,18 +896,25 @@ async function buildPlan(slug: string, t0: number, t1: number): Promise<Plan> {
   // within this render (the extraction is cheap; the dedup avoids redundant runs
   // when a label is held across more than one occurrence).
   const heldFrames = new Map<string, string>();
-  const heldFrameFor = async (id: string, clip: ClipShot, label: string): Promise<string> => {
+  const heldFrameFor = async (id: string, clip: ClipShot, label: string): Promise<string | null> => {
     const cacheKey = `${id}:${label}`;
     const existing = heldFrames.get(cacheKey);
     if (existing) return existing;
     const step = clip.steps.find((s) => s.label === label);
     if (!step) {
       // Author typo / renamed label: warn + hold the clip's last frame, mirroring
-      // the page's warn-and-hold (proposal 49 §3.2) — never drop the figure.
+      // the page's warn-and-hold (proposal 50 §6.2) — never drop the figure.
       console.warn(`render-video: figure "${id}" has no step "${label}" — holding its last frame`);
     }
     const file = join(platesDir, `held-${id}-${label}.png`);
-    await extractHeldFrame(clip, step ? step.endMs : clip.durationMs, file);
+    try {
+      await extractHeldFrame(clip, step ? step.endMs : clip.durationMs, file);
+    } catch (e) {
+      // Fail-soft (invariant: a figure issue degrades to showing the clip, never a
+      // render abort). Returning null tells the caller to free-run the clip here.
+      console.warn(`render-video: held-frame extraction failed for "${id}" step "${label}", free-running the clip: ${(e as Error).message.split("\n")[0]}`);
+      return null;
+    }
     heldFrames.set(cacheKey, file);
     return file;
   };
@@ -915,10 +923,10 @@ async function buildPlan(slug: string, t0: number, t1: number): Promise<Plan> {
     const shot = shots.get(o.id);
     if (!shot) continue;
     const spanMs = o.visEndMs - o.startMs;
-    // Per-step (slideshow) driving (proposal 49): a clip with `step` cues plays
+    // Per-step (slideshow) driving (proposal 50 §6): a clip with `step` cues plays
     // its `null` (lead-up) spans as a free-run loop and HOLDS a still at
     // steps[label].endMs over each labeled span — matching the page's stepped
-    // driver, which snaps-and-holds (proposal 48). Stepped spans add no narration
+    // driver, which snaps-and-holds (proposal 50 §5.3). Stepped spans add no narration
     // holds (a held frame has nothing to finish).
     if (shot.kind === "clip" && o.stepSpans.some((s) => s.label !== null)) {
       for (const sp of o.stepSpans) {
@@ -928,7 +936,13 @@ async function buildPlan(slug: string, t0: number, t1: number): Promise<Plan> {
           figurePlans.push({ file: shot.file, startMs: sp.startMs, mode: "loop", spanMs: subSpanMs, clipMs: shot.durationMs });
         } else {
           const held = await heldFrameFor(o.id, shot, sp.label);
-          figurePlans.push({ file: held, startMs: sp.startMs, mode: "still", spanMs: subSpanMs, clipMs: 0 });
+          if (held) {
+            figurePlans.push({ file: held, startMs: sp.startMs, mode: "still", spanMs: subSpanMs, clipMs: 0 });
+          } else {
+            // Extraction failed → degrade to free-running the clip over this span
+            // (figure stays on screen, just not snapped-and-held) rather than abort.
+            figurePlans.push({ file: shot.file, startMs: sp.startMs, mode: "loop", spanMs: subSpanMs, clipMs: shot.durationMs });
+          }
         }
       }
       continue;
@@ -1132,6 +1146,10 @@ function finalTailParts(plan: Plan, visualLabel: string, composedAudioLabel: str
     // fail to negotiate a layout across `asplit` on a mid-stream reinit ("Cannot
     // select channel layout"). The audible `[aout]` stays stereo; the eq branch
     // downmixes to mono below (showfreqs colours a 2nd channel white otherwise).
+    // NOTE: single-pass `loudnorm` runs in dynamic mode (a compressor), which can
+    // introduce a few ms of latency/duration drift. The final length is pinned by
+    // `-t videoTotalSec` and captions are rebased to the trimmed timeline, so it's
+    // absorbed — but it's the first suspect if caption drift ever appears at length.
     `[${composedAudioLabel}]loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,asplit=2[anorm][aout]`,
     // EQ branch (visual only — never the audible `[aout]`): the speech-band
     // spectrum, scaled up to spread across the bars.
@@ -1156,8 +1174,15 @@ const VIDEO_CODEC_ARGS = [
   "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "20",
   "-movflags", "+faststart",
   "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
-  "-map_metadata", "-1", // strip encoder/date tags so identical inputs hash identically
+  "-map_metadata", "-1", // strip metadata copied from the inputs
   "-map_chapters", "-1", // drop the chapter track inherited from the source mp3 (the video isn't chaptered)
+  // bitexact: also strip the muxer's own `encoder=Lavf<version>` container tag and
+  // the codec version SEI, which `-map_metadata -1` does NOT remove. Without this
+  // the output bytes carry the ffmpeg version, so the content hash would differ
+  // across ffmpeg builds/machines for otherwise-identical inputs. Verified: removes
+  // the tag and keeps output byte-identical run-to-run. Folded into the render cache
+  // key via `finalInputKey`'s `codec` field, so changing it self-invalidates.
+  "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact",
 ];
 
 // =============================================================================
@@ -1244,7 +1269,7 @@ async function runPool<T>(items: readonly T[], concurrency: number, worker: (ite
   await Promise.all(runners);
 }
 
-// Layered (proposal 45): render the discrete visual track in per-chapter
+// Layered (proposal 50 §2.5): render the discrete visual track in per-chapter
 // segments (each opens only the few inputs it needs), then ONE final pass
 // concat-joins the segments and adds the continuous layers (audio + waveform +
 // captions) so those never seam.
@@ -1315,8 +1340,8 @@ async function renderLayered(plan: Plan): Promise<string> {
 }
 
 // Content-address the output (`video.<hash>.mp4`) + a metadata sidecar the feed
-// step (proposal 42 §5.5) consumes, then sweep superseded hashes — mirroring the
-// audio scheme (generate.ts / manifestFile.ts).
+// step (proposal 42 §5.5) consumes. Deliberately does NOT sweep superseded
+// hashes (see the NOTE below) — unlike the audio scheme.
 async function finalizeOutput(plan: Plan, tmpPath: string): Promise<void> {
   const bytes = new Uint8Array(await Bun.file(tmpPath).arrayBuffer());
   const hash = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
@@ -1345,9 +1370,9 @@ async function finalizeOutput(plan: Plan, tmpPath: string): Promise<void> {
   // full render is expensive (tens of minutes), and a different cut (full vs
   // teaser) produces a different hash — auto-sweeping silently destroyed the
   // other cut every render. Keeping them is cheap insurance; the author deletes
-  // stale renders by hand. (Downstream, copy-static's keep-rule will ship every
-  // `video.<hash>.mp4` present — so prune by hand before a deploy if you want a
-  // single canonical clip, or we wire a "newest wins" rule at copy-static time.)
+  // stale renders by hand. (Downstream, copy-static deliberately does NOT ship the
+  // video — it's a local-only artifact, see proposal 50 §7 — so kept renders never
+  // reach a deploy; the author uploads the chosen cut by hand.)
   console.log(`render-video: wrote ${videoName} (+ ${sidecarName})`);
 }
 
@@ -1356,7 +1381,7 @@ async function finalizeOutput(plan: Plan, tmpPath: string): Promise<void> {
  * content), their placements/timings, the holds, the composed audio (its
  * already-hashed filename), the burned `.ass` text, and the encode params. An
  * unchanged rebuild matches the cached render and skips segments + the dominant
- * 40-min encode entirely. See proposal 45 §7.
+ * 40-min encode entirely. See proposal 50 §8.
  */
 async function finalInputKey(plan: Plan): Promise<string> {
   const layers: unknown[] = [];
@@ -1394,7 +1419,7 @@ async function main() {
   if (!slug) throw new Error("usage: bun render-video.ts <slug> [startMs] [endMs]");
 
   const { manifest } = await findManifest(slug);
-  // Default is the FULL narration (proposal 41 §3). Pass an explicit endMs to
+  // Default is the FULL narration (proposal 50 §2.2). Pass an explicit endMs to
   // cut a shorter teaser; it snaps forward to a mark so it never clips mid-word.
   const t0 = process.argv[3] ? Number(process.argv[3]) : 0;
   const t1 = process.argv[4] ? snapToMark(manifest.marks, Number(process.argv[4])) : manifest.duration;

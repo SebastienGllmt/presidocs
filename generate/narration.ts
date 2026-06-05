@@ -22,10 +22,10 @@
 // before a <mark> resets to a fresh start; soft single-newline line wrapping
 // does NOT. The first segment of every chapter is always a fresh start.
 //
-// `figure` / `step` are the orthogonal stage/control pointers (proposal 47):
+// `figure` / `step` are the orthogonal stage/control pointers (proposal 50 §4):
 // `figure` is which figure is on the stage during this segment (decoupled from
-// `markName`, the read-along highlight); `step` is reserved for proposal 46's
-// per-step slideshow drive. Both are `null` when the `<mark>` omits the
+// `markName`, the read-along highlight); `step` drives the per-step slideshow
+// (proposal 50 §5.3 page side / §6 video renderer). Both are `null` when the `<mark>` omits the
 // attribute (= "leave the stage unchanged"); an explicit `figure="none"`/`""`
 // records a clear and is carried through as that literal string.
 export type Segment = {

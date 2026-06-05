@@ -582,11 +582,11 @@ type ChapterArtifact = {
     text: string;
     segmentStartInChapter: Milliseconds;
     words?: CachedWord[];
-    // The mark's stage/control pointer (proposal 47). Absent (undefined) =
+    // The mark's stage/control pointer (proposal 50 §4). Absent (undefined) =
     // "leave the stage unchanged"; "none"/"" = an explicit clear; otherwise a
     // `<figure id>`. Carried verbatim onto the manifest mark.
     figure?: string;
-    // The mark's per-step slideshow pointer (proposal 48). Absent (undefined) =
+    // The mark's per-step slideshow pointer (proposal 50 §4.4). Absent (undefined) =
     // "no step cue"; "none"/"" = clear stepped mode; otherwise a journey step
     // label. Threaded onto the manifest mark exactly like `figure`.
     step?: string;
@@ -731,7 +731,7 @@ for (const chapter of chapters) {
         // null (attribute omitted) → undefined → omitted from the manifest
         // (unchanged); "none"/""/`<id>` is carried through as the literal.
         figure: seg.figure ?? undefined,
-        // Same treatment for the per-step pointer (proposal 48 §3).
+        // Same treatment for the per-step pointer (proposal 50 §4.5).
         step: seg.step ?? undefined,
       });
     }
@@ -829,9 +829,9 @@ for (const [i, a] of artifacts.entries()) {
       words: manifestWords,
       // Only carry `figure` when the mark set it — conditional spread keeps the
       // key ABSENT (not `figure: undefined`) for legacy posts, so their
-      // serialized manifest stays byte-identical (proposal 47 §6).
+      // serialized manifest stays byte-identical (proposal 50 §4.5).
       ...(m.figure !== undefined ? { figure: m.figure } : {}),
-      // Same conditional spread for the per-step pointer (proposal 48 §3): an
+      // Same conditional spread for the per-step pointer (proposal 50 §4.5): an
       // unset `step` omits the key, so un-annotated marks stay byte-identical
       // and only annotated marks change — keeping the cache invariant (§2).
       ...(m.step !== undefined ? { step: m.step } : {}),

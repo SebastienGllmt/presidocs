@@ -23,7 +23,7 @@ test("first segment of a chapter is always a fresh start", () => {
   expect(segs[0]!.continuesPrevious).toBe(false);
 });
 
-// --- figure / step pointers (proposal 47) -----------------------------------
+// --- figure / step pointers (proposal 50 §4) -----------------------------------
 // The new attributes ride alongside `name` on the same `<mark>`; a mark that
 // omits them yields `null` (= "leave the stage unchanged").
 
@@ -58,7 +58,7 @@ test("attributes parse in any order (figure before name)", () => {
   expect(segs[0]!.figure).toBe("merge-figure");
 });
 
-// --- cache-neutrality invariant (proposal 48 §2 / §7.1, REQUIRED) -----------
+// --- cache-neutrality invariant (proposal 50 §5.5, REQUIRED) -----------
 // Adding or changing `step=`/`figure=` annotations MUST NOT invalidate the
 // per-segment TTS audio cache (a MOSS re-render is minutes per segment) nor the
 // forced-alignment cache (qwen3). It holds by construction: the spoken `text`

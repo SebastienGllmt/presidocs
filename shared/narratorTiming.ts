@@ -46,7 +46,7 @@ export function computeActiveMark<T extends Timed>(
 export type FigureStateMark = Timed & {
   readonly chapter: string;
   readonly figure?: string;
-  // The per-step slideshow pointer (proposal 48), orthogonal to `figure`:
+  // The per-step slideshow pointer (proposal 50 §4.4), orthogonal to `figure`:
   // which labeled step of the staged figure's journey to drive to. Absent =
   // "no step cue this mark"; "none"/"" clears stepped mode. Resolved into the
   // active step alongside the staged figure by `stagedFigureAt`.
@@ -58,7 +58,7 @@ export type FigureStateMark = Timed & {
  * renderer's `deriveFigureOccurrences` (generate/render-video.ts), so the page
  * and the video stage the same figure at the same instant by construction.
  *
- * Driven by the `marks[].figure` stage pointer (proposal 47): a `figure` value
+ * Driven by the `marks[].figure` stage pointer (proposal 50 §4): a `figure` value
  * stages that figure; it is **sticky within a sub-chapter** and **auto-clears
  * at each sub-chapter boundary** (a change in a mark's `chapter`); `figure: ""
  * | "none"` clears it early; an absent attribute leaves the stage unchanged.
@@ -84,7 +84,7 @@ export interface StagedFigure {
    * span (the same `[mark.time, …)` span the video renderer derives). null when
    * the stage is empty.
    *
-   * The narration driver (proposal 46) advances a staged journey by
+   * The narration driver (proposal 50 §5.1) advances a staged journey by
    * `tMs - sinceMs`, so scrubbing into the *middle* of a staged span resumes
    * the figure mid-animation rather than restarting it from frame 0 — page and
    * video then show the figure at the same point of its journey for the same
@@ -93,12 +93,12 @@ export interface StagedFigure {
    */
   readonly sinceMs: Milliseconds | null;
   /**
-   * The active step label driving the staged figure (proposal 48), or null for
+   * The active step label driving the staged figure (proposal 50 §5.3), or null for
    * none (continuous/free-run mode). It is the latest `step` value set *within
    * the current staged-figure span* (since `sinceMs`); it resets to null
    * whenever the figure id changes or a sub-chapter boundary clears the stage
    * (a step belongs to the figure it was cued on), and `step: "" | "none"`
-   * clears it explicitly. The narration driver (proposal 48) reads this: a
+   * clears it explicitly. The narration driver (proposal 50 §5.3) reads this: a
    * non-null step switches the figure from continuous free-run to "advance to
    * the labeled step's `endMs` and hold."
    */
@@ -107,7 +107,7 @@ export interface StagedFigure {
 
 /**
  * The staged figure at `tMs`, when its span began, AND the active step cue
- * driving it (proposal 48). Same sub-chapter-bounded walk as
+ * driving it (proposal 50 §5.3). Same sub-chapter-bounded walk as
  * `resolveActiveFigure` (which delegates here for the id) — see
  * {@link resolveActiveFigure} for the staging model and {@link StagedFigure}
  * for the `step` semantics. Pure + O(active-index), suitable for the rAF tick.
@@ -140,7 +140,7 @@ export function stagedFigureAt<T extends FigureStateMark>(
     }
     // The step pointer is evaluated AFTER `figure` so a single mark that both
     // re-stages a figure and names a step (the "re-stage + step in one mark"
-    // case, proposal 48 §5) records that step rather than having the figure
+    // case, proposal 50 §5.4) records that step rather than having the figure
     // change clear it. `none`/`""` clears stepped mode; an absent attribute
     // leaves the current step unchanged (sticky within the span, like figure).
     if (m.step !== undefined) {
@@ -160,7 +160,7 @@ export interface FigureSeekPlan {
 
 /**
  * Plan how to move a figure's journey from its last seeked position to a new
- * target, honoring the forward-only contract (proposal 43 rule 3): advance only
+ * target, honoring the forward-only contract (proposal 50 §3.4 rule 3): advance only
  * forward, in steps no coarser than `stepMs` (so every timeline `.call()` is
  * crossed), and reach an *earlier* point only by `reset()` + forward replay —
  * never a backward `seek()`.
