@@ -56,7 +56,7 @@ type CapturedStep = import("./capture-figures.ts").CapturedStep;
 // (e.g. after an ffmpeg upgrade you want re-encoded, or a capture-param change
 // not covered below).
 
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v4";
 
 function hashStr(s: string): string {
   return createHash("sha256").update(s).digest("hex").slice(0, 16);
@@ -1110,16 +1110,38 @@ function audioComposeParts(inLabel: string, holds: readonly Hold[], spanSec: num
 
 /**
  * The continuous layers, added once over the whole timeline so they never seam:
- * split the composed audio → a `showwaves` waveform overlaid on the visual →
- * burn the karaoke captions → loudness-normalize the audio. Produces `[v]`/`[aout]`.
+ * loudness-normalize the composed audio, then split it → a `showwaves` waveform
+ * overlaid on the visual → burn the karaoke captions. Produces `[v]`/`[aout]`.
+ *
+ * The waveform is drawn from the SAME normalized audio the viewer hears (not the
+ * raw pre-loudnorm track), so a quiet narration still fills the band instead of
+ * rendering a tiny, jitter-prone trace. Two cosmetic passes on the wave branch
+ * only (never the audible `[aout]`): an `agate` collapses near-silence to a flat
+ * line (no odd low-level wiggle in pauses), and `tmix` averages a few frames to
+ * take the per-frame jump out of the trace. The `wave*` knobs are tunable —
+ * bump CACHE_VERSION after changing them so stale renders don't serve.
  */
 function finalTailParts(plan: Plan, visualLabel: string, composedAudioLabel: string): string[] {
   return [
-    `[${composedAudioLabel}]asplit=2[awave][asrc]`,
-    `[awave]showwaves=s=${W}x300:mode=cline:rate=30:colors=0x58a6ff[wave]`,
+    // Pin the channel layout before the split: the source can be mono, and with
+    // two differently-resampled consumers (the stereo `[aout]` and the 24 kHz
+    // wave branch) ffmpeg otherwise fails to negotiate a layout across `asplit`
+    // on a mid-stream filter reinit ("Cannot select channel layout").
+    `[${composedAudioLabel}]loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,asplit=2[anorm][aout]`,
+    // Wave branch (visual only — never the audible `[aout]`): gate near-silence
+    // to a flat line, then DOWNSAMPLE to 24 kHz before `showwaves`. showwaves
+    // draws `sample_rate / rate` samples across the width per frame; halving the
+    // rate halves the samples-per-frame (1600→800 over 1080px), stretching the
+    // trace ~2× horizontally so it reads as one continuous waveform instead of a
+    // busy pattern repeating across the width. Timing is unaffected (still 30fps,
+    // realtime). `tmix` then averages a few frames to damp the per-frame jump —
+    // 4 is the balance point (the 2× stretch already removes most of the jitter,
+    // so heavier averaging just smears the motion and reads as sluggish).
+    `[anorm]agate=threshold=0.03:ratio=9:attack=15:release=300:range=0.006,aresample=24000[awave]`,
+    `[awave]showwaves=s=${W}x300:mode=cline:rate=30:scale=lin:colors=0x58a6ff[wave0]`,
+    `[wave0]tmix=frames=4[wave]`,
     `[${visualLabel}][wave]overlay=x=(W-w)/2:y=1180[wv]`,
     `[wv]ass=${plan.assPath}:fontsdir=${plan.fontsDir}[v]`,
-    `[asrc]loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[aout]`,
   ];
 }
 
