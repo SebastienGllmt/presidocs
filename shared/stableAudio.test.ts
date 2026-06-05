@@ -2,7 +2,7 @@
 // These lock the spec-critical behavior that both servers depend on: ETag
 // extraction (strong validator = content hash), conditional-request matching,
 // and the If-Range range-gating that prevents cross-version stitching.
-// See proposals/32-stable-shareable-audio-url.md §7/§9.
+// See methodology.md → Stable shareable episode URL.
 
 import { describe, expect, test } from "bun:test";
 import {

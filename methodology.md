@@ -535,7 +535,7 @@ The final per-post track is written as **`full.<hash>.mp3`** — a 16-hex-char c
 
 ### Stable shareable episode URL (`/generated/<slug>/episode.<ext>`)
 
-The content-hashed `full.<hash>.mp3` is perfect for the player but wrong for a link a human **copies** or that we embed in a podcast **`<enclosure>`**: those URLs freeze the moment they land in a clipboard, a chat message, or a subscriber's cached `podcast.xml`, and the next `generate` run sweeps the old hash — so the copied link `404`s. The fix is a second, **stable** URL per episode, `/generated/<slug>/episode.<ext>`, that always resolves to the current `full.<hash>.<ext>`. The hashed URL keeps serving the player; the stable URL is the shareable face. (Full rationale + rejected alternatives: [proposal 32](proposals/32-stable-shareable-audio-url.md).)
+The content-hashed `full.<hash>.mp3` is perfect for the player but wrong for a link a human **copies** or that we embed in a podcast **`<enclosure>`**: those URLs freeze the moment they land in a clipboard, a chat message, or a subscriber's cached `podcast.xml`, and the next `generate` run sweeps the old hash — so the copied link `404`s. The fix is a second, **stable** URL per episode, `/generated/<slug>/episode.<ext>`, that always resolves to the current `full.<hash>.<ext>`. The hashed URL keeps serving the player; the stable URL is the shareable face.
 
 **Why a stable URL is safe *here* specifically.** Content-hashing exists to defeat **version skew across interdependent assets** — a page whose HTML references a stale JS chunk breaks. A standalone episode MP3 has no dependents and no dependencies: you get the whole old file or the whole new one, and either plays. So the hazard that justifies hashing doesn't apply, and serving the blob from a stable URL with ordinary **HTTP revalidation** is principled, not a workaround — cache-busting moves off *URL identity* (impossible once a link is frozen) and onto the **validator**.
 
@@ -555,7 +555,7 @@ A regenerated episode therefore always reaches a revalidating client fresh while
 
 **Integrity surfaces.** `generate.ts` persists the track's **full** SHA-256 as `manifest.audioDigest` (the 16-hex filename token is its prefix; it's in the manifest's hashed fields so content-addressing still holds). From it the stable response carries a `Repr-Digest: sha-256=:<base64>:` header ([RFC9530] — representation-level, so it's valid unchanged on `206`/`304`), and the [podcast feed](#subscription-feeds-atom--podcast-rss-generatefeedsts) advertises a `<podcast:alternateEnclosure>` listing both the stable and the content-addressed URL as `<podcast:source>`s plus a `<podcast:integrity type="sri">`. Both formats are derived by `shared/audioDigest.ts` (kept out of the client bundle — only the pure `stableEpisodePath` derivation is shared with the copy button).
 
-**Rejected alternatives** (full treatment in [proposal 32 §4](proposals/32-stable-shareable-audio-url.md)): a **query param** (`full.mp3?v=<hash>`) backfires — a hand-copied URL freezes `?v=oldhash` and the CDN keys on the query, serving the stale entry forever; a **302 redirect** to the hashed file is fine for a browser copy but risks podcast clients persisting the *resolved* hashed URL (and `301`/`308` are heuristically cacheable, re-pinning a deleted hash), so direct-serve is safer on the surface we care most about; a **retention window** (keep old hashes) only delays the `404` and reintroduces the stale-file hazard the `dist/` mirror deliberately removes.
+**Rejected alternatives:** a **query param** (`full.mp3?v=<hash>`) backfires — a hand-copied URL freezes `?v=oldhash` and the CDN keys on the query, serving the stale entry forever; a **302 redirect** to the hashed file is fine for a browser copy but risks podcast clients persisting the *resolved* hashed URL (and `301`/`308` are heuristically cacheable, re-pinning a deleted hash), so direct-serve is safer on the surface we care most about; a **retention window** (keep old hashes) only delays the `404` and reintroduces the stale-file hazard the `dist/` mirror deliberately removes.
 
 ## Video export (`generate/render-video.ts`)
 
@@ -2222,11 +2222,11 @@ Reference shelf for an ongoing Lighthouse / Web Vitals improvement pass — thes
 [DOMDistiller]: https://chromium.googlesource.com/chromium/dom-distiller
 [ScreenAI]: https://chromium.googlesource.com/chromium/src/+/HEAD/services/screen_ai/README.md
 
-<!-- Specs surfaced by the proposals/32 (stable shareable audio URL)
-investigation. Registered here ahead of implementation; they are NOT yet cited
-in the prose above, so unlike every other tag in this section these are
-deliberate orphans until that feature lands. Already-mirrored specs that bear
-on the same design are reused, not duplicated: [ImmutableResponses] (RFC 8246,
+<!-- Specs for the stable shareable audio URL (shipped — see "Stable shareable
+episode URL" above) plus its deferred canonical-link follow-up (proposal 51 §3).
+Most are now cited in the prose above; the canonical-link pair ([RFC8288] /
+[RFC6596]) stays a deliberate orphan until that follow-up lands. Already-mirrored
+specs that bear on the same design are reused, not duplicated: [ImmutableResponses] (RFC 8246,
 the inverse policy — immutable belongs on the hashed URL, never the stable one),
 [RSS2]/[ApplePodcast]/[PodcastNS] (enclosure, episode GUID, podcast:integrity),
 [Atom], and [RFC7538] (308 — the redirect status to AVOID for a stable→hash
@@ -2363,7 +2363,7 @@ Observatory just runs Google Lighthouse and its RUM uses the `web-vitals`
 library, so these are product docs / a code repo, not new specs; the metric
 definitions they rely on are the same mirrored W3C/WICG specs above.)
 
-Local copies of the proposals/32 specs (web links in the second-to-last block).
+Local copies of the stable-shareable-audio-URL specs (web links in the second-to-last block).
 All have a static document, so all are mirrored — including the ones the
 investigation judged NOT useful, flagged inline so they aren't mistaken for
 load-bearing: [EdgeArch] (the pre-RFC-9213 vendor Surrogate-Control mechanism —

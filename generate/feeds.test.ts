@@ -45,7 +45,8 @@ const POST_WITH_AUDIO: FeedPost = {
     byteLength: 19_636_240,
     durationSec: 2455,
     chaptersUrl: "https://blog.example.com/generated/offer-files/chapters.json",
-    // Content-addressed alternate + SRI integrity (proposals/32 §9). The SRI
+    // Content-addressed alternate + SRI integrity (methodology.md →
+    // Subscription feeds). The SRI
     // value here is the empty-string SHA-256 (a stable, recognizable vector).
     hashedUrl: "https://blog.example.com/generated/offer-files/full.f2985f8c0b4fd293.mp3",
     integrity: "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
@@ -137,7 +138,7 @@ test("RSS: only audio posts become items, with a STABLE enclosure URL + chapters
   const xml = buildRssFeed(SITE, [POST_WITH_AUDIO, POST_NO_AUDIO]);
   expect((xml.match(/<item>/g) ?? []).length).toBe(1);
   // Enclosure points at the stable `…/episode.mp3` (no hash), while `length`
-  // still matches the hashed file's byte size — proposals/32 §6.1/§9.
+  // still matches the hashed file's byte size — methodology.md → Subscription feeds.
   expect(xml).toContain(
     '<enclosure url="https://blog.example.com/generated/offer-files/episode.mp3" length="19636240" type="audio/mpeg"/>',
   );

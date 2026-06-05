@@ -546,7 +546,7 @@ async function main(): Promise<void> {
             // next regeneration when the content hash rotates, unlike the hashed
             // `m.audio`. Served with revalidation (strong ETag = the hash) and
             // resolves to the very bytes we measured for `length` here. See
-            // proposals/32-stable-shareable-audio-url.md.
+            // methodology.md → Stable shareable episode URL.
             audio = {
               url: `${baseUrl}${stableEpisodePath(m.audio)}`,
               byteLength,
@@ -559,7 +559,8 @@ async function main(): Promise<void> {
               ...(existsSync(join(distDir, "generated", slug, "captions.vtt"))
                 ? { captionsUrl: `${baseUrl}/generated/${slug}/captions.vtt` }
                 : {}),
-              // Content-addressed alternate + integrity (proposals/32 §9): the
+              // Content-addressed alternate + integrity (methodology.md →
+              // Subscription feeds): the
               // immutable URL clients may prefer, and the SRI of the very bytes.
               hashedUrl: `${baseUrl}${m.audio}`,
               integrity:

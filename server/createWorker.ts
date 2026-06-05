@@ -248,7 +248,8 @@ export function createWorkerHandler(content: WorkerContent) {
   // Serve the STABLE shareable episode URL `/generated/<slug>/episode.<ext>` by
   // resolving it to the current content-addressed asset via the build-time map,
   // then serving those bytes with a revalidating policy (strong ETag = content
-  // hash, no `immutable`) — see shared/stableAudio.ts and proposals/32. Returns
+  // hash, no `immutable`) — see shared/stableAudio.ts and methodology.md →
+  // Stable shareable episode URL. Returns
   // null when the slug is unknown or the mapped asset is missing, so the caller
   // falls through to the static-asset 404. The in-page player and feeds still
   // hit the hashed URL directly; only copied/feed links use this route.
@@ -264,7 +265,8 @@ export function createWorkerHandler(content: WorkerContent) {
 
     const etag = audioEtag(audioPath);
     // Per-post download name (`<slug>.<ext>`) for the inline Content-Disposition,
-    // so a manual save isn't `episode.mp3` for every post (proposals/34 §1).
+    // so a manual save isn't `episode.mp3` for every post (methodology.md →
+  // Stable shareable episode URL).
     const downloadName = episodeDownloadName(slug, audioPath.split(".").pop() ?? "mp3");
     // RFC 9530 representation digest (range-independent) — valid on 200/206/304.
     const reprDigest =

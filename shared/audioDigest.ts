@@ -1,5 +1,6 @@
 // Format the audio's full SHA-256 digest as the two standards-defined integrity
-// strings we expose for the stable episode URL (proposals/32 §9):
+// strings we expose for the stable episode URL (see methodology.md →
+// Stable shareable episode URL):
 //
 //   - RFC 9530 `Repr-Digest: sha-256=:<base64>:` — a representation-level digest
 //     (range-independent, unlike `Content-Digest`), so it's valid on a 200, a

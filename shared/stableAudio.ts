@@ -1,7 +1,7 @@
 // Stable, shareable episode-audio URL — the spec-grounded counterpart to the
 // content-addressed `full.<hash>.mp3` scheme.
 //
-// Background (see proposals/32-stable-shareable-audio-url.md): the player and
+// Background (see methodology.md → Stable shareable episode URL): the player and
 // the bundle use content-addressed URLs so a cache can never serve stale bytes
 // (new bytes ⇒ new URL). But a URL someone COPIES (the "Copy episode audio"
 // button) or that we embed in a podcast `<enclosure>` can never be rewritten
@@ -108,7 +108,7 @@ export function contentDispositionInline(filename: string): string {
  * The tiered cache headers for a stable episode response (see file header).
  * `downloadFilename` (optional) adds an `inline` Content-Disposition so a
  * manual download gets a per-post name instead of `episode.<ext>` for every
- * post (RFC 6266; see proposals/34 §1).
+ * post (RFC 6266; see methodology.md → Stable shareable episode URL).
  */
 export function stableAudioHeaders(
   etag: string | null,

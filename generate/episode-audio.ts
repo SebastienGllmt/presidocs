@@ -4,7 +4,7 @@
 //
 // The prod Worker imports this map to resolve the STABLE shareable URL
 // `/generated/<slug>/episode.<ext>` to the live hashed asset at request time
-// (server/createWorker.ts — see proposals/32-stable-shareable-audio-url.md).
+// (server/createWorker.ts — see methodology.md → Stable shareable episode URL).
 // Dev needs no map: its static handler globs the directory for the current
 // `full.<hash>.<ext>` (createDevServer.ts), exactly as it already does for the
 // bare `manifest.json`.
