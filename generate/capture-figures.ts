@@ -70,6 +70,13 @@ export async function captureFigures(
     // the figure cache via render-video.ts `figureEnvHash`.)
     await page.addStyleTag({ content: ".narrate-dock, .chapter-strip { display: none !important; }" });
 
+    // Wait for the self-hosted web fonts (Red Hat Text / Red Hat Mono, declared
+    // via @font-face in base.css) to finish loading before any screenshot, so no
+    // frame is captured mid-swap in the fallback font — which wraps differently
+    // and would make the video disagree with the live page. The figures render
+    // these because their CSS resolves `var(--font-sans)`/`var(--font-mono)`.
+    await page.evaluate(() => document.fonts.ready);
+
     for (const id of ids) {
       const fig = page.locator(`#${cssEscape(id)}`);
       if ((await fig.count()) === 0) continue;

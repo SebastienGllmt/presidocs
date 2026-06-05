@@ -1,6 +1,6 @@
 ---
 name: figure-journey
-description: Create, convert, or audit an animated figure against the FigureJourney contract — the engine standard that makes a figure forward-seekable, deterministically capturable, and driver-controllable so the live narrator and the offline video renderer drive the same animation. Use when authoring a new animated figure, converting an existing GSAP figure to the contract, or auditing a figure for conformance (the 15 authoring rules + the conformance gate). Examples - "make this figure narration-drivable", "create or audit a figure", "does my figure pass the FigureJourney contract", "why does my figure freeze when narration drives it".
+description: Create, convert, or audit an animated figure against the FigureJourney contract — the engine standard that makes a figure forward-seekable, deterministically capturable, and driver-controllable so the live narrator and the offline video renderer drive the same animation — and layout-stable so it never shifts the page as it animates. Use when authoring a new animated figure, converting an existing GSAP figure to the contract, or auditing a figure (the 16 authoring rules + the conformance & height gates). Examples - "make this figure narration-drivable", "create or audit a figure", "does my figure pass the FigureJourney contract", "why does my figure freeze when narration drives it", "why does the page jump / content shift as my figure animates".
 user-invocable: true
 ---
 
@@ -54,9 +54,9 @@ Three consumers, one primitive, three clocks: **capture** (fixed-fps virtual clo
 
 **Locked rule: forward-seek, not random-access.** `seek()` advances monotonically between `reset()`s. To revisit an earlier point you call `reset()` and replay forward — never a coarse backward or random jump. **Why** (and why this beats the Remotion-style `render(t)` random-access alternative that was rejected): roughly half of a figure's meaning is discrete, non-numeric state (`textContent`, `classList`, `innerHTML`) set via GSAP `tl.call(...)`, which GSAP does not make cleanly random-access. Forcing random access would mean re-expressing every text/class change as a numeric-proxy `onUpdate` — a structural rewrite and a permanent authoring tax — to buy render-farm parallelism we don't need. Forward-seek + `reset()`-and-replay covers click-to-step, narration stepping, and looping at millisecond replay cost. This is also why `seek` is *not* named after WAAP `currentTime` / Lottie `goToAndStop`, which imply random access.
 
-## The 15 authoring rules (the standard)
+## The 16 authoring rules (the standard)
 
-Every conformant figure obeys these. They are the heart of the contract.
+Every conformant figure obeys these. Rules 1–15 are the heart of the contract (seekable + deterministic + driver-controllable); rule 16 is layout stability, enforced by a separate gate.
 
 1. **One journey, two consumers; no divergent self-play.** The registered journey is exactly what the renderer scrubs and what the narrator drives. The figure's own live triggers must play *the journey's tour* — not a separate intro/stagger that diverges from it.
 2. **Finite, paused, forward-seekable timeline.** Build on `gsap.timeline({ paused: true })`; `seek(ms)` = `tl.time(ms/1000)`. No infinite or physics-driven animation. A deliberately-static figure registers **no** journey and falls back to its rendered still — that is a valid choice, not a violation.
@@ -73,6 +73,12 @@ Every conformant figure obeys these. They are the heart of the contract.
 13. **Tab/phase figures author a "tour" with `animate=false` on the journey path.** A figure whose `render()` does a detached reveal must take an `animate` boolean (standardized name: **`animate`**) that is `false` when invoked on the journey path, so the journey builds the state without firing the detached reveal animation.
 14. **Pervasive-detached figures keep their live code but author a separate seekable journey — and never `gsap.killTweensOf(sharedEls)` on a build-once journey.** `killTweensOf` reaches into the paused journey timeline and silently freezes it. Two safe resets: **(a) rebuild-on-reset**, or **(b) kill the live tween *instances*** (the specific tween objects), never the elements.
 15. **Bake a looping figure's loop-dwell into the journey** with `buildLoopingJourney` (`figureAnimation.ts:132`): extend `durationMs`/`steps` by `loopGapMs` and clamp tail seeks to the held final frame. Otherwise drivers that loop by `durationMs` (the compositor; narration continuous mode) restart the instant motion ends — the page pauses between loops but the video snaps. Feed the **same** `LOOP_GAP` to both the figure's live free-run loop and the helper. Applies to every looping figure.
+16. **Constant box height across the journey (no layout shift).** A figure floats in the article flow, so if its `<figure>` box grows or shrinks as it's driven, every paragraph below it jumps. The narrator holds a staged figure at frame 1+ and steps through it, so the box height must be **invariant across the driven frames (1..n)**, not merely settled at the end. Almost every violation is some region that's bigger in one state than another and isn't reserving for its tallest — fix by reserving the **tallest/fullest** state up front:
+    - **Swapped text** (a `data-readout`/note/caption whose wording changes per step or branch): `min-height` it to its **longest** branch. Size in line units against the real `line-height` (e.g. a 4-line note → `4 × 1.45 = 5.8em`, round up so `min-height` — not the text — governs both states), never a magic px.
+    - **Spawned/struck nodes** (a list that appends rows, an order book that fills in): `min-height` the container for its **maximum** count, and **calibrate to the real rendered height** — a px reserve calibrated under a different font goes stale (a 4-row book was 104px under the old system font but 114px under Red Hat, so it grew past its reserve).
+    - **Conditionally-shown controls** (a toggle row present only on some tabs): reserve its slot when hidden with `visibility: hidden` (keeps layout) rather than `display: none` / the `[hidden]` attribute (collapses to 0).
+    **Sub-rule 16a — inherit the blog font tokens (`var(--font-sans)` / `var(--font-mono)`), never a bare `system-ui` stack.** A hard-coded `system-ui` resolves to a *different* face per OS (headless Linux → DejaVu, wider than Segoe/SF), so wrapping — and therefore height — becomes environment-dependent: the figure wraps one way for readers and another in the gate/video, and a `min-height` calibrated on one font breaks on another. The self-hosted Red Hat faces give every surface identical metrics.
+    A height-shifting figure is still **contract-conformant** (seekable + deterministic), so this is caught by a *separate* gate (`e2e/figureHeight.e2e.ts`), not the conformance gate. A difference only at **frame 0** (the static pre-narration render vs frame 1) is a non-failing **warning** — the narrator never rests there — though reserving for it too is tidy.
 
 ## Creating a figure — checklist
 
@@ -87,7 +93,8 @@ Every conformant figure obeys these. They are the heart of the contract.
 4. **Add the `driven` guard** (rule 7): `reset()` sets `driven = true`, stands down live/autoplay, and snaps to frame 0; every self-play/interaction entry point early-outs while `driven`.
 5. **Register under the figure's id** (rule 6) with `registerFigureJourney(id, journey)` where `journey.steps = stepsFromLabels(tl.labels, tl.duration())` and `journey.seek(ms) = tl.time(ms/1000)` — or via `buildLoopingJourney` for loopers.
 6. **Add narration pointers** in the post (orthogonal to the highlight `name`): `figure="<id>"` stages the figure; `figure="none"`/`""` clears it; omit to carry it. `step="<label>"` drives the staged figure to a labeled state (forward-only, targets the staged figure). A staged figure holds frame 1 until a driving event advances it.
-7. **Run the conformance gate** (below) and iterate until green.
+7. **Reserve height for every variable region** (rule 16): any text that swaps, list that grows, or control shown on only some states gets a `min-height` (or a `visibility:hidden` slot) sized to its **tallest/fullest** state, in line-based `em` against the real font, using `var(--font-sans)`/`var(--font-mono)`. Skipping this is the #1 cause of page-shift, and it's the easiest thing to forget because the figure looks fine in its end state.
+8. **Run both gates** (below) and iterate until green: the conformance gate (`e2e/figureJourney.e2e.ts`) and the height gate (`e2e/figureHeight.e2e.ts`).
 
 ## Auditing a figure — checklist
 
@@ -107,9 +114,27 @@ bun run test:e2e        # the e2e tier; e2e/figureJourney.e2e.ts is the conforma
 
 There is **no** reduced-motion assertion in the gate (the renderer always runs full motion) and **no** static lint for the rule-8 `immediateRender:false` omission — that class is caught at runtime by the determinism check, so verify rule 8 by reading the tweens.
 
+### The height gate (rule 16) — a second, separate gate
+
+```bash
+bun test ./e2e/figureHeight.e2e.ts   # layout-stability gate; distinct from the conformance gate above
+```
+
+Drives every registered journey at capture fps in real Chromium and fails if the `<figure>` `offsetHeight` varies across the **driven** frames (1..n). Reading the output:
+
+- **`✗` sustained failure** — a real per-step shift. The report names the reflowing element (a structural-key diff between the shortest and tallest driven frames, so a state class toggled on `<figure>` like `is-private`/`nf-heavy` doesn't blind it), its text, and the two frames. Fix per rule 16: reserve that element's tallest state.
+- **`·` frame-0-only warning** — the static first frame differs but the driven frames are flat. Does **not** fail (the narrator holds frame 1+); reserve for it only if you want frame 0 to match.
+- **cache-gated** on the same key as the video cache (`generate/figureCacheKey.ts`), so a figure re-runs only when its source / figure CSS / base.css / narrator.css / the fonts change. Don't expect a green-from-cache run to have actually re-measured your edit — bust it (the key changes when you edit the figure's CSS) or clear `personal-blog/generated/.figure-height-cache.json`.
+
+Two gotchas that cost real time here:
+
+- **Match the measurement context or the result lies.** The gate renders at the real column width (article `max-width: 768px` → ~718px figure) with the Red Hat web font loaded (it asserts a Red Hat face is actually `loaded`, not just `fonts.check`). A figure that lives **only** in the `_figjourneys` fixture must `<link>` its CSS there — plus `base.css` + `narrator.css` — or it's measured unstyled and full-width (a false pass *or* a false fail). Link it like a real post, don't just `<script>` it.
+- **Flex `align-items: stretch` hides the culprit.** A growing column in a stretch row is partly absorbed by a taller sibling, so the figure's *net* change is smaller than the element's and the top-delta element can mislead. To find the real driver, measure each column's **natural** (unstretched) height, not its stretched `offsetHeight`.
+
 ## Pointers
 
 - `engine/methodology.md` → **"Animated figures"** — how figures are wired (`client/figures/`, GSAP, progressive enhancement, reduced-motion), the surrounding context for this contract.
 - `engine/methodology.md` → the **"Video export"** section — the offline renderer and headless capture that consume a journey (the second of the two drivers this contract serves).
 - `client/figureAnimation.ts` — the contract code and the only authoritative symbol list.
-- The narration→figure pointer model (`figure=`/`step=` on `<mark>`) and per-step/live driving are the *consumers* of a conformant journey; a figure only needs to satisfy the 15 rules above for both to work by construction.
+- `e2e/figureHeight.e2e.ts` — the rule-16 height gate; `generate/figureCacheKey.ts` — the cache key it (and the video renderer) share.
+- The narration→figure pointer model (`figure=`/`step=` on `<mark>`) and per-step/live driving are the *consumers* of a conformant journey; a figure only needs to satisfy the 16 rules above for both to work by construction.

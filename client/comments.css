@@ -76,7 +76,7 @@
   color: #fff;
   border: 1px solid #1f2328;
   border-radius: 999px;
-  font: 600 12px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font: 600 12px/1 var(--font-sans);
   cursor: pointer;
   box-shadow: var(--cmt-shadow);
 }
@@ -150,7 +150,7 @@
   border-radius: 10px;
   padding: 10px 12px;
   box-shadow: var(--cmt-shadow-soft);
-  font: 13px/1.45 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font: 13px/1.45 var(--font-sans);
   transition: top 180ms cubic-bezier(0.22, 1, 0.36, 1),
               box-shadow 160ms ease,
               border-color 160ms ease;
@@ -326,7 +326,7 @@
   border-radius: 4px;
   background: #f6f8fa;
   color: var(--cmt-fg-muted);
-  font: 500 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 500 10px/1.2 var(--font-mono);
   cursor: pointer;
   max-width: 50%;
   overflow: hidden;
@@ -344,7 +344,7 @@
   border-radius: 4px;
   background: rgba(9, 105, 218, 0.12);
   color: var(--cmt-draft-border);
-  font: 700 10px/1.2 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font: 700 10px/1.2 var(--font-sans);
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -390,7 +390,7 @@
   padding: 10px 12px;
   margin-bottom: 12px;
   box-shadow: var(--cmt-shadow-soft);
-  font: 13px/1.45 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font: 13px/1.45 var(--font-sans);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -534,7 +534,7 @@ body.cmt-identity-dismissed .cmt-identity { display: none; }
   border-radius: 10px;
   padding: 10px 12px;
   margin-bottom: 12px;
-  font: 12px/1.5 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font: 12px/1.5 var(--font-sans);
   color: #78350f;
 }
 .cmt-version-banner-text {
@@ -560,7 +560,7 @@ body.cmt-identity-dismissed .cmt-identity { display: none; }
   border-radius: 10px;
   padding: 8px 12px;
   margin-bottom: 12px;
-  font: 12px/1.45 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font: 12px/1.45 var(--font-sans);
 }
 .cmt-version-history-summary {
   cursor: pointer;
@@ -587,7 +587,7 @@ body.cmt-identity-dismissed .cmt-identity { display: none; }
 .cmt-version-history-item:first-child { border-top: 0; }
 .cmt-version-history-current { color: var(--cmt-fg); font-weight: 600; }
 .cmt-version-history-hash {
-  font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 11px/1 var(--font-mono);
   color: var(--cmt-fg-muted);
 }
 .cmt-version-history-tag {
@@ -612,7 +612,7 @@ body.cmt-identity-dismissed .cmt-identity { display: none; }
   border-radius: 10px;
   padding: 8px 12px;
   margin-bottom: 12px;
-  font: 600 12px/1.4 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font: 600 12px/1.4 var(--font-sans);
   color: var(--cmt-fg);
   text-align: left;
   cursor: pointer;
@@ -652,7 +652,7 @@ body.cmt-identity-dismissed .cmt-identity { display: none; }
   border-radius: 50%;
   background: linear-gradient(135deg, #c7d2fe, #a5b4fc);
   color: #1e1b4b;
-  font: 700 10px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font: 700 10px/1 var(--font-sans);
   flex-shrink: 0;
   overflow: hidden;
   text-transform: uppercase;
@@ -723,7 +723,7 @@ body.cmt-identity-dismissed .cmt-identity { display: none; }
   color: #fff;
   border: 0;
   border-radius: 11px;
-  font: 700 11px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font: 700 11px/1 var(--font-sans);
   cursor: pointer;
   box-shadow: 0 2px 6px rgba(9, 105, 218, 0.35);
   z-index: 3;

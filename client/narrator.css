@@ -1173,7 +1173,7 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   border-radius: 4px;
   -webkit-appearance: none;
   appearance: none;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 0.7rem;
   color: var(--page-fg-muted);
   white-space: nowrap;

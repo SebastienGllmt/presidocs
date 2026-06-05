@@ -30,6 +30,13 @@ import { createHash } from "node:crypto";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { renderElementToPng } from "./share-card.ts";
 import { CAPTURE_DEFAULTS } from "./capture-defaults.ts";
+import {
+  CACHE_VERSION,
+  hashStr,
+  hashFile,
+  figureEnvHash,
+  figureCacheKey,
+} from "./figureCacheKey.ts";
 import { resolveAuthorProfile } from "../shared/authorProfile.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 import { decodeHtmlEntities } from "../shared/htmlEntities.ts";
@@ -57,15 +64,12 @@ type CapturedStep = import("./capture-figures.ts").CapturedStep;
 // (e.g. after an ffmpeg upgrade you want re-encoded, or a capture-param change
 // not covered below).
 
-const CACHE_VERSION = "v7";
-
-function hashStr(s: string): string {
-  return createHash("sha256").update(s).digest("hex").slice(0, 16);
-}
-
-async function hashFile(p: string): Promise<string> {
-  return createHash("sha256").update(new Uint8Array(await Bun.file(p).arrayBuffer())).digest("hex").slice(0, 16);
-}
+// CACHE_VERSION, hashStr, hashFile, figureEnvHash, figureSubtree and
+// figureCacheKey now live in ./figureCacheKey.ts — the single source of truth
+// the height-regression test (e2e/figureHeight.e2e.ts) shares, so a figure that
+// re-captures here also re-runs there (and vice versa). They're imported above
+// and used unchanged below (the whole-video cache key still stamps in
+// CACHE_VERSION and hashes via hashStr/hashFile).
 
 async function timed<T>(label: string, fn: () => Promise<T>): Promise<T> {
   const start = performance.now();
@@ -669,51 +673,6 @@ type Plan = {
 // --- figure capture cache ----------------------------------------------------
 
 /**
- * Fingerprint of everything OUTSIDE a single figure's own markup that changes
- * its captured pixels: the capture params, the figures' source (the bundled
- * code the dev server enhances them with), the engine's FigureJourney adapter,
- * and the GSAP version. Hashed once per render; combined with each figure's
- * subtree to key its capture. Conservative on purpose — any figure-code change
- * busts every figure's cache (safe; figure-code edits are rare vs prose edits).
- */
-async function figureEnvHash(): Promise<string> {
-  const parts: string[] = [CACHE_VERSION, JSON.stringify(CAPTURE_DEFAULTS)];
-  for (const base of [paths.contentRoot, paths.engineRoot]) {
-    try {
-      parts.push("gsap:" + ((await Bun.file(join(base, "node_modules/gsap/package.json")).json()) as { version: string }).version);
-      break;
-    } catch {}
-  }
-  const figuresDir = join(paths.contentRoot, "figures");
-  try {
-    for (const f of (await readdir(figuresDir, { recursive: true })).sort()) {
-      try {
-        parts.push(`${f}:${await hashFile(join(figuresDir, f))}`); // a dir entry throws on read → skipped
-      } catch {}
-    }
-  } catch {}
-  try {
-    parts.push("figureAnimation:" + (await hashFile(join(paths.engineRoot, "client", "figureAnimation.ts"))));
-  } catch {}
-  // The capture code itself determines the pixels (e.g. which page chrome it
-  // hides), so a change to it must invalidate cached captures.
-  try {
-    parts.push("captureFigures:" + (await hashFile(join(paths.engineRoot, "generate", "capture-figures.ts"))));
-  } catch {}
-  return hashStr(parts.join("\n"));
-}
-
-/** A figure's own markup (the static SVG the enhancer animates + any inline
- *  data it reads). Figures never nest, so a non-greedy match to the first
- *  `</figure>` is exact; on no match, fall back to the whole doc (a false miss
- *  is safe, a false hit is not). */
-function figureSubtree(html: string, id: string): string {
-  const esc = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const m = html.match(new RegExp(`<figure\\b[^>]*\\bid=["']${esc}["'][\\s\\S]*?</figure>`, "i"));
-  return m ? m[0] : html;
-}
-
-/**
  * Resolve every figure to a still/clip, hitting `.video-cache/fig-<key>.*` first
  * and only booting a browser for cache misses (skipping it entirely when all
  * hit). Captures are deterministic (methodology.md → "Animated figures" → "The FigureJourney contract"), so a hit is byte-faithful.
@@ -727,12 +686,12 @@ async function resolveFigureShots(
 ): Promise<Map<string, FigureShot>> {
   const out = new Map<string, FigureShot>();
   await mkdir(cacheDir, { recursive: true });
-  const env = await figureEnvHash();
+  const env = await figureEnvHash(paths);
   const keyById = new Map<string, string>();
   const misses: string[] = [];
 
   for (const id of ids) {
-    const key = hashStr(`${env}\n${id}\n${figureSubtree(html, id)}`);
+    const key = figureCacheKey(env, id, html);
     keyById.set(id, key);
     const metaPath = join(cacheDir, `fig-${key}.json`);
     if (existsSync(metaPath)) {

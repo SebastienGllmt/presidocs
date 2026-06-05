@@ -13,3 +13,11 @@ export const CAPTURE_DEFAULTS = {
   viewportH: 1200,
   deviceScaleFactor: 2,
 } as const;
+
+// NOTE on fonts: there used to be a `fontFamily` here + a `FIGURE_FONT_PIN_CSS`
+// the capture and height gate injected, to dodge headless Chromium resolving the
+// figures' `system-ui` to the wide DejaVu fallback. That workaround is gone: the
+// blog now self-hosts Red Hat Text / Red Hat Mono (base.css `@font-face` +
+// `--font-sans`/`--font-mono`), so figures render the same font for every reader
+// AND in headless capture — no pin needed. The capture just waits for
+// `document.fonts.ready` so the woff2 is loaded before the first screenshot.

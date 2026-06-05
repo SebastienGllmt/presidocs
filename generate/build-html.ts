@@ -82,6 +82,15 @@ async function main(): Promise<void> {
     entrypoints: entries,
     outdir: paths.distDir,
     target: "browser",
+    // Keep the self-hosted Red Hat woff2 OUT of the bundle. Without this Bun
+    // inlines each @font-face `url(./fonts/*.woff2)` as a base64 data: URI into
+    // every post's CSS chunk (~104 KB of fonts duplicated per post, re-fetched
+    // on every navigation). `external` leaves the url verbatim; the CSS chunks
+    // sit at dist root, so `./fonts/x.woff2` resolves to `/fonts/x.woff2`, which
+    // copy-static.ts copies to `dist/fonts/` — one cacheable file, fetched once.
+    // (Dev's serve.static still inlines, which is fine — no caching concerns
+    // there, and it keeps the figure-height gate / capture font-faithful.)
+    external: ["*.woff2"],
     // Production assets are content-hashed and served immutable (methodology →
     // Serving generated audio / Immutable Responses), so the build is the only
     // place to shrink them. `minify` trims the JS/CSS chunks (Lighthouse

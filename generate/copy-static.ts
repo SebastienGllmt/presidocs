@@ -145,6 +145,35 @@ async function copyAutomergeWasm(): Promise<boolean> {
 // — never under the email, so the served byline can't re-leak the address the
 // HTML strip removes. Dev produces the identical map/avatars from the same
 // `buildAuthorMap`, so bylines match in dev and prod. See shared/authorProfile.ts.
+// Self-hosted Red Hat woff2 → dist/fonts/. The prod build keeps each @font-face
+// `url(./fonts/*.woff2)` external (build-html.ts `external: ["*.woff2"]`) instead
+// of inlining it into every post's CSS chunk; the chunks sit at dist root, so
+// `./fonts/x.woff2` resolves to `/fonts/x.woff2`, served from here as one
+// cacheable file per face (fetched once, reused across all pages). Engine-owned
+// (client/fonts), like the WASM asset. Dev doesn't need this — serve.static
+// inlines the fonts there, which is fine.
+async function copyFonts(): Promise<number> {
+  const src = join(ENGINE, "client", "fonts");
+  if (!(await exists(src))) {
+    console.warn(`  ${relative(ROOT, src)} not found — skipping font copy`);
+    return 0;
+  }
+  const dst = join(DIST, "fonts");
+  await mkdir(dst, { recursive: true });
+  let n = 0;
+  for (const f of await readdir(src)) {
+    // The woff2 AND OFL.txt beside them: SIL OFL 1.1 §2 requires the license to
+    // accompany every redistributed copy of the Font Software, and self-hosting
+    // the woff2 IS redistribution. (The woff2 name tables carry the copyright
+    // notice + a license URL, but not the full license text — so we ship it as
+    // the stand-alone file the OFL accepts, served at /fonts/OFL.txt.)
+    if (!f.endsWith(".woff2") && f !== "OFL.txt") continue;
+    await cp(join(src, f), join(dst, f));
+    n++;
+  }
+  return n;
+}
+
 async function copyAuthorAssets(): Promise<number> {
   const { map, avatars } = await buildAuthorMap(
     paths.postsDir,
@@ -260,6 +289,8 @@ async function main(): Promise<void> {
   console.log(`  generated/ → dist/generated/ (${audioCount} file(s))`);
   const wasmOk = await copyAutomergeWasm();
   if (wasmOk) console.log(`  automerge.wasm → dist/assets/automerge.wasm`);
+  const fontCount = await copyFonts();
+  console.log(`  client/fonts → dist/fonts/ (${fontCount} file(s), incl. OFL.txt)`);
   const avatarCount = await copyAuthorAssets();
   console.log(
     `  authors/ → dist/assets/authors.json + ${avatarCount} avatar(s)`,

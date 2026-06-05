@@ -67,11 +67,36 @@
    pin; it's harmless when (as expected) the pin already established the order. */
 @layer engine-tokens, vendor, engine-layout, post, engine-components;
 
+/* Self-hosted Red Hat Text (prose) + Red Hat Mono (code) — SIL OFL, latin
+   subset, served from ./fonts (NOT a font CDN, so no third-party request and no
+   privacy leak). Self-hosting a web font is the whole point: the blog body, the
+   figures, the height-invariance gate, and the rendered video all wrap text
+   identically, instead of each reader's OS resolving `system-ui`/`ui-monospace`
+   to a different-width face. `@font-face` lives outside the cascade layers (font
+   registration isn't layered). Weights are exactly what the prose + figures use
+   (Text 400/500/600/700 +400 italic; Mono 400/700) so nothing is synthesized.
+   `font-display: swap` paints the fallback stack immediately, then swaps — the
+   --font-* fallbacks below are metric-near, so the swap barely shifts. */
+@font-face { font-family: "Red Hat Text"; font-style: normal; font-weight: 400; font-display: swap; src: url("./fonts/redhattext-400.woff2") format("woff2"); }
+@font-face { font-family: "Red Hat Text"; font-style: normal; font-weight: 500; font-display: swap; src: url("./fonts/redhattext-500.woff2") format("woff2"); }
+@font-face { font-family: "Red Hat Text"; font-style: normal; font-weight: 600; font-display: swap; src: url("./fonts/redhattext-600.woff2") format("woff2"); }
+@font-face { font-family: "Red Hat Text"; font-style: normal; font-weight: 700; font-display: swap; src: url("./fonts/redhattext-700.woff2") format("woff2"); }
+@font-face { font-family: "Red Hat Text"; font-style: italic; font-weight: 400; font-display: swap; src: url("./fonts/redhattext-400i.woff2") format("woff2"); }
+@font-face { font-family: "Red Hat Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("./fonts/redhatmono-400.woff2") format("woff2"); }
+@font-face { font-family: "Red Hat Mono"; font-style: normal; font-weight: 700; font-display: swap; src: url("./fonts/redhatmono-700.woff2") format("woff2"); }
+
 @layer engine-tokens {
   :root {
     --page-fg: #1f2328;
     --page-fg-muted: #57606a;
     --page-bg: #fafbfc;
+
+    /* The blog's two type families. Red Hat first; the old system stacks remain
+       as fallback for the pre-swap paint and the (rare) no-woff2 case. Every
+       prose/mono declaration across the engine AND the content repo's figures
+       resolves to these vars — one place to change the blog's type. */
+    --font-sans: "Red Hat Text", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --font-mono: "Red Hat Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
 
   * { box-sizing: border-box; }
@@ -83,7 +108,7 @@
     padding: 0;
     background: var(--page-bg);
     color: var(--page-fg);
-    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    font: 16px/1.6 var(--font-sans);
   }
 
   /* Scroll buffer below the document's last child (.site-footer on every
@@ -827,6 +852,74 @@
       margin: 0 0 0 0.4rem;
       vertical-align: middle;
       opacity: 0.55;
+    }
+  }
+
+  /* Figure-id copy affordance (client/figureCopyId.ts) — an author/dev-only
+     mirror of the narration drawer's per-segment id label. A small monospace
+     label sits in the left gutter of every `<figure id>`, ALWAYS visible (these
+     are author-only, so a standing column of ids down the margin you can scan
+     and select at a glance is the point — e.g. eyeballing which figure the
+     height-invariance gate flagged). Clicking one copies the bare id and flips
+     it green with a trailing check; or just select the text and Ctrl+C. The
+     module only ever installs these on localhost for the signed-in author, so
+     the markup (and this CSS's effect) never reaches a reader — inert without
+     the class. */
+  figure.has-figure-id-copy { position: relative; }
+
+  .figure-id-copy {
+    /* Pin the label's right edge to the figure's left edge and nudge it into
+       the gutter — the same `right: 100%` placement the heading deep-link uses,
+       so the two author affordances line up in one column down the margin. */
+    position: absolute;
+    top: 0;
+    right: 100%;
+    margin-right: 0.4rem;
+    /* Reset the <button> chrome — a flat, clickable id, not a chip. */
+    border: 0;
+    background: transparent;
+    padding: 2px 4px;
+    border-radius: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    line-height: 1.3;
+    text-align: right;
+    white-space: nowrap;
+    color: var(--page-fg-muted);
+    cursor: pointer;
+    /* Always opaque (not hover-revealed). `user-select: all` makes one
+       click/drag select the whole id for a clean Ctrl+C — the same trick the
+       narration drawer's .spoken-name label uses. */
+    -webkit-user-select: all;
+    user-select: all;
+    transition: color 120ms ease, background 120ms ease;
+  }
+  /* Hover still brightens + adds a backplate so the label reads as clickable
+     (it copies on click); it's just no longer what makes it appear. */
+  .figure-id-copy:hover {
+    color: var(--page-fg);
+    background: rgba(31, 35, 40, 0.06);
+  }
+  .figure-id-copy:focus-visible {
+    outline: 2px solid var(--page-fg-muted);
+    outline-offset: 2px;
+  }
+  /* Copy feedback: keep the id readable and tint it green with a trailing
+     check — identical to the segment-id label's `.is-copied` state. */
+  .figure-id-copy.is-copied { color: #1a7f37; }
+  .figure-id-copy.is-copied::after { content: " ✓"; }
+
+  /* On narrow / touch viewports the left gutter clips off-screen where the
+     article hugs the edge, so move the (already-visible) label inside the
+     figure's top-left corner instead of out in the margin. */
+  @media (hover: none) {
+    .figure-id-copy {
+      right: auto;
+      left: 4px;
+      top: 4px;
+      margin-right: 0;
     }
   }
 }
