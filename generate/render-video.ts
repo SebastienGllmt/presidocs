@@ -36,6 +36,7 @@ import { decodeHtmlEntities } from "../shared/htmlEntities.ts";
 const paths = resolveBlogPaths();
 
 type FigureShot = import("./capture-figures.ts").FigureShot;
+type CapturedStep = import("./capture-figures.ts").CapturedStep;
 
 // =============================================================================
 // Caching + timing (incremental rebuild) — see proposal 45 §7
@@ -81,7 +82,7 @@ type Word = { s: number; e: number; t: number; d: number };
 // stage during this segment, distinct from `name` (the highlight target). A
 // figure id stages it; `"none"`/`""` clears it; absent leaves the stage
 // unchanged (see `deriveFigureOccurrences`).
-type Mark = { name: string; time: number; chapter: string; text: string; words?: Word[]; figure?: string };
+type Mark = { name: string; time: number; chapter: string; text: string; words?: Word[]; figure?: string; step?: string };
 type Chapter = { id: string; title: string; startTime: number; endTime: number; parentId?: string };
 type Manifest = { slug: string; audio: string; duration: number; chapters: Chapter[]; marks: Mark[] };
 
@@ -233,7 +234,27 @@ export function snapToMark(marks: readonly Mark[], desiredMs: number): number {
   return best;
 }
 
-export type FigureOccur = { id: string; startMs: number; visEndMs: number };
+/**
+ * One labeled sub-span of a figure occurrence (proposal 49). `label: null` is a
+ * continuous (free-run) stretch; a non-null label means "hold the figure at
+ * `steps[label].endMs`" for that stretch — the renderer-side twin of the page's
+ * stepped driving (proposal 48). Spans partition the occurrence's
+ * `[startMs, visEndMs)`, in `t0`-rebased video-relative ms, in forward order.
+ */
+export type FigureStepSpan = { label: string | null; startMs: number; endMs: number };
+
+export type FigureOccur = {
+  id: string;
+  startMs: number;
+  visEndMs: number;
+  /**
+   * The per-step schedule within this occurrence (proposal 49). A figure with no
+   * `step=` cues yields a single `{ label: null, … }` span covering the whole
+   * occurrence (today's free-run behavior). A stepped figure yields the
+   * continuous prefix (`label: null`) followed by one span per `step` cue.
+   */
+  stepSpans: FigureStepSpan[];
+};
 
 /**
  * Compute each figure's on-stage span (audio-rel ms within `[t0,t1)`, returned
@@ -258,22 +279,50 @@ export function deriveFigureOccurrences(
   cutMs = 0,
 ): FigureOccur[] {
   const occurs: FigureOccur[] = [];
-  // Clamp a raw [start,end) audio span into [t0,t1), apply the cutMs cap, rebase.
-  const emit = (id: string, start: number, end: number) => {
+  // Clamp a raw [start,end) audio span into [t0,t1), apply the cutMs cap, rebase,
+  // and partition it into the per-step held-frame schedule. `changes` is the raw
+  // (audio-ms) list of step transitions inside the span: `{label,atMs}` in order,
+  // starting with the `null` (continuous) prefix; each entry runs until the next
+  // one (or the span end). Mirrors the page's `stagedFigureAt` step walk
+  // (proposal 48): step only moves at a cue, `none`/"" → null, a figure-id change
+  // or sub-chapter boundary ends the span (and so the schedule). (proposal 49)
+  const emit = (
+    id: string,
+    start: number,
+    end: number,
+    changes: { label: string | null; atMs: number }[],
+  ) => {
     const capped = cutMs > 0 ? Math.min(end, start + cutMs) : end;
     const s = Math.max(start, t0);
     const e = Math.min(capped, t1);
-    if (e > s) occurs.push({ id, startMs: s - t0, visEndMs: e - t0 });
+    if (e <= s) return;
+    const stepSpans: FigureStepSpan[] = [];
+    for (let i = 0; i < changes.length; i++) {
+      const segStart = changes[i]!.atMs;
+      const segEnd = i + 1 < changes.length ? changes[i + 1]!.atMs : end;
+      const cs = Math.max(segStart, s);
+      const ce = Math.min(segEnd, e);
+      if (ce > cs) stepSpans.push({ label: changes[i]!.label, startMs: cs - t0, endMs: ce - t0 });
+    }
+    // Defensive: a span with no recorded changes (or all clamped away) is one
+    // continuous null span — today's free-run, the back-compat default.
+    if (stepSpans.length === 0) stepSpans.push({ label: null, startMs: s - t0, endMs: e - t0 });
+    occurs.push({ id, startMs: s - t0, visEndMs: e - t0, stepSpans });
   };
 
   // Walk the staged figure, flushing a span whenever it changes, the stage
-  // clears, or the sub-chapter boundary is crossed.
+  // clears, or the sub-chapter boundary is crossed. `curStep`/`changes` track the
+  // step schedule within the current span.
   let cur: string | null = null;
   let curStart = 0;
+  let curStep: string | null = null;
+  let changes: { label: string | null; atMs: number }[] = [];
   let prevChapter: string | undefined;
   const flush = (endTime: number) => {
-    if (cur !== null) emit(cur, curStart, endTime);
+    if (cur !== null) emit(cur, curStart, endTime, changes);
     cur = null;
+    curStep = null;
+    changes = [];
   };
   for (const m of marks) {
     if (m.chapter !== prevChapter) {
@@ -287,7 +336,19 @@ export function deriveFigureOccurrences(
         if (next !== null) {
           cur = next;
           curStart = m.time;
+          curStep = null;
+          changes = [{ label: null, atMs: m.time }]; // span opens continuous
         }
+      }
+    }
+    // Evaluate `step` AFTER `figure` so a single mark that re-stages a figure and
+    // names a step records that step (the figure change above already reset the
+    // schedule). A step cue only applies while a figure is staged.
+    if (m.step !== undefined && cur !== null) {
+      const lbl = m.step === "" || m.step === "none" ? null : m.step;
+      if (lbl !== curStep) {
+        curStep = lbl;
+        changes.push({ label: lbl, atMs: m.time });
       }
     }
   }
@@ -675,10 +736,10 @@ async function resolveFigureShots(
     const metaPath = join(cacheDir, `fig-${key}.json`);
     if (existsSync(metaPath)) {
       try {
-        const meta = (await Bun.file(metaPath).json()) as { kind: "clip" | "still"; ext: string; durationMs?: number; fps?: number };
+        const meta = (await Bun.file(metaPath).json()) as { kind: "clip" | "still"; ext: string; durationMs?: number; fps?: number; steps?: CapturedStep[] };
         const file = join(cacheDir, `fig-${key}.${meta.ext}`);
         if (existsSync(file)) {
-          out.set(id, meta.kind === "clip" ? { kind: "clip", file, durationMs: meta.durationMs!, fps: meta.fps! } : { kind: "still", file });
+          out.set(id, meta.kind === "clip" ? { kind: "clip", file, durationMs: meta.durationMs!, fps: meta.fps!, steps: meta.steps ?? [] } : { kind: "still", file });
           continue;
         }
       } catch {}
@@ -699,13 +760,47 @@ async function resolveFigureShots(
       await Bun.write(cfile, Bun.file(shot.file));
       await Bun.write(
         join(cacheDir, `fig-${key}.json`),
-        JSON.stringify(shot.kind === "clip" ? { kind: "clip", ext, durationMs: shot.durationMs, fps: shot.fps } : { kind: "still", ext }),
+        JSON.stringify(shot.kind === "clip" ? { kind: "clip", ext, durationMs: shot.durationMs, fps: shot.fps, steps: shot.steps } : { kind: "still", ext }),
       );
       // Point the plan at the cache copy (stable across runs).
-      out.set(id, shot.kind === "clip" ? { kind: "clip", file: cfile, durationMs: shot.durationMs, fps: shot.fps } : { kind: "still", file: cfile });
+      out.set(id, shot.kind === "clip" ? { kind: "clip", file: cfile, durationMs: shot.durationMs, fps: shot.fps, steps: shot.steps } : { kind: "still", file: cfile });
     }
   }
   return out;
+}
+
+// --- per-step held frames (proposal 49) --------------------------------------
+
+/**
+ * The clip frame index that holds a figure at journey position `posMs`. The clip
+ * is captured at `fps` with frames i=0..n where t=min(i/fps·1000, durationMs) and
+ * n=ceil(durationMs/1000·fps), so the frame showing `posMs` is round(posMs/1000·fps),
+ * clamped to [0,n]. A step's `endMs===durationMs` (the last label) maps to the
+ * clip's final frame. Pure + unit-tested.
+ */
+export function heldFrameIndex(posMs: number, fps: number, durationMs: number): number {
+  const last = Math.max(1, Math.ceil((durationMs / 1000) * fps));
+  return Math.min(last, Math.max(0, Math.round((posMs / 1000) * fps)));
+}
+
+/**
+ * Extract the single still PNG that holds a captured clip at journey position
+ * `posMs` — the frame a `step` cue rests on (proposal 49 §3.2). One frame, cheap;
+ * errors propagate (a failed extraction must not silently drop the figure).
+ */
+async function extractHeldFrame(
+  clip: { file: string; fps: number; durationMs: number },
+  posMs: number,
+  outFile: string,
+): Promise<void> {
+  const idx = heldFrameIndex(posMs, clip.fps, clip.durationMs);
+  const proc = Bun.spawn(
+    ["ffmpeg", "-y", "-i", clip.file, "-vf", `select=eq(n\\,${idx})`, "-frames:v", "1", outFile],
+    { stdout: "ignore", stderr: "ignore" },
+  );
+  if ((await proc.exited) !== 0) {
+    throw new Error(`held-frame extraction failed for ${clip.file} @${posMs}ms (frame ${idx})`);
+  }
 }
 
 async function buildPlan(slug: string, t0: number, t1: number): Promise<Plan> {
@@ -793,11 +888,50 @@ async function buildPlan(slug: string, t0: number, t1: number): Promise<Plan> {
   // outlasts its discussion span (CP2b: pause the narration to let it finish) -
   const holds: Hold[] = [];
   type FigurePlan = { file: string; startMs: number; mode: "still" | "loop" | "once"; spanMs: number; clipMs: number };
+  type ClipShot = Extract<FigureShot, { kind: "clip" }>;
   const figurePlans: FigurePlan[] = [];
+  // Held-frame PNGs extracted from a clip for `step` cues, deduped per (id,label)
+  // within this render (the extraction is cheap; the dedup avoids redundant runs
+  // when a label is held across more than one occurrence).
+  const heldFrames = new Map<string, string>();
+  const heldFrameFor = async (id: string, clip: ClipShot, label: string): Promise<string> => {
+    const cacheKey = `${id}:${label}`;
+    const existing = heldFrames.get(cacheKey);
+    if (existing) return existing;
+    const step = clip.steps.find((s) => s.label === label);
+    if (!step) {
+      // Author typo / renamed label: warn + hold the clip's last frame, mirroring
+      // the page's warn-and-hold (proposal 49 §3.2) — never drop the figure.
+      console.warn(`render-video: figure "${id}" has no step "${label}" — holding its last frame`);
+    }
+    const file = join(platesDir, `held-${id}-${label}.png`);
+    await extractHeldFrame(clip, step ? step.endMs : clip.durationMs, file);
+    heldFrames.set(cacheKey, file);
+    return file;
+  };
+
   for (const o of occurs) {
     const shot = shots.get(o.id);
     if (!shot) continue;
     const spanMs = o.visEndMs - o.startMs;
+    // Per-step (slideshow) driving (proposal 49): a clip with `step` cues plays
+    // its `null` (lead-up) spans as a free-run loop and HOLDS a still at
+    // steps[label].endMs over each labeled span — matching the page's stepped
+    // driver, which snaps-and-holds (proposal 48). Stepped spans add no narration
+    // holds (a held frame has nothing to finish).
+    if (shot.kind === "clip" && o.stepSpans.some((s) => s.label !== null)) {
+      for (const sp of o.stepSpans) {
+        const subSpanMs = sp.endMs - sp.startMs;
+        if (subSpanMs <= 0) continue;
+        if (sp.label === null) {
+          figurePlans.push({ file: shot.file, startMs: sp.startMs, mode: "loop", spanMs: subSpanMs, clipMs: shot.durationMs });
+        } else {
+          const held = await heldFrameFor(o.id, shot, sp.label);
+          figurePlans.push({ file: held, startMs: sp.startMs, mode: "still", spanMs: subSpanMs, clipMs: 0 });
+        }
+      }
+      continue;
+    }
     if (shot.kind === "still") {
       figurePlans.push({ file: shot.file, startMs: o.startMs, mode: "still", spanMs, clipMs: 0 });
     } else if (shot.durationMs > spanMs) {

@@ -21,9 +21,14 @@ import { mkdir, rm } from "node:fs/promises";
 import { startBlogServer, launchChrome } from "../e2e/harness.ts";
 import { CAPTURE_DEFAULTS } from "./capture-defaults.ts";
 
+/** A labeled step of a figure's journey (projected from GSAP labels), as the
+ *  capture reads it from the registry. The renderer maps a `step=` cue's label
+ *  to `endMs` and holds the figure there (proposal 49). */
+export type CapturedStep = { label: string; startMs: number; endMs: number };
+
 export type FigureShot =
   | { kind: "still"; file: string }
-  | { kind: "clip"; file: string; durationMs: number; fps: number };
+  | { kind: "clip"; file: string; durationMs: number; fps: number; steps: CapturedStep[] };
 
 export type FigureCaptureOptions = {
   /** ms to wait after scrolling a figure in, for enhancement + controller registration. */
@@ -72,14 +77,15 @@ export async function captureFigures(
         await fig.scrollIntoViewIfNeeded({ timeout: 5_000 });
         await page.waitForTimeout(settleMs); // enhancement + controller registration
 
-        const durationMs: number | null = await page.evaluate((figId) => {
-          const reg = (window as unknown as { __presidocsFigures?: Map<string, { durationMs: number }> })
-            .__presidocsFigures;
-          return reg?.get(figId)?.durationMs ?? null;
+        const info: { durationMs: number; steps: CapturedStep[] } | null = await page.evaluate((figId) => {
+          const j = (window as unknown as {
+            __presidocsFigures?: Map<string, { durationMs: number; steps: CapturedStep[] }>;
+          }).__presidocsFigures?.get(figId);
+          return j ? { durationMs: j.durationMs, steps: j.steps } : null;
         }, id);
 
-        if (durationMs && durationMs > 0) {
-          out.set(id, await captureClip(page, id, durationMs, fps, outDir));
+        if (info && info.durationMs > 0) {
+          out.set(id, await captureClip(page, id, info.durationMs, fps, outDir, info.steps));
         } else {
           const file = join(outDir, `fig-${id}.png`);
           await fig.screenshot({ path: file });
@@ -104,6 +110,7 @@ async function captureClip(
   durationMs: number,
   fps: number,
   outDir: string,
+  steps: CapturedStep[],
 ): Promise<FigureShot> {
   const framesDir = join(outDir, `frames-${id}`);
   await rm(framesDir, { recursive: true, force: true });
@@ -145,7 +152,7 @@ async function captureClip(
     { stdout: "ignore", stderr: "ignore" },
   );
   if ((await proc.exited) !== 0) throw new Error(`ffmpeg clip assembly failed for ${id}`);
-  return { kind: "clip", file, durationMs, fps };
+  return { kind: "clip", file, durationMs, fps, steps };
 }
 
 // Minimal CSS.escape for the simple ids posts use (alnum + hyphen + underscore).
