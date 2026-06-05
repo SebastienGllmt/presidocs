@@ -14,7 +14,8 @@
 //      for that chapter's [start,end) span.
 //   2. per-chapter intro "slide" plate — a presentation-style title card shown
 //      for the first few seconds of each chapter.
-//   3. voice waveform — ffmpeg `showwaves` (native; no Web Audio).
+//   3. voice equalizer — ffmpeg `showfreqs` (speech-band spectrum, mirrored +
+//      centred; ElevenLabs static-mode look, native, no Web Audio).
 //   4. word-level karaoke captions — libass, burned from marks[].words[],
 //      chunked to ~1–2 lines at a time.
 // Narration is muxed back in, resampled to 48 kHz stereo + loudness-normalized
@@ -56,7 +57,7 @@ type CapturedStep = import("./capture-figures.ts").CapturedStep;
 // (e.g. after an ffmpeg upgrade you want re-encoded, or a capture-param change
 // not covered below).
 
-const CACHE_VERSION = "v4";
+const CACHE_VERSION = "v7";
 
 function hashStr(s: string): string {
   return createHash("sha256").update(s).digest("hex").slice(0, 16);
@@ -1110,37 +1111,43 @@ function audioComposeParts(inLabel: string, holds: readonly Hold[], spanSec: num
 
 /**
  * The continuous layers, added once over the whole timeline so they never seam:
- * loudness-normalize the composed audio, then split it → a `showwaves` waveform
+ * loudness-normalize the composed audio, then split it → a voice "equalizer"
  * overlaid on the visual → burn the karaoke captions. Produces `[v]`/`[aout]`.
  *
- * The waveform is drawn from the SAME normalized audio the viewer hears (not the
- * raw pre-loudnorm track), so a quiet narration still fills the band instead of
- * rendering a tiny, jitter-prone trace. Two cosmetic passes on the wave branch
- * only (never the audible `[aout]`): an `agate` collapses near-silence to a flat
- * line (no odd low-level wiggle in pauses), and `tmix` averages a few frames to
- * take the per-frame jump out of the trace. The `wave*` knobs are tunable —
- * bump CACHE_VERSION after changing them so stale renders don't serve.
+ * The equalizer reproduces the ElevenLabs static-mode look natively from ffmpeg's
+ * `showfreqs`: a frequency spectrum of the (normalized) narration, cropped to the
+ * speech band (~5–40% of Nyquist) and scaled to fill the bars, mirrored around
+ * centre (low freq in the middle) and centred vertically, with light spectral +
+ * temporal smoothing for the soft, blobby feel. It streams from the composed
+ * (held) audio in-graph — the same single pass as the old waveform — so it stays
+ * in sync and never seams. The `showfreqs`/`eq*` knobs are tunable; bump
+ * CACHE_VERSION after changing them so stale renders don't serve.
  */
 function finalTailParts(plan: Plan, visualLabel: string, composedAudioLabel: string): string[] {
+  const half = W / 2; // each mirrored half is W/2 wide
+  const halfH = 90; // each mirrored half's height (band = 2×); lowered so the eq isn't too tall
+  const midY = 1330; // band's vertical midline, kept fixed as the height changes
   return [
-    // Pin the channel layout before the split: the source can be mono, and with
-    // two differently-resampled consumers (the stereo `[aout]` and the 24 kHz
-    // wave branch) ffmpeg otherwise fails to negotiate a layout across `asplit`
-    // on a mid-stream filter reinit ("Cannot select channel layout").
+    // Pin the channel layout before the split so a mono source can't make ffmpeg
+    // fail to negotiate a layout across `asplit` on a mid-stream reinit ("Cannot
+    // select channel layout"). The audible `[aout]` stays stereo; the eq branch
+    // downmixes to mono below (showfreqs colours a 2nd channel white otherwise).
     `[${composedAudioLabel}]loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,asplit=2[anorm][aout]`,
-    // Wave branch (visual only — never the audible `[aout]`): gate near-silence
-    // to a flat line, then DOWNSAMPLE to 24 kHz before `showwaves`. showwaves
-    // draws `sample_rate / rate` samples across the width per frame; halving the
-    // rate halves the samples-per-frame (1600→800 over 1080px), stretching the
-    // trace ~2× horizontally so it reads as one continuous waveform instead of a
-    // busy pattern repeating across the width. Timing is unaffected (still 30fps,
-    // realtime). `tmix` then averages a few frames to damp the per-frame jump —
-    // 4 is the balance point (the 2× stretch already removes most of the jitter,
-    // so heavier averaging just smears the motion and reads as sluggish).
-    `[anorm]agate=threshold=0.03:ratio=9:attack=15:release=300:range=0.006,aresample=24000[awave]`,
-    `[awave]showwaves=s=${W}x300:mode=cline:rate=30:scale=lin:colors=0x58a6ff[wave0]`,
-    `[wave0]tmix=frames=4[wave]`,
-    `[${visualLabel}][wave]overlay=x=(W-w)/2:y=1180[wv]`,
+    // EQ branch (visual only — never the audible `[aout]`): the speech-band
+    // spectrum, scaled up to spread across the bars.
+    `[anorm]aformat=channel_layouts=mono,showfreqs=s=2000x${halfH}:mode=bar:ascale=log:fscale=lin:win_size=1024:averaging=2:colors=0x58a6ff,format=rgba,crop=702:${halfH}:94:0,scale=${half}:${halfH}[ef]`,
+    // Mirror around centre (low freq in the middle): hflip one copy, hstack.
+    `[ef]split[ef1][ef2]`,
+    `[ef2]hflip[ef2m]`,
+    `[ef2m][ef1]hstack=inputs=2[ehalf]`,
+    // Centre vertically: bars grow up in the top half and down in the vflipped
+    // bottom half, meeting at the midline.
+    `[ehalf]split[eh1][eh2]`,
+    `[eh2]vflip[eh2v]`,
+    `[eh1][eh2v]vstack=inputs=2[eq0]`,
+    // Light temporal smoothing + slight translucency for the soft ElevenLabs feel.
+    `[eq0]tmix=frames=2,format=rgba,colorchannelmixer=aa=0.92[wave]`,
+    `[${visualLabel}][wave]overlay=x=(W-w)/2:y=${midY - halfH}[wv]`,
     `[wv]ass=${plan.assPath}:fontsdir=${plan.fontsDir}[v]`,
   ];
 }
