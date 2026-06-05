@@ -27,6 +27,35 @@ export const FULL_AUDIO_HASHED_RE = /^full\.[0-9a-f]{16}\.[a-z0-9]+$/i;
 /** Matches a content-addressed social-media video filename (`video.<16 hex>.mp4|webm`). */
 export const VIDEO_HASHED_RE = /^video\.[0-9a-f]{16}\.(mp4|webm)$/;
 
+/**
+ * Matches a bundler-hashed JS/CSS chunk (`chunk-<hash>.js|css`). The build emits
+ * every script/style as a content-hashed `chunk-<base36>.{js,css}` (Bun's default
+ * 8-char hash); `sw.js` is the lone un-hashed JS and is deliberately excluded.
+ */
+export const BUNDLE_HASHED_RE = /^chunk-[a-z0-9]{8}\.(js|css)$/;
+
+/**
+ * True when a filename's bytes are pinned by a content hash *in its own name*, so
+ * a cache may treat it as `immutable` (RFC 8246). Covers the narration manifest,
+ * audio/video tracks, and the bundler's hashed JS/CSS chunks.
+ *
+ * This is the predicate that gates the prod `immutable` Cache-Control (the Worker
+ * sets it on the asset fall-through — `_headers` can't, under `run_worker_first`).
+ * The load-bearing invariant (methodology → `immutable`): it must match ONLY
+ * hash-named URLs. It deliberately rejects every stable-named, mutable file — the
+ * stable `episode.<ext>`, a bare `manifest.json`, `chapters.json`, `feed.xml` /
+ * `podcast.xml`, `sw.js`, HTML — so an over-match can't pin a mutable URL stale.
+ * A future-too-narrow miss is harmless (the asset just keeps revalidating).
+ */
+export function isContentHashedAsset(basename: string): boolean {
+  return (
+    MANIFEST_HASHED_RE.test(basename) ||
+    FULL_AUDIO_HASHED_RE.test(basename) ||
+    VIDEO_HASHED_RE.test(basename) ||
+    BUNDLE_HASHED_RE.test(basename)
+  );
+}
+
 export function manifestFileName(hash: string): string {
   return `manifest.${hash}.json`;
 }

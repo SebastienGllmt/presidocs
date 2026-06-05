@@ -53,6 +53,7 @@ import {
   stableEpisodeSlug,
 } from "../shared/stableAudio.ts";
 import { isSha256Hex, reprDigestSha256 } from "../shared/audioDigest.ts";
+import { isContentHashedAsset } from "../shared/manifestFile.ts";
 
 // The two build-time maps, supplied by the content repo's `worker.ts` from its
 // own `.generated/` directory. Structural types (not the engine's `PostMeta` /
@@ -373,7 +374,29 @@ export function createWorkerHandler(content: WorkerContent) {
         );
       }
 
-      return withCors(withSecurityHeaders(await applyRangeSupport(req, assetResponse)));
+      // Content-hashed assets are safe to cache forever: the hash in the name
+      // means the bytes can't change under this URL, so a cache need never
+      // revalidate. The Static Assets binding serves them as the bare
+      // `max-age=0, must-revalidate` default, and `_headers` CAN'T fix that here
+      // — under `run_worker_first` it isn't applied to Worker responses (Cloudflare
+      // docs), and every asset is a Worker response. So we set `immutable` in code,
+      // gated on the hash token in the name (isContentHashedAsset) — which can
+      // only ever match a content-addressed URL, never a mutable one (the stable
+      // `episode.<ext>` is served above; a bare manifest.json / chapters.json /
+      // feeds / sw.js / HTML all lack a hash and keep revalidating). Set on a fresh
+      // Response so the policy survives every branch of applyRangeSupport (incl. a
+      // 206). See methodology → Serving generated audio.
+      let served = assetResponse;
+      if (assetResponse.status === 200 && isContentHashedAsset(path.split("/").pop() ?? "")) {
+        const headers = new Headers(assetResponse.headers);
+        headers.set("Cache-Control", "public, max-age=31536000, immutable");
+        served = new Response(assetResponse.body, {
+          status: assetResponse.status,
+          statusText: assetResponse.statusText,
+          headers,
+        });
+      }
+      return withCors(withSecurityHeaders(await applyRangeSupport(req, served)));
     },
   };
 }

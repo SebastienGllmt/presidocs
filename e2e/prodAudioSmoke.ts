@@ -1,4 +1,6 @@
-// Production-Worker smoke for the stable shareable audio URL (proposals/32 §10).
+// Production-Worker smoke for the stable shareable audio URL + the prod
+// `immutable` policy on content-hashed assets (methodology → Stable shareable
+// episode URL / Serving generated audio).
 //
 // This is the tier the Bun dev server CANNOT cover: it drives the real
 // `createWorker.ts` under `wrangler dev` (workerd/Miniflare), so it exercises the
@@ -23,6 +25,7 @@ import { startWranglerServer, type BlogServer } from "./harness.ts";
 let server: BlogServer;
 let stableUrl: string; // absolute …/episode.<ext>
 let hashedUrl: string; // absolute …/full.<hash>.<ext>
+let bundleUrl: string; // absolute …/chunk-<hash>.(js|css)
 let feedXml: string;
 
 beforeAll(async () => {
@@ -37,6 +40,13 @@ beforeAll(async () => {
   expect(hashedPath, "feed must advertise the content-addressed source").toBeTruthy();
   stableUrl = `${server.baseURL}${stablePath}`;
   hashedUrl = `${server.baseURL}${hashedPath}`;
+
+  // Discover a content-hashed JS/CSS bundle from the landing page, to assert the
+  // site-wide `immutable` policy reaches the bundle (not just hashed media).
+  const landing = await (await fetch(`${server.baseURL}/`)).text();
+  const chunk = landing.match(/chunk-[a-z0-9]{8}\.(?:js|css)/)?.[0];
+  expect(chunk, "landing page must reference a hashed chunk").toBeTruthy();
+  bundleUrl = `${server.baseURL}/${chunk}`;
 }, 180_000);
 
 afterAll(async () => {
@@ -109,18 +119,35 @@ test("prod: HEAD → 200 (not 206) with the ETag and an empty body", async () =>
   expect((await res.arrayBuffer()).byteLength).toBe(0);
 });
 
-test("prod: the hashed player URL is served (ASSETS fall-through) + range-capable (applyRangeSupport)", async () => {
+test("prod: the hashed player URL is served immutable (Worker override) + range-capable", async () => {
   const full = await fetch(hashedUrl);
   expect(full.status).toBe(200);
-  // NOTE (proposals/32 finding): the Workers Assets binding serves content-hashed
-  // files as `public, max-age=0, must-revalidate` — NOT `immutable` (no `_headers`
-  // rule sets that). So we only assert a cache policy is present, not its value;
-  // baking in the current value would lock in the status quo this finding questions.
-  expect(full.headers.get("cache-control")).toBeTruthy();
+  // The Worker overrides the binding's bare `max-age=0, must-revalidate` default
+  // with `immutable` for content-hashed assets (methodology → Serving generated
+  // audio): `_headers` can't do this under `run_worker_first`, so createWorker.ts
+  // sets it on the fall-through, gated on the hash in the name.
+  expect(full.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
 
   const ranged = await fetch(hashedUrl, { headers: { Range: "bytes=0-99" } });
   expect(ranged.status).toBe(206);
   expect(ranged.headers.get("content-range")).toMatch(/^bytes 0-99\/\d+$/);
+  // The override survives the 206 (set on a fresh Response before applyRangeSupport).
+  expect(ranged.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+});
+
+test("prod: a hashed JS/CSS bundle is served immutable too (site-wide, not just media)", async () => {
+  const res = await fetch(bundleUrl);
+  expect(res.status).toBe(200);
+  expect(res.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+});
+
+test("prod: the MUTABLE stable episode URL is NOT immutable (the invariant boundary)", async () => {
+  // The same fall-through serves the bundle immutable; the stable episode URL must
+  // stay revalidating. It's structurally safe (serveStableEpisode returns before
+  // the fall-through), but assert it so a future regression can't blur the line.
+  const res = await fetch(stableUrl);
+  expect(res.headers.get("cache-control")).toBe("no-cache");
+  expect(res.headers.get("cache-control")).not.toContain("immutable");
 });
 
 test("prod: feed (served by the Worker) carries stable enclosure + alternateEnclosure + integrity", () => {
