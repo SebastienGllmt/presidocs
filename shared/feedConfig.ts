@@ -54,9 +54,10 @@ export type FeedConfig = {
    * and defaultless on purpose: it names a third-party (or self-hosted) service,
    * so the operator chooses it explicitly rather than the engine baking in a
    * dependency. Must be the hub's POST endpoint (subscribers register with it
-   * and websub-ping.ts pings it), not just the project homepage. Recommended
-   * public hubs: https://websubhub.com/hub or Google's long-running
-   * https://pubsubhubbub.appspot.com/.
+   * and websub-ping.ts pings it), not just the project homepage. Pick a hub
+   * that accepts a publish for a topic nobody has subscribed to yet (some
+   * reject it). Recommended public hubs: https://pubsubhubbub.superfeedr.com
+   * or Google's long-running https://pubsubhubbub.appspot.com/.
    */
   hubUrl: string | null;
 };
