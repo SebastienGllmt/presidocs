@@ -99,5 +99,51 @@ export function stepsFromLabels(
   }));
 }
 
+/**
+ * Build a {@link FigureJourney} whose registered duration bakes a trailing hold
+ * of `loopGapMs` onto the end of one play-through.
+ *
+ * A figure's in-page free-run loop dwells on the finished frame before
+ * replaying (`gsap.delayedCall(gap, playLive)`), but that gap lives *outside*
+ * the timeline — so a driver that loops by `durationMs` (the offline video
+ * compositor; the in-page narration driver's continuous mode) never sees it and
+ * restarts the instant the motion ends. Baking the gap in makes those drivers
+ * reproduce the same pause, keeping the page and the rendered video consistent.
+ *
+ * The hold is realized by (a) extending `durationMs` AND the projected `steps`
+ * to `playMs + loopGapMs` — preserving the contract's "last step `endMs` ===
+ * `durationMs`" invariant, the final label segment simply spanning the dwell —
+ * and (b) clamping the ms handed to the figure's `seek` into `[0, playMs]`, so
+ * every frame a driver samples in the tail is the held final frame. (The
+ * capture scrubs `seek()` across the full `durationMs`, so the tail is recorded
+ * as held frames and the compositor's modulo loop replays them as the dwell.)
+ *
+ * Taking `playMs`/`labels`/`seek`/`reset` explicitly (rather than a timeline
+ * object) lets it wrap figures whose journey timeline is rebuilt on `reset()`
+ * — e.g. ones that spawn DOM during the animation and probe a throwaway build
+ * for stable duration/labels.
+ *
+ * @param playMs   One natural play-through, ms (the timeline's own duration).
+ * @param labels   The timeline's `{label: seconds}` map (for the `steps` projection).
+ * @param loopGapMs The dwell to hold on the final frame before looping, ms.
+ * @param seek     The figure's raw seek into its play-through (receives clamped ms).
+ * @param reset    The figure's reset (snap to frame 0); passed through unchanged.
+ */
+export function buildLoopingJourney(opts: {
+  playMs: number;
+  labels: Record<string, number>;
+  loopGapMs: number;
+  seek: (ms: number) => void;
+  reset: () => void;
+}): FigureJourney {
+  const durationMs = opts.playMs + opts.loopGapMs;
+  return {
+    durationMs,
+    steps: stepsFromLabels(opts.labels, durationMs / 1000),
+    reset: opts.reset,
+    seek: (ms) => opts.seek(Math.min(ms, opts.playMs)),
+  };
+}
+
 export const FIGURE_REGISTRY_KEY = REGISTRY_KEY;
 export const FIGURE_READY_EVENT = READY_EVENT;
