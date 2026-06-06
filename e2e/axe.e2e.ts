@@ -25,12 +25,43 @@ import { launchChrome, startBlogServer, resolveBlogDir, type BlogServer } from "
 // noise. This tier is for the *rendered* WCAG failures a static pass can't see.
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
 
-// Rules deferred on purpose (tracked in proposal 29): contrast is gated on an
-// aesthetic sign-off on replacement shades (§2.7), Label-in-Name is a w=0
-// polish item (§2.6). We REPORT their node counts (so the backlog is visible
-// and visibly shrinks) but don't fail on them yet. Delete an id the moment its
-// fix lands and it becomes a hard gate — that's the whole point of the ratchet.
-const DEFERRED_RULES = new Set(["color-contrast", "label-content-name-mismatch"]);
+// Rules deferred on purpose: Label-in-Name is a w=0 polish item (proposal 29
+// §2.6) — REPORTED (so the backlog stays visible) but not failing. Delete an id
+// the moment its fix lands and it becomes a hard gate.
+//
+// `color-contrast` is NO LONGER deferred — as of 2026-06 it's a HARD GATE
+// (the figure palette + engine-chrome fixes that cleared it landed then; the
+// colour/contrast standard lives in DESIGN.md §1–2). Any text below 4.5:1
+// (3:1 large) anywhere now FAILS this suite, except the three
+// surfaces in CONTRAST_EXEMPT_SELECTORS below.
+const DEFERRED_RULES = new Set(["label-content-name-mismatch"]);
+
+// ⚠️  DELIBERATE, NON-EXTENSIBLE contrast exemptions. ⚠️
+//
+// These three surfaces fail SC 1.4.3 BY DESIGN — the low contrast is the
+// intended UX, not a bug we haven't gotten to. Their `color-contrast` nodes are
+// stripped before the gate asserts (per-node, so EVERY OTHER rule still applies
+// to them, and any *new* contrast failure anywhere else still hard-fails).
+//
+// This list is a fixed roster of conscious product decisions, NOT a pressure
+// valve. Do NOT add to it to silence a real failure. The bar for entry is
+// "the faintness is the deliberate point," and each entry is a known special
+// case the figure-authoring guidance (DESIGN.md §1, figure-journey Rule 17)
+// explicitly says NOT to imitate. If you're tempted to add a fourth, fix the
+// colour instead — `bun run e2e/contrastReport.ts` shows you exactly what to fix.
+const CONTRAST_EXEMPT_SELECTORS = [
+  // The logged-out comments identity card: dimmed (opacity .35) until the reader
+  // scrolls/engages, then brightens. Slated for a fundamental redesign (readers
+  // dislike it); exempt only until that lands, then remove this line.
+  ".cmt-identity-loggedout",
+  // Redaction chips in the privacy-tradeoff figure ("🕶 hidden" / "•••••"): the
+  // obscured faintness IS the "this is hidden" signal. (Also carries
+  // data-contrast="exempt" for the figure gate.)
+  ".redact",
+  // Narrator sub-chapter segments: subordinate-by-dim (opacity .7) beneath their
+  // parent chapter on the dark dock — a transient, hover-restored affordance.
+  ".ch-seg[data-sub]",
+];
 
 // Every reader-facing page: the landing plus each post (data sidecars included —
 // they're served article pages too). Enumerated from the blog's source so a new
@@ -79,6 +110,34 @@ async function auditPage(page: Page, path: string): Promise<Violation[]> {
   return violations;
 }
 
+// Strip the deliberately-exempt contrast nodes (CONTRAST_EXEMPT_SELECTORS) from
+// the `color-contrast` violation, in-page, by checking each failing node against
+// `closest()`. Per-NODE on purpose: an exempt surface still fails every OTHER
+// rule, and a contrast failure on any non-exempt element still hard-fails. If
+// the violation has no nodes left after stripping, it's dropped entirely.
+async function stripExemptContrast(page: Page, violations: Violation[]): Promise<Violation[]> {
+  const cc = violations.find((v) => v.id === "color-contrast");
+  if (!cc) return violations;
+  const kept: Violation["nodes"] = [];
+  for (const n of cc.nodes) {
+    const sel = Array.isArray(n.target) && typeof n.target[0] === "string" ? n.target[0] : null;
+    const exempt = sel
+      ? await page.evaluate(
+          ({ s, exempts }) => {
+            const el = document.querySelector(s);
+            return !!el && exempts.some((ex) => el.closest(ex) !== null);
+          },
+          { s: sel, exempts: CONTRAST_EXEMPT_SELECTORS },
+        )
+      : false;
+    if (!exempt) kept.push(n);
+  }
+  if (kept.length === cc.nodes.length) return violations; // nothing stripped
+  return violations
+    .map((v) => (v === cc ? { ...v, nodes: kept } : v))
+    .filter((v) => v.id !== "color-contrast" || kept.length > 0);
+}
+
 function describe(v: Violation): string {
   const sample = v.nodes
     .slice(0, 3)
@@ -101,7 +160,8 @@ for (const path of pagePaths()) {
       const context = await browser.newContext();
       const page = await context.newPage();
       try {
-        const violations = await auditPage(page, path);
+        const raw = await auditPage(page, path);
+        const violations = await stripExemptContrast(page, raw);
         const blocking = violations.filter((v) => !DEFERRED_RULES.has(v.id));
         const deferred = violations.filter((v) => DEFERRED_RULES.has(v.id));
 

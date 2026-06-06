@@ -30,9 +30,19 @@ body { padding-block-end: 10rem; }
   --narration-bg: rgba(255, 213, 79, 0.18);
   --narration-border: rgba(241, 145, 21, 0.55);
   --narration-shadow: rgba(241, 145, 21, 0.22);
-  /* Light blue (GitHub's blue.2) that reads cleanly on the dark dock — the
-     darker #0969da was getting lost on rgba(22,27,34,0.85). */
+  /* Two accents, because contrast is background-dependent and the narrator UI
+     spans two backgrounds (DESIGN.md §1):
+       --accent        light blue (GitHub blue.2) for the DARK dock — icons,
+                       Shikwasa primary, the progress bar/handle. The darker blue
+                       gets lost on rgba(22,27,34,0.85), and white text never sits
+                       on it, so 2.53:1-on-white is irrelevant here.
+       --accent-strong the sitewide blue (== --cmt-accent) for LIGHT surfaces —
+                       the article "you are here" divider, the active chapter-pill
+                       fill (white text on it → 5.19:1), and the light transcript
+                       drawer. #58a6ff fails on white (2.53:1 text / <3:1 fill);
+                       #0969da clears both 1.4.3 and 1.4.11. */
   --accent: #58a6ff;
+  --accent-strong: #0969da;
 }
 
 /* Section dividers. The plain `<hr class="section-divider" />` is the older
@@ -76,7 +86,7 @@ article .section-divider-labeled::after {
 article .section-divider-labeled.narration-active {
   background: none;
   box-shadow: none;
-  color: var(--accent);
+  color: var(--accent-strong); /* "you are here" text on the white article */
 }
 /* Speaker button injected by narrator.ts onto each labeled divider: jumps the
    narration to the first spoken segment below the divider. A flex child, so it
@@ -481,8 +491,8 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 .chapter-pill:active { transform: translateY(0); }
 
 .chapter-pill[data-active] {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-strong); /* white text/.ch-num on it → 5.19:1 */
+  border-color: var(--accent-strong);
   color: #fff;
   box-shadow: 0 4px 12px -4px rgba(88, 166, 255, 0.45);
 }
@@ -556,7 +566,7 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 .chapter-pill .ch-seg[data-active] { opacity: 1; }
 
 .chapter-pill .ch-seg[data-active] {
-  background: var(--accent);
+  background: var(--accent-strong);
   color: #fff;
 }
 
@@ -579,7 +589,7 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
    highlight while that intro (the spoken transition) plays — same treatment as
    an active member segment. */
 .chapter-pill .ch-group[data-active] {
-  background: var(--accent);
+  background: var(--accent-strong);
   color: #fff;
 }
 
@@ -904,7 +914,7 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   display: none;
 }
 
-.narrate-drawer-tab svg { color: var(--accent); }
+.narrate-drawer-tab svg { color: var(--accent-strong); } /* tab over the light drawer */
 
 .narrate-drawer-header {
   display: flex;
@@ -1078,7 +1088,7 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 }
 
 .spoken-segment:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-strong); /* focus ring on the light drawer → ≥3:1 */
   outline-offset: 2px;
 }
 
@@ -1107,8 +1117,8 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 }
 
 .spoken-segment .spoken-play:hover {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-strong); /* white label on it → 5.19:1 */
+  border-color: var(--accent-strong);
   color: #fff;
 }
 
@@ -1139,8 +1149,8 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease;
 }
 .spoken-segment .spoken-regen:hover {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
   color: #fff;
 }
 .spoken-segment .spoken-regen:disabled { cursor: progress; opacity: 0.7; }

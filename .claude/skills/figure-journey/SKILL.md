@@ -54,9 +54,9 @@ Three consumers, one primitive, three clocks: **capture** (fixed-fps virtual clo
 
 **Locked rule: forward-seek, not random-access.** `seek()` advances monotonically between `reset()`s. To revisit an earlier point you call `reset()` and replay forward — never a coarse backward or random jump. **Why** (and why this beats the Remotion-style `render(t)` random-access alternative that was rejected): roughly half of a figure's meaning is discrete, non-numeric state (`textContent`, `classList`, `innerHTML`) set via GSAP `tl.call(...)`, which GSAP does not make cleanly random-access. Forcing random access would mean re-expressing every text/class change as a numeric-proxy `onUpdate` — a structural rewrite and a permanent authoring tax — to buy render-farm parallelism we don't need. Forward-seek + `reset()`-and-replay covers click-to-step, narration stepping, and looping at millisecond replay cost. This is also why `seek` is *not* named after WAAP `currentTime` / Lottie `goToAndStop`, which imply random access.
 
-## The 16 authoring rules (the standard)
+## The 17 authoring rules (the standard)
 
-Every conformant figure obeys these. Rules 1–15 are the heart of the contract (seekable + deterministic + driver-controllable); rule 16 is layout stability, enforced by a separate gate.
+Every conformant figure obeys these. Rules 1–15 are the heart of the contract (seekable + deterministic + driver-controllable); rule 16 is layout stability and rule 17 is colour contrast — each enforced by its own separate gate.
 
 1. **One journey, two consumers; no divergent self-play.** The registered journey is exactly what the renderer scrubs and what the narrator drives. The figure's own live triggers must play *the journey's tour* — not a separate intro/stagger that diverges from it.
 2. **Finite, paused, forward-seekable timeline.** Build on `gsap.timeline({ paused: true })`; `seek(ms)` = `tl.time(ms/1000)`. No infinite or physics-driven animation. A deliberately-static figure registers **no** journey and falls back to its rendered still — that is a valid choice, not a violation.
@@ -79,6 +79,11 @@ Every conformant figure obeys these. Rules 1–15 are the heart of the contract 
     - **Conditionally-shown controls** (a toggle row present only on some tabs): reserve its slot when hidden with `visibility: hidden` (keeps layout) rather than `display: none` / the `[hidden]` attribute (collapses to 0).
     **Sub-rule 16a — inherit the blog font tokens (`var(--font-sans)` / `var(--font-mono)`), never a bare `system-ui` stack.** A hard-coded `system-ui` resolves to a *different* face per OS (headless Linux → DejaVu, wider than Segoe/SF), so wrapping — and therefore height — becomes environment-dependent: the figure wraps one way for readers and another in the gate/video, and a `min-height` calibrated on one font breaks on another. The self-hosted Red Hat faces give every surface identical metrics.
     A height-shifting figure is still **contract-conformant** (seekable + deterministic), so this is caught by a *separate* gate (`e2e/figureHeight.e2e.ts`), not the conformance gate. A difference only at **frame 0** (the static pre-narration render vs frame 1) is a non-failing **warning** — the narrator never rests there — though reserving for it too is tidy.
+17. **Legible colour — meet the contrast standard ([`DESIGN.md` §1](../../../DESIGN.md)).** Rule 16 keeps the box from moving; rule 17 keeps it readable. Every **load-bearing** colour must clear WCAG **SC 1.4.3** (text ≥ 4.5:1, large ≥ 3:1) and **SC 1.4.11** (graphics/state ≥ 3:1) **against its actual background** — and figures sit on *tinted* fills, which are darker than white, so measure on the tint, not white. Three habits keep a figure born-compliant:
+    - **Default to the shared `--fig-*` palette** (DESIGN.md §1) instead of hardcoding hex (`#777`, `#1f8a4c`, …). The tokens are pre-vetted neutrals + accent/tint pairs, so palette colours pass by construction. **Bespoke colour is still allowed** — the blog is HTML-first — but then *you* own the contrast, and the gate (below) is what catches a bad one. Palette = the easy path; the gate = the floor.
+    - **Never `opacity` a label or a load-bearing graphic to de-emphasise it** (DESIGN.md "opacity trap"): it composites toward the backdrop and silently fails. Reach for `--fig-faint`/`--fig-muted` (an opaque token), not `opacity`. This is the single most common self-inflicted failure.
+    - **Annotate intent for the non-text gate:** mark a load-bearing graphical node (a bar, segment, legend swatch, state fill) `data-contrast="graphic"` (gated ≥ 3:1) and a deliberately-decorative one `data-contrast="exempt"` (skipped). Text is auto-sampled at 4.5:1 with no annotation. *(1.4.11 is scoped to graphics required to understand the content — decoration is exempt — so the gate needs your intent.)*
+    Contrast is **background-dependent and animation-dependent** (a swatch can pass at frame 0 and drop below 3:1 mid-journey as fills change/overlap), which is exactly why — like rule 16 — it's a *separate* gate, not something the conformance or eye check catches. axe enforces figure **text** as a hard gate; the per-frame **`e2e/figureContrast.e2e.ts`** sees the graphics (and mid-animation text) axe can't.
 
 ## Creating a figure — checklist
 
@@ -94,8 +99,9 @@ Every conformant figure obeys these. Rules 1–15 are the heart of the contract 
 5. **Register under the figure's id** (rule 6) with `registerFigureJourney(id, journey)` where `journey.steps = stepsFromLabels(tl.labels, tl.duration())` and `journey.seek(ms) = tl.time(ms/1000)` — or via `buildLoopingJourney` for loopers.
 6. **Add narration pointers** in the post (orthogonal to the highlight `name`): `figure="<id>"` stages the figure; `figure="none"`/`""` clears it; omit to carry it. `step="<label>"` drives the staged figure to a labeled state (forward-only, targets the staged figure). A staged figure holds frame 1 until a driving event advances it.
 7. **Reserve height for every variable region** (rule 16): any text that swaps, list that grows, or control shown on only some states gets a `min-height` (or a `visibility:hidden` slot) sized to its **tallest/fullest** state, in line-based `em` against the real font, using `var(--font-sans)`/`var(--font-mono)`. Skipping this is the #1 cause of page-shift, and it's the easiest thing to forget because the figure looks fine in its end state.
-8. **Run both gates** (below) and iterate until green: the conformance gate (`e2e/figureJourney.e2e.ts`) and the height gate (`e2e/figureHeight.e2e.ts`).
-
+8. **Colour from the palette, measure the result** (rule 17): default to the `--fig-*` tokens (DESIGN.md §1); never `opacity` a label/graphic to dim it (use `--fig-faint`); tag load-bearing graphics `data-contrast="graphic"`. Then **`bun run
+  e2e/contrastReport.ts <slug>`** to confirm no failing text — the eye is unreliable on tinted backgrounds.
+9. **Run the gates** (below): conformance (`figureJourney.e2e.ts`), height (`figureHeight.e2e.ts`), and contrast (`figureContrast.e2e.ts`).
 ## Auditing a figure — checklist
 
 Run the conformance gate and read its two distinct checks:
