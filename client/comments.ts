@@ -71,6 +71,11 @@ import {
   saveHighlightsHidden,
   walkBlocks,
 } from "./commentsDom.ts";
+import {
+  DRAWER_BODY_WANTED_ATTR,
+  REQUEST_DRAWER_BODY_EVENT,
+  DRAWER_BODY_READY_EVENT,
+} from "./narratorDom.ts";
 
 // Build-time define (Bun.build `define` map) — `undefined` under the fast
 // `bun run dev` server, `"false"` in built/dev:edge/prod. Used only to gate
@@ -413,26 +418,15 @@ class CommentSystem {
 
     await this.indexArticle();
 
-    // The narrator drawer is appended asynchronously after fetching the
-    // manifest. Watch for it; if it never arrives, commenting still works
-    // on the article alone.
-    const existing = document.querySelector<HTMLElement>(".narrate-drawer");
-    if (existing) {
-      await this.indexDrawer(existing);
-    } else {
-      const obs = new MutationObserver(async () => {
-        const d = document.querySelector<HTMLElement>(".narrate-drawer");
-        if (d) {
-          obs.disconnect();
-          await this.indexDrawer(d);
-          this.renderAll();
-        }
-      });
-      obs.observe(document.body, { childList: true, subtree: false });
-    }
-
     // Load identity first — the comment store is keyed on user id, so
-    // without a logged-in user there's nothing to load.
+    // without a logged-in user there's nothing to load. Identity also gates
+    // the spoken-script DRAWER: it's only indexed/painted when logged in (a
+    // logged-out reader sees no comments and can't create any). So the
+    // logged-in branch below requests + indexes the drawer, and a logged-out
+    // reader never touches it — which lets the narrator keep the drawer body
+    // deferred off the boot path (and off the Lighthouse trace). The drawer is
+    // also built lazily, so we no longer race a `MutationObserver` for it; see
+    // `indexDrawerWhenReady`.
     this.identity = await loadIdentity();
 
     this.mountColumn();
@@ -469,6 +463,14 @@ class CommentSystem {
     });
 
     if (this.identity) {
+      // Narration comments live in the narrator's spoken-script drawer, whose
+      // body is built lazily off the boot path. Request + index it in the
+      // background (then re-render), so it's ready for narration comments
+      // without blocking the article comments rendered below on the narrator's
+      // lazy boot. Fire-and-forget — a non-narrated / opt-out post just never
+      // produces a drawer and the request times out harmlessly.
+      void this.indexDrawerWhenReady();
+
       // Spin up the CRDT-backed store. This is the only place we await
       // Automerge's WASM load — once `create()` returns the store is
       // fully hydrated and all UI handlers can safely call its mutation
@@ -608,6 +610,47 @@ class CommentSystem {
   private async indexArticle() {
     if (!this.articleRoot) return;
     await this.indexRoot(this.articleRoot, "article");
+  }
+
+  // Logged-in only: ask the narrator to build its (deferred) drawer body,
+  // wait for it, then index + render so narration comments anchor. Background
+  // task — the article comments don't wait on it.
+  private async indexDrawerWhenReady(): Promise<void> {
+    const drawer = await this.requestDrawerBody();
+    if (!drawer) return; // no drawer (opt-out / non-narrated post) — article-only
+    await this.indexDrawer(drawer);
+    this.renderAll();
+  }
+
+  // Drive the narrator↔comments handshake (narratorDom.ts): resolve the
+  // drawer once its body exists. If it's already built we return immediately;
+  // otherwise we set the sentinel (for a narrator that boots later) AND fire
+  // the request event (for one already booted), then await the ready signal.
+  private requestDrawerBody(): Promise<HTMLElement | null> {
+    const READY = ".narrate-drawer[data-body-ready]";
+    const ready = document.querySelector<HTMLElement>(READY);
+    if (ready) return Promise.resolve(ready);
+
+    document.documentElement.setAttribute(DRAWER_BODY_WANTED_ATTR, "1");
+    document.dispatchEvent(new CustomEvent(REQUEST_DRAWER_BODY_EVENT));
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (el: HTMLElement | null) => {
+        if (settled) return;
+        settled = true;
+        document.removeEventListener(DRAWER_BODY_READY_EVENT, onReady);
+        clearTimeout(timer);
+        resolve(el);
+      };
+      const onReady = () => finish(document.querySelector<HTMLElement>(READY));
+      document.addEventListener(DRAWER_BODY_READY_EVENT, onReady);
+      // Bound the wait: a narrated post's narrator boots within its
+      // `requestIdleCallback` timeout (~4 s), so this only fully elapses on the
+      // no-drawer case (opt-out / non-narrated), where we fall back to
+      // article-only commenting.
+      const timer = setTimeout(() => finish(document.querySelector<HTMLElement>(READY)), 8000);
+    });
   }
 
   private async indexDrawer(drawer: HTMLElement) {

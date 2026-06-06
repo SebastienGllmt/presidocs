@@ -847,6 +847,8 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   .chapter-pill { transition: none; }
   .chapter-pill:hover { transform: none; }
   .chapter-arrow { transition: none; }
+  /* No slide-in for the script tab — it just appears in place. */
+  .narrate-drawer[data-entering="true"] .narrate-drawer-tab { animation: none; }
 }
 
 /* ============================================================================
@@ -915,6 +917,22 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 }
 
 .narrate-drawer-tab svg { color: var(--accent-strong); } /* tab over the light drawer */
+
+/* Entrance: the drawer shell is built client-side when the narrator boots
+   (deferred off first paint), so without this the tab would just pop into the
+   left edge. `data-entering` (set by narrator.ts on build, cleared after the
+   animation) slides + fades it in from off-screen — a one-shot that mirrors the
+   dock's reveal-from-below, so the player and the script tab arrive as a single
+   coordinated motion rather than two things flashing into place. Gated on the
+   attribute so it plays once on load, never again when the drawer is reclosed
+   (which re-shows the tab via `display`). */
+@keyframes narrate-drawer-tab-in {
+  from { transform: translateX(-130%); opacity: 0; }
+  to   { transform: translateX(0);     opacity: 1; }
+}
+.narrate-drawer[data-entering="true"] .narrate-drawer-tab {
+  animation: narrate-drawer-tab-in 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
 
 .narrate-drawer-header {
   display: flex;

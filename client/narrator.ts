@@ -32,6 +32,9 @@ import {
   shouldIgnoreKeyboardShortcut,
   KEY_BINDINGS,
   matchesKeyBinding,
+  DRAWER_BODY_WANTED_ATTR,
+  REQUEST_DRAWER_BODY_EVENT,
+  DRAWER_BODY_READY_EVENT,
 } from "./narratorDom.ts";
 
 // Per-word timing entry inside a mark. `s`/`e` are character offsets into the
@@ -177,6 +180,12 @@ class Narrator {
   // Spoken-script drawer + per-mark segment elements.
   private drawerEl: HTMLElement | null = null;
   private drawerTabBtn: HTMLButtonElement | null = null;
+  // The drawer body is built lazily off the boot path — see `ensureDrawerBody`
+  // and the narrator↔comments contract in narratorDom.ts. `drawerBodyEl` is the
+  // empty container appended with the shell; `drawerBodyBuilt` guards the
+  // one-time populate.
+  private drawerBodyEl: HTMLElement | null = null;
+  private drawerBodyBuilt = false;
   private segmentEls = new Map<string, HTMLElement>();
   // Per-mark word `<span>`s for the karaoke-style active-word highlight.
   // Populated by `renderSegment` only when the mark carries `words` — marks
@@ -314,7 +323,7 @@ class Narrator {
     this.setupCloseButton();
     this.setupSmoothBar();
     this.setupKeyboardShortcuts();
-    this.buildDrawer(manifest);
+    this.buildDrawer();
     this.setupDividerSpeakers();
     this.setupHeadingSpeakers();
     void this.maybeEnableAuthorTools();
@@ -1534,10 +1543,16 @@ class Narrator {
     this.figureDetachHandler = null;
   }
 
-  // Build the slide-in drawer that lists the full spoken script grouped by
-  // chapter. Each segment is an <article id="spoken-<markName>"> so external
-  // anchors and future comment threads can target it by stable ID.
-  private buildDrawer(manifest: Manifest) {
+  // Build the slide-in drawer SHELL (the `<aside>` + tab handle + header + an
+  // empty body) eagerly. The BODY — one `<article id="spoken-<markName>">` per
+  // segment, each split into per-word spans on an aligned post — is the node
+  // bulk, so it's deferred to `ensureDrawerBody` and built on demand: when the
+  // reader opens the drawer, on a `#spoken-…` deep link, or when the logged-in
+  // comment system requests it (a logged-out reader never triggers it, so on
+  // the common path — and the Lighthouse trace — the body never builds unless
+  // the reader opens the script). See the narrator↔comments contract in
+  // narratorDom.ts and methodology → Narrator ("Loading: a lazy boot").
+  private buildDrawer() {
     const drawer = document.createElement("aside");
     drawer.id = "narrate-drawer";
     drawer.className = "narrate-drawer";
@@ -1578,12 +1593,47 @@ class Narrator {
     header.appendChild(closeBtn);
     drawer.appendChild(header);
 
-    // Body: one section per chapter, each section is a list of segments.
-    // Sub-chapter sections nest INSIDE their parent's section so the parent
-    // heading can stay sticky for the duration of its sub-chapters (sticky
-    // scoping is bounded by the containing block).
+    // Empty body container — populated lazily by `ensureDrawerBody`.
     const body = document.createElement("div");
     body.className = "narrate-drawer-body";
+    drawer.appendChild(body);
+
+    // One-shot entrance: the shell is built client-side at narrator boot, so
+    // without this the tab pops into the left edge. `data-entering` (set before
+    // append so the first render carries it) drives the tab's slide+fade in
+    // (see `.narrate-drawer-tab` in narrator.css) — a single coordinated motion
+    // with the dock's reveal. Cleared after the animation so reclosing the
+    // drawer (which re-shows the tab) doesn't replay it.
+    drawer.dataset.entering = "true";
+
+    document.body.appendChild(drawer);
+    this.drawerEl = drawer;
+    this.drawerBodyEl = body;
+
+    // 300 ms animation (narrator.css) + a frame of slack; harmless if it lingers
+    // under reduced motion (the animation is suppressed there anyway).
+    setTimeout(() => drawer.removeAttribute("data-entering"), 360);
+
+    // Order-independent handshake (narratorDom.ts): if a requester (the
+    // logged-in comment system) already asked for the body before we booted,
+    // build it now; otherwise answer the request whenever it arrives.
+    if (document.documentElement.hasAttribute(DRAWER_BODY_WANTED_ATTR)) {
+      this.ensureDrawerBody();
+    }
+    document.addEventListener(REQUEST_DRAWER_BODY_EVENT, () => this.ensureDrawerBody());
+  }
+
+  // Populate the deferred drawer body once: one section per chapter, each a
+  // list of `<article id="spoken-<markName>">` segments (sub-chapter sections
+  // nest INSIDE their parent's so its heading stays sticky for the duration —
+  // sticky scoping is bounded by the containing block). Idempotent. Safe to
+  // call from any trigger (open / deep-link / comment request).
+  private ensureDrawerBody() {
+    if (this.drawerBodyBuilt) return;
+    const body = this.drawerBodyEl;
+    const manifest = this.manifest;
+    if (!body || !manifest) return;
+    this.drawerBodyBuilt = true;
 
     const byChapter = new Map<string, ManifestMark[]>();
     for (const mark of manifest.marks) {
@@ -1637,10 +1687,25 @@ class Narrator {
       const section = buildSection(chapter, false);
       if (section) body.appendChild(section);
     }
-    drawer.appendChild(body);
 
-    document.body.appendChild(drawer);
-    this.drawerEl = drawer;
+    // The drawer is now indexable. Mark it + fire the READY signal so a
+    // comment system that requested the body (and is awaiting it) can index
+    // and paint narration highlights into a fully-built drawer.
+    this.drawerEl?.setAttribute("data-body-ready", "true");
+    document.dispatchEvent(new CustomEvent(DRAWER_BODY_READY_EVENT));
+
+    // Re-apply the active highlight: a live playback's rAF tick catches the
+    // new spans next frame, but a paused reader who just built the drawer
+    // needs the current mark/word lit once now.
+    if (this.activeId) {
+      this.segmentEls.get(this.activeId)?.classList.add("narration-active");
+      if (this.player) {
+        this.updateActiveWord(
+          this.activeId,
+          secondsToMs(asSeconds(this.player.currentTime)),
+        );
+      }
+    }
   }
 
   private renderSegment(mark: ManifestMark): HTMLLIElement {
@@ -1769,6 +1834,9 @@ class Narrator {
 
   private setDrawerOpen(open: boolean) {
     if (!this.drawerEl || !this.drawerTabBtn) return;
+    // Opening reveals the script — build the (deferred) body first so there's
+    // something to show. No-op if already built.
+    if (open) this.ensureDrawerBody();
     if (this.drawerOpen === open) return;
     this.drawerOpen = open;
     this.drawerEl.dataset.open = String(open);
@@ -1800,6 +1868,8 @@ class Narrator {
     // `%xx`, and "not our prefix" cases uniformly. See narratorDom.ts.
     const markName = parseSpokenHash(window.location.hash);
     if (!markName) return;
+    // The target segment lives in the (deferred) drawer body — build it first.
+    this.ensureDrawerBody();
     const seg = this.segmentEls.get(markName);
     if (!seg) return;
     this.setDrawerOpen(true);
