@@ -24,18 +24,27 @@
 // See methodology → Cascade-layer architecture, "Pinning the order".
 
 import type { BunPlugin } from "bun";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { injectLayerOrderStyle } from "./cssLayers.ts";
 import { injectSiteFooterFromEnv } from "./bunFooterPlugin.ts";
 import { resolveBlogPaths } from "./blogPaths.ts";
+import { buildAuthorMap } from "./authorProfile.ts";
+import { buildPublicPostVersionsMap } from "./publicPostVersions.ts";
+import { injectPostChrome } from "./articleChromeReserve.ts";
 import { chipsHtmlFromSource, injectFeatureChips } from "../generate/help-page.ts";
 
-// The above-the-fold Red Hat faces worth preloading: body prose (Text 400) and
-// headings/title (Text 700). The other faces (500/600/italic, the mono pair)
-// are below the fold or rare, so preloading them would only contend with the
-// critical bundle. Served from dist root as `/fonts/*.woff2` (copy-static.ts);
-// absolute so the same tag resolves from `/posts/<slug>` too.
-const PRELOAD_FONT_FACES = ["redhattext-400.woff2", "redhattext-700.woff2"];
+// The above-the-fold Red Hat faces worth preloading: body prose (Text 400),
+// the medium weight (Text 500 — Lighthouse's `cls-culprits-insight` named its
+// woff2 by name as the residual first-section reflow once 400/700 were
+// preloaded), and headings/title (Text 700). The remaining faces (600/italic,
+// the mono pair) are below the fold or rare, so preloading them would only
+// contend with the critical bundle. Served from dist root as `/fonts/*.woff2`
+// (copy-static.ts); absolute so the same tag resolves from `/posts/<slug>` too.
+const PRELOAD_FONT_FACES = [
+  "redhattext-400.woff2",
+  "redhattext-500.woff2",
+  "redhattext-700.woff2",
+];
 
 const FONT_PRELOAD_TAGS = PRELOAD_FONT_FACES.map(
   // `crossorigin` is mandatory even same-origin: fonts are fetched in CORS mode,
@@ -61,10 +70,38 @@ export function injectFontPreloads(html: string): string {
 export function htmlHeadPlugin(
   opts: { injectChips?: boolean; preloadFonts?: boolean } = {},
 ): BunPlugin {
+  const paths = resolveBlogPaths();
   // The landing whose chips we inject (dev only). Resolved once; null disables.
   const landingPath = opts.injectChips
-    ? resolve(join(resolveBlogPaths().contentRoot, "index.html"))
+    ? resolve(join(paths.contentRoot, "index.html"))
     : null;
+
+  // Map a built HTML file back to its public post path (`/posts/<slug>`), or
+  // null for non-posts (landing, privacy, the dev sound-test page). Posts live
+  // flat under postsDir; anything outside it isn't a post.
+  const postsDir = resolve(paths.postsDir);
+  const toPostPath = (file: string): string | null => {
+    const rel = relative(postsDir, resolve(file));
+    if (rel.startsWith("..") || rel.includes("/") || !rel.endsWith(".html")) return null;
+    return `/posts/${rel.slice(0, -".html".length)}`;
+  };
+
+  // Lazy, cached lookups for the data-gated reserves (byline needs an author,
+  // post-meta needs a version) — the SAME sources the byline fetches at runtime
+  // (createDevServer serves authors.json/post-versions.json from these), so the
+  // reserve matches what renders. Cached so a multi-post build doesn't re-scan
+  // per file; absent data degrades to "no reserve" rather than throwing.
+  let authorsP: Promise<Record<string, { name?: string }>> | null = null;
+  let versionsP: Promise<Record<string, unknown>> | null = null;
+  const authors = () =>
+    (authorsP ??= buildAuthorMap(paths.postsDir, paths.contentRoot)
+      .then((r) => r.map as Record<string, { name?: string }>)
+      .catch(() => ({}) as Record<string, { name?: string }>));
+  const versions = () =>
+    (versionsP ??= buildPublicPostVersionsMap(paths.versionsJson)
+      .then((m) => m as Record<string, unknown>)
+      .catch(() => ({}) as Record<string, unknown>));
+
   return {
     name: "presidocs:html-head",
     setup(build) {
@@ -74,6 +111,17 @@ export function htmlHeadPlugin(
         if (opts.preloadFonts) html = injectFontPreloads(html);
         if (landingPath && resolve(args.path) === landingPath) {
           html = injectFeatureChips(html, await chipsHtmlFromSource());
+        }
+        // Reserve the client-injected article chrome + hide the narration dock,
+        // so it never reflows the page on mount. Runs in dev and prod (this
+        // plugin is registered in both), keeping CLS identical across them.
+        const postPath = toPostPath(args.path);
+        if (postPath) {
+          const [authorMap, versionMap] = await Promise.all([authors(), versions()]);
+          html = injectPostChrome(html, postPath, {
+            hasAuthor: !!authorMap[postPath]?.name,
+            hasVersion: postPath in versionMap,
+          });
         }
         return { contents: html, loader: "html" };
       });

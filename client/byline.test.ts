@@ -84,6 +84,14 @@ test("buildByline emits avatar + name + link anchors", () => {
   expect(links.length).toBe(2);
 });
 
+test("buildByline avatar loads eagerly (it's above the fold)", () => {
+  const img = buildByline(sampleProfile()).querySelector<HTMLImageElement>(".byline-avatar")!;
+  expect(img.loading).toBe("eager");
+  // The follow-CTA avatar (bottom of post) stays lazy.
+  const cta = buildFollowCta(sampleProfile())!;
+  expect(cta.querySelector<HTMLImageElement>(".author-cta-avatar")!.loading).toBe("lazy");
+});
+
 test("buildByline avatar uses author NAME as alt text (not email)", () => {
   // The privacy property methodology calls out — the email must not
   // leak through the served byline. The alt is on the avatar that
@@ -266,6 +274,69 @@ test("mountBylineInto: post-meta lands directly after #title when version is pro
   const nextNext = next.nextElementSibling as HTMLElement;
   expect(next.classList.contains("post-meta")).toBe(true);
   expect(nextNext.classList.contains("byline")).toBe(true);
+});
+
+test("mountBylineInto: replaces the .byline-reserve placeholder in place (no reflow)", () => {
+  // The build emits a fixed-height reserve (shared/articleChromeReserve.ts via
+  // the bunHtmlHeadPlugin, dev + prod); the client swaps it for the real byline
+  // via replaceWith, so the article below never shifts. The byline must land
+  // exactly where the reserve was, and
+  // the reserve must be gone.
+  document.body.innerHTML = `
+    <article data-narration-src="/x">
+      <h1 id="title">Title</h1>
+      <p id="lede">lede</p>
+      <div class="byline-reserve" aria-hidden="true"></div>
+      <p>body</p>
+    </article>
+  `;
+  const article = document.querySelector<HTMLElement>("[data-narration-src]")!;
+  const lede = article.querySelector("#lede")!;
+  mountBylineInto(article, sampleProfile(), null);
+
+  expect(article.querySelector(".byline-reserve")).toBeNull();
+  // The real byline now occupies the reserve's slot — immediate sibling of lede.
+  expect((lede.nextElementSibling as HTMLElement).classList.contains("byline"))
+    .toBe(true);
+  // Exactly one byline (no stray sibling-insert in addition to the swap).
+  expect(article.querySelectorAll(".byline").length).toBe(1);
+});
+
+test("mountBylineInto: replaces the .post-meta-reserve placeholder when a version is present", () => {
+  document.body.innerHTML = `
+    <article data-narration-src="/x">
+      <h1 id="title">Title</h1>
+      <div class="post-meta-reserve" aria-hidden="true"></div>
+      <p id="lede">lede</p>
+      <div class="byline-reserve" aria-hidden="true"></div>
+      <p>body</p>
+    </article>
+  `;
+  const article = document.querySelector<HTMLElement>("[data-narration-src]")!;
+  const title = article.querySelector("#title")!;
+  mountBylineInto(article, sampleProfile(), { lastUpdated: "2026-05-31" });
+
+  expect(article.querySelector(".post-meta-reserve")).toBeNull();
+  expect((title.nextElementSibling as HTMLElement).classList.contains("post-meta"))
+    .toBe(true);
+  expect(article.querySelectorAll(".post-meta").length).toBe(1);
+});
+
+test("mountBylineInto: drops a stray .post-meta-reserve when the client has no version", () => {
+  // If the build reserved the strip but the client couldn't resolve a date,
+  // remove the placeholder rather than leave a blank gap.
+  document.body.innerHTML = `
+    <article data-narration-src="/x">
+      <h1 id="title">Title</h1>
+      <div class="post-meta-reserve" aria-hidden="true"></div>
+      <p>body</p>
+    </article>
+  `;
+  const article = document.querySelector<HTMLElement>("[data-narration-src]")!;
+  mountBylineInto(article, sampleProfile(), null);
+
+  expect(article.querySelector(".post-meta-reserve")).toBeNull();
+  expect(article.querySelector(".post-meta")).toBeNull();
 });
 
 test("mountBylineInto: engine attribution always appended (even when CTA is suppressed)", () => {

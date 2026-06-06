@@ -71,6 +71,17 @@ test("falls back to a name slug when there is no handle or X link", async () => 
   expect(r.author.profile.avatar).toBe("/assets/authors/carol-q.-public.png");
 });
 
+test("prefers the WebP avatar when both WebP and PNG exist (optimized browser delivery)", async () => {
+  writeProfile("erin@example.com", { name: "Erin", handle: "ErinE" });
+  writeAvatar("erin@example.com", "png"); // raster source kept for share cards
+  writeAvatar("erin@example.com", "webp"); // optimized, served to browsers
+  const r = await resolveAuthorProfile(root, "erin@example.com");
+  expect(r.ok).toBe(true);
+  if (!r.ok) return;
+  expect(r.author.profile.avatar).toBe("/assets/authors/erine.webp");
+  expect(r.author.avatarServedName).toBe("erine.webp");
+});
+
 test("renders text-only (avatar null) when no avatar file exists", async () => {
   writeProfile("dave@example.com", { name: "Dave" });
   const r = await resolveAuthorProfile(root, "dave@example.com");

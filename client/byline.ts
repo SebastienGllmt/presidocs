@@ -169,7 +169,10 @@ export function buildByline(profile: PublicAuthorProfile): HTMLElement {
     img.width = 48;
     img.height = 48;
     img.alt = profile.name;
-    img.loading = "lazy";
+    // Above the fold (top of the article) — load eagerly; lazy would defer a
+    // ~2.5 KB WebP that's in the first viewport. The follow-CTA avatar below
+    // stays lazy (bottom of the post).
+    img.loading = "eager";
     img.decoding = "async";
     wrap.appendChild(img);
   }
@@ -313,8 +316,19 @@ export function mountBylineInto(
   const lede = article.querySelector("#lede");
   const title = article.querySelector("#title");
 
+  // The build serves a fixed-height reserve placeholder where each element
+  // mounts (shared/articleChromeReserve.ts, applied by the bunHtmlHeadPlugin in
+  // both dev and prod); base.css gives the reserve the same box as the real
+  // element, so swapping it in is a single zero-shift layout pass — killing the
+  // article reflow Lighthouse's `cls-culprits-insight` attributed to this client
+  // insert. The sibling-insert path below is the fallback when no reserve is
+  // present. The reserve class (`.byline-reserve`) is distinct from `.byline`,
+  // so the `boot()` idempotence guard never mistakes the empty placeholder for a
+  // populated byline.
+  const bylineReserve = article.querySelector(".byline-reserve");
+  if (bylineReserve) bylineReserve.replaceWith(byline);
   // Byline keeps its old slot — under the lede if present, else under the title.
-  if (lede) lede.after(byline);
+  else if (lede) lede.after(byline);
   else if (title) title.after(byline);
   else article.prepend(byline);
 
@@ -326,7 +340,13 @@ export function mountBylineInto(
   // title anchor, DOM order is title → postMeta → byline (each .after() inserts
   // as the title's *immediate* next sibling, pushing the previous insertion
   // down).
-  if (postMeta) {
+  const postMetaReserve = article.querySelector(".post-meta-reserve");
+  if (postMetaReserve) {
+    // A reserve is emitted only when the build had a version; if the client
+    // somehow lacks one, drop the placeholder rather than leave a blank strip.
+    if (postMeta) postMetaReserve.replaceWith(postMeta);
+    else postMetaReserve.remove();
+  } else if (postMeta) {
     if (title) title.after(postMeta);
     else article.prepend(postMeta);
   }

@@ -253,9 +253,23 @@
     flex-wrap: wrap;
     align-items: center;
     gap: .4em;
+    /* Pin the single-line height so the build-time `.post-meta-reserve`
+       placeholder (below) reserves the identical box — the client swap is then
+       a zero-shift replaceWith. */
+    min-height: 1.25rem;
     /* No `opacity` here: it would composite the muted text toward the page bg
        and drop it under 4.5:1 (it did — measured 3.5:1). The muted token is
        already the de-emphasised shade at 6.17:1. (DESIGN.md §1.) */
+  }
+  /* Fixed-height placeholder the build emits where the client post-meta strip
+     mounts (shared/articleChromeReserve.ts, applied by the bunHtmlHeadPlugin in
+     both dev and prod). Carries the SAME outer box (margin + min-height) as
+     `.post-meta`, so the post-fetch replaceWith reflows nothing. Empty +
+     aria-hidden: pure layout reservation, invisible and ignored by AT until
+     populated. */
+  .post-meta-reserve {
+    margin: -24px .25rem 0;
+    min-height: 1.25rem;
   }
   /* Fade the "Last updated" LABEL (not the date) so the date is the focal point.
      Faintest legible opaque grey, not a stacked `opacity` — see --page-fg-faint. */
@@ -268,7 +282,13 @@
      on hover, the standard "go back" microinteraction. Injected by JS, so these
      rules style markup the static HTML doesn't carry. */
   .back-link {
-    display: inline-flex;
+    /* Block-level flex (not inline-flex) + fit-content width: hugs its content
+       and sits alone on its line exactly like inline-flex did, but as a normal
+       block box — so its vertical footprint equals the block `.back-link-reserve`
+       placeholder's (no anonymous-line-box strut from the article's 1.6
+       line-height), making the client replaceWith a zero-shift swap. */
+    display: flex;
+    width: fit-content;
     align-items: center;
     gap: .4em;
     margin: 0 0 .9rem;
@@ -292,6 +312,41 @@
     transition: transform 120ms ease;
   }
   .back-link:hover .back-link-icon svg { transform: translateX(-2px); }
+  /* Fixed-height placeholder the build emits as the article's first child where
+     the client back-link mounts (shared/articleChromeReserve.ts, applied by the
+     bunHtmlHeadPlugin in both dev and prod). Reserves the back-link's exact line
+     box (.8rem text at line-height 1.2 = 1.2em ≈ 15.4px) plus its .9rem bottom
+     margin, so the in-place replaceWith reflows nothing — the title / "Last
+     updated" strip / body no longer drop when the link appears. Empty +
+     aria-hidden until populated. */
+  .back-link-reserve {
+    font-size: .8rem;
+    min-height: 1.2em;
+    margin: 0 0 .9rem;
+  }
+
+  /* Control-row zone (shared/articleChromeReserve.ts, applied by the
+     bunHtmlHeadPlugin in both dev and prod). A min-height flex container the
+     copy-markdown + subscribe controls mount INTO (append), so the row appearing
+     after parse/fetch never drops the body — the residual control-row CLS. Lays
+     the controls out beside each other exactly as the old inline-flex siblings
+     did (top-aligned, wrapping as a unit on a narrow viewport); owning the gap +
+     top margin here lets the children drop their own outer margins so the empty
+     reserve and the filled row are the same height. min-height reserves one row.
+     (The `copy-md`/`subctl-row` legacy-slot CSS still applies as the fallback
+     when no zone is present.) */
+  .subctl-zone {
+    display: flex;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: .5rem;
+    margin: .25rem 0 0;
+    min-height: 1.6rem;
+  }
+  .subctl-zone > .copy-md,
+  .subctl-zone > .subctl-row {
+    margin: 0;
+  }
 
   /* "Copy as Markdown" split control (client/copyMarkdown.ts). A small, muted
      segmented pill in the byline/lede slot — a primary "Copy" button plus a
@@ -638,6 +693,20 @@
     align-items: center;
     gap: .75rem;
     margin: 1rem 0 1.5rem;
+    /* Pin the row height (= the 48px avatar) so the build-time `.byline-reserve`
+       placeholder (below) reserves the identical box and the no-avatar variant
+       holds the same height too — making the client swap a zero-shift
+       replaceWith rather than the article-pushing reflow Lighthouse's
+       `cls-culprits-insight` attributed to this insert. */
+    min-height: 48px;
+  }
+  /* Fixed-height placeholder the build emits where the client byline mounts
+     (shared/articleChromeReserve.ts, applied by the bunHtmlHeadPlugin in both dev
+     and prod). Same outer box (margin + min-height) as `.byline`; empty +
+     aria-hidden until the client replaceWith populates it. */
+  .byline-reserve {
+    margin: 1rem 0 1.5rem;
+    min-height: 48px;
   }
   .byline-avatar {
     width: 48px;

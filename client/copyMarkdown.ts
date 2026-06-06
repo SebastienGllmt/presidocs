@@ -295,12 +295,18 @@ export function installCopyMarkdown(article: HTMLElement): void {
   group.appendChild(more);
   group.appendChild(menu);
 
-  // Same slot family as the byline: under the lede if present, else under the
-  // title (#title is the post's <h1>). Falls back to prepending into the
-  // article so the control always has a home.
+  // The build serves a min-height `.subctl-zone` flex container
+  // (shared/articleChromeReserve.ts, applied by the bunHtmlHeadPlugin in both
+  // dev and prod) so the control row doesn't drop the body when it appears;
+  // mount into it. subscribe.ts then does `copyMd.after(row)`, landing its row in
+  // the same zone — so it needs no change. The byline-slot fallback below (under
+  // the lede if present, else the title, else prepended) covers any context with
+  // no zone, so the control always has a home.
+  const zone = article.querySelector(".subctl-zone");
   const lede = article.querySelector("#lede");
   const title = article.querySelector("#title");
-  if (lede) lede.after(group);
+  if (zone) zone.appendChild(group);
+  else if (lede) lede.after(group);
   else if (title) title.after(group);
   else article.prepend(group);
 }

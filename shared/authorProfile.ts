@@ -8,8 +8,11 @@
 // no central config to keep in sync, no env-var fallback.
 //
 //   authors/<author-email>.json   { name, handle?, links?, avatar? }
-//   authors/<author-email>.png    avatar (or .jpg/.jpeg/.webp; an explicit
-//                                  "avatar" field overrides discovery)
+//   authors/<author-email>.webp   avatar served to browsers (preferred); a
+//                                  .png/.jpg/.jpeg is also discovered, and is
+//                                  what the share-card renderer uses (it can't
+//                                  decode WebP). An explicit "avatar" field
+//                                  overrides discovery.
 //   authors/<author-email>.wav    MOSS voice-clone clip (build-only input,
 //                                  never served — see shared/voiceResolution.ts)
 //
@@ -56,7 +59,13 @@ export type AuthorProfileResolution =
   | { ok: true; author: ResolvedAuthor }
   | { ok: false; reason: string };
 
-const AVATAR_EXTS = ["png", "jpg", "jpeg", "webp"] as const;
+// WebP first: it's the optimized format we serve to browsers (a 192px PNG avatar
+// is ~49 KB; the same at 144px WebP is ~2.5 KB — Lighthouse's image-delivery
+// insight). PNG/JPEG follow as the raster source the share-card renderer needs
+// (satori/resvg can't decode WebP), so an author who wants their photo on social
+// cards keeps a `.png`/`.jpg` alongside the `.webp` — see share-card.ts's
+// `avatarDataUri` sibling fallback.
+const AVATAR_EXTS = ["webp", "png", "jpg", "jpeg"] as const;
 
 // A public, URL- and filename-safe slug. Lowercased so the served path is
 // case-stable across filesystems; only `[a-z0-9._-]` survive. `@` and other

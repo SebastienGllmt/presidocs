@@ -247,6 +247,8 @@ class Narrator {
       this.playerContainer.textContent =
         "Narration unavailable — run `bun run generate`.";
       this.playerContainer.classList.add("narrate-player-error");
+      // Reveal the (build-hidden) dock so the nudge is actually visible.
+      this.revealDock();
       return;
     }
     this.manifest = manifest;
@@ -323,6 +325,14 @@ class Narrator {
     // Shikwasa's chapter plugin fires this whenever the active chapter changes
     // — including when the user drags the scrub bar across a boundary.
     this.player.on("chapterchange", () => this.updateActiveChapter());
+
+    // Everything that determines the dock's height (player + chapter strip) is
+    // now mounted, so reveal it. The build ships the dock `data-hidden="true"`
+    // (shared/articleChromeReserve.ts → hideNarrateDockForReveal, applied by the
+    // bunHtmlHeadPlugin in both dev and prod) so it never painted its empty box;
+    // revealing it here slides it up via transform/opacity — neither of which
+    // triggers layout shift — so the player costs zero CLS.
+    this.revealDock();
 
     // Media Session arming deferred to `onPlay` — see `hasPlayed`. A
     // tab isn't the OS session target until audio actually plays
@@ -505,6 +515,20 @@ class Narrator {
     this.toggleBtn.setAttribute("aria-expanded", String(!hidden));
     // Audio intentionally keeps playing — the user may be hiding the UI to
     // read along undistracted. They can pause with Space if they want.
+  }
+
+  // Reveal the dock once it's fully built (or on error, so the nudge shows).
+  // Independent of the visibility toggle so the error path — which returns
+  // before setupVisibilityToggle wires `toggleBtn` — can still reveal it. The
+  // build ships the dock `data-hidden="true"` in both dev and prod; this clears
+  // it. (A harmless no-op if some context served the dock un-hidden.)
+  private revealDock() {
+    const dock =
+      this.dockEl ?? (this.playerContainer.closest(".narrate-dock") as HTMLElement | null);
+    if (!dock) return;
+    dock.dataset.hidden = "false";
+    dock.setAttribute("aria-hidden", "false");
+    this.toggleBtn?.setAttribute("aria-expanded", "true");
   }
 
   // Page-global keyboard shortcuts (Space / arrows / 1-9). Armed from

@@ -172,3 +172,7 @@ test("injectMarkdownAltLink: idempotent and scoped to posts", () => {
   // Non-post pages (landing, privacy) get no markdown link.
   expect(injectMarkdownAltLink(`<head></head>`, "/index")).toBe(`<head></head>`);
 });
+
+// The article-chrome reserves + narration-dock hide moved to
+// shared/articleChromeReserve.ts (applied by the bunHtmlHeadPlugin in dev + prod)
+// — their tests live in shared/articleChromeReserve.test.ts.

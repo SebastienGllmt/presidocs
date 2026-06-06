@@ -238,12 +238,24 @@ function hasOwnOgImage(html: string): boolean {
   return /<meta\s+[^>]*property=["']og:image["']/i.test(html);
 }
 
-async function avatarDataUri(srcPath: string | null): Promise<string | null> {
+export async function avatarDataUri(srcPath: string | null): Promise<string | null> {
   if (!srcPath) return null;
-  const ext = srcPath.split(".").pop()?.toLowerCase();
-  const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "png" ? "image/png" : null;
-  if (!mime) return null; // satori reliably embeds PNG/JPEG; skip exotic formats
-  const b64 = Buffer.from(await Bun.file(srcPath).arrayBuffer()).toString("base64");
+  // satori reliably embeds PNG/JPEG only — it can't decode WebP (throws on the
+  // missing dimensions). The engine prefers WebP for browser delivery, so the
+  // resolved avatar is often `.webp`; fall back to a same-name PNG/JPEG sibling
+  // the author keeps for exactly this. No raster sibling ⇒ the card renders
+  // without a photo (degrade, don't fail).
+  let path = srcPath;
+  let ext = path.split(".").pop()?.toLowerCase();
+  if (ext !== "png" && ext !== "jpg" && ext !== "jpeg") {
+    const base = srcPath.slice(0, srcPath.length - (ext?.length ?? 0) - 1); // strip ".<ext>"
+    const sibling = ["png", "jpg", "jpeg"].map((e) => `${base}.${e}`).find((p) => existsSync(p));
+    if (!sibling) return null;
+    path = sibling;
+    ext = path.split(".").pop()?.toLowerCase();
+  }
+  const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : "image/png";
+  const b64 = Buffer.from(await Bun.file(path).arrayBuffer()).toString("base64");
   return `data:${mime};base64,${b64}`;
 }
 

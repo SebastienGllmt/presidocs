@@ -196,6 +196,10 @@ function injectPostMainLandmark(html: string, postPath: string): string {
     .transform(html);
 }
 
+// NOTE: the client-chrome reserves + narration-dock hide are applied by
+// shared/bunHtmlHeadPlugin.ts (via shared/articleChromeReserve.ts), which runs in
+// both dev and prod — not in this prod-only strip, so the dev server reserves too.
+
 async function walkHtml(dir: string): Promise<string[]> {
   const out: string[] = [];
   let entries;

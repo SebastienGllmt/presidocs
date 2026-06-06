@@ -55,7 +55,13 @@ export function buildBackLink(): HTMLAnchorElement {
 export function installBackLink(article: HTMLElement): void {
   // Idempotent — never render two links.
   if (article.querySelector(".back-link")) return;
-  article.prepend(buildBackLink());
+  // The build serves a fixed-height `.back-link-reserve` first child
+  // (shared/articleChromeReserve.ts, applied by the bunHtmlHeadPlugin in both
+  // dev and prod) so the link doesn't drop the title/body when it appears; swap
+  // it in place. The prepend below is the fallback when no reserve is present.
+  const reserve = article.querySelector(".back-link-reserve");
+  if (reserve) reserve.replaceWith(buildBackLink());
+  else article.prepend(buildBackLink());
 }
 
 function boot(): void {

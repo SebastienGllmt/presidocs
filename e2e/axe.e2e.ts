@@ -38,7 +38,7 @@ const DEFERRED_RULES = new Set(["label-content-name-mismatch"]);
 
 // ⚠️  DELIBERATE, NON-EXTENSIBLE contrast exemptions. ⚠️
 //
-// These three surfaces fail SC 1.4.3 BY DESIGN — the low contrast is the
+// These two surfaces fail SC 1.4.3 BY DESIGN — the low contrast is the
 // intended UX, not a bug we haven't gotten to. Their `color-contrast` nodes are
 // stripped before the gate asserts (per-node, so EVERY OTHER rule still applies
 // to them, and any *new* contrast failure anywhere else still hard-fails).
@@ -47,17 +47,13 @@ const DEFERRED_RULES = new Set(["label-content-name-mismatch"]);
 // valve. Do NOT add to it to silence a real failure. The bar for entry is
 // "the faintness is the deliberate point," and each entry is a known special
 // case the figure-authoring guidance (DESIGN.md §1, figure-journey Rule 17)
-// explicitly says NOT to imitate. If you're tempted to add a fourth, fix the
+// explicitly says NOT to imitate. If you're tempted to add a third, fix the
 // colour instead — `bun run e2e/contrastReport.ts` shows you exactly what to fix.
 const CONTRAST_EXEMPT_SELECTORS = [
   // The logged-out comments identity card: dimmed (opacity .35) until the reader
   // scrolls/engages, then brightens. Slated for a fundamental redesign (readers
   // dislike it); exempt only until that lands, then remove this line.
   ".cmt-identity-loggedout",
-  // Redaction chips in the privacy-tradeoff figure ("🕶 hidden" / "•••••"): the
-  // obscured faintness IS the "this is hidden" signal. (Also carries
-  // data-contrast="exempt" for the figure gate.)
-  ".redact",
   // Narrator sub-chapter segments: subordinate-by-dim (opacity .7) beneath their
   // parent chapter on the dark dock — a transient, hover-restored affordance.
   ".ch-seg[data-sub]",
