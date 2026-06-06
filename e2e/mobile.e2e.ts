@@ -5,9 +5,15 @@
 // alone does NOT reproduce a phone: it keeps a fine pointer and `hover: hover`,
 // so `@media (pointer: coarse)` / `(hover: none)` rules and touch-only input go
 // untested. This tier uses Playwright's device descriptor (harness MOBILE_DEVICE
-// → isMobile + hasTouch + mobile UA) so the blog's mobile-only surfaces — the
-// hide-all FAB (hidden ≥1100px) and the tap-to-popover comment cards — run the
+// → isMobile + hasTouch + mobile UA) so the blog's mobile-only surfaces run the
 // way a reader on a phone actually drives them.
+//
+// Mobile comments model (methodology → Comments → Responsive): a single small top-right button
+// (`.cmt-comments-btn`, hidden ≥1100px) is the only comments chrome at rest. It
+// opens ONE menu (`.cmt-menu`) — identity / sign-in / "comment on selection" /
+// highlight-toggle — and every thread/draft card popover drops down from the
+// SAME place (re-anchored under the button). There is no floating sign-in pill
+// and no over-the-selection action bar on mobile.
 //
 // Chromium-only: device emulation (isMobile) is a Chromium feature, which suits
 // this Chromium-primary harness. See methodology → Testing layout.
@@ -81,13 +87,14 @@ async function normalParagraphIndices(page: Page): Promise<number[]> {
 }
 
 /**
- * Drive the real comment-creation UI on the `blockIndex`-th block — the same
- * "comment fixture" `commentPositioning.e2e.ts` uses. It works unchanged under
- * the mobile context: the selection is a programmatic `Range` (viewport-
- * agnostic) and the action-bar → draft → submit path is width-independent, so a
- * comment seeds at phone width exactly as it does on desktop. The *interaction*
- * we actually test on a real device — the tap that opens the popover — is driven
- * by `page.tap()` below, not here.
+ * Drive the real mobile comment-creation UI on the `blockIndex`-th block.
+ *
+ * The mobile path: select article text → tap the corner button
+ * (which captures the selection on pointerdown, before the tap collapses it) →
+ * tap "Leave comment on selection" in the menu → a draft card opens. We
+ * reproduce that here: set a programmatic selection, then synchronously fire the
+ * button's `pointerdown` + `click` (so the captured selection can't collapse in
+ * between), then tap the menu's primary action. Requires a signed-in context.
  */
 async function seedThreadViaUI(page: Page, blockIndex: number, body: string): Promise<void> {
   const ok = await page.evaluate((idx) => {
@@ -106,15 +113,19 @@ async function seedThreadViaUI(page: Page, blockIndex: number, body: string): Pr
     const sel = window.getSelection()!;
     sel.removeAllRanges();
     sel.addRange(range);
+    // Open the menu with the selection live: pointerdown captures it, click
+    // opens the menu. Both synchronous so nothing collapses the selection.
+    const btn = document.querySelector<HTMLButtonElement>(".cmt-comments-btn");
+    if (!btn) return false;
+    btn.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    btn.click();
     return true;
   }, blockIndex);
   expect(ok, `block ${blockIndex} should be a commentable text block`).toBe(true);
 
-  await page.locator(".cmt-action-bar:not([hidden]) .cmt-action-btn").waitFor({ state: "visible", timeout: 5000 });
-  // Handler is on mousedown (so the selection isn't lost to focus first).
-  await page.evaluate(() =>
-    document.querySelector(".cmt-action-btn")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })),
-  );
+  // The menu's primary action exists only when a selection was captured.
+  await page.locator(".cmt-menu .cmt-menu-item-primary").waitFor({ state: "visible", timeout: 5000 });
+  await page.locator(".cmt-menu .cmt-menu-item-primary").click();
 
   const draft = page.locator('.cmt-card[data-draft="true"]');
   await draft.locator("textarea").waitFor({ state: "visible", timeout: 5000 });
@@ -123,17 +134,32 @@ async function seedThreadViaUI(page: Page, blockIndex: number, body: string): Pr
   await page.locator('.cmt-card[data-draft="true"]').waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
 }
 
-/** Open + position state of the currently-open popover card (mobile = one at a time). */
-async function openPopover(page: Page): Promise<{ count: number; anchor: string | null; positionArea: string | null; cardTop: number | null }> {
+/** Open + position state of the currently-open card popover (mobile = one at a time). */
+async function openPopover(page: Page): Promise<{
+  count: number;
+  threadId: string | null;
+  anchor: string | null;
+  positionArea: string | null;
+  cardTop: number | null;
+}> {
   return page.evaluate(() => {
     const open = [...document.querySelectorAll<HTMLElement>(".cmt-card")].filter((c) => c.matches(":popover-open"));
     const c = open[0];
     return {
       count: open.length,
+      threadId: c ? (c.dataset.threadId ?? null) : null,
       anchor: c ? c.style.getPropertyValue("position-anchor").trim() : null,
       positionArea: c ? getComputedStyle(c).getPropertyValue("position-area").trim() : null,
       cardTop: c ? Math.round(c.getBoundingClientRect().top) : null,
     };
+  });
+}
+
+/** Bottom edge of the corner button, in viewport coords. */
+async function buttonBottom(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const b = document.querySelector<HTMLElement>(".cmt-comments-btn");
+    return b ? Math.round(b.getBoundingClientRect().bottom) : 0;
   });
 }
 
@@ -146,7 +172,7 @@ async function openPopover(page: Page): Promise<{ count: number; anchor: string 
  *      article can land under the fixed narration dock — Playwright's
  *      actionability then reports the `<p>` (or the dock) "intercepts pointer
  *      events" and the tap never fires. So we `{ force: true }` and dispatch the
- *      touch at the span's centre (the same reason the 44px FAB needs force).
+ *      touch at the span's centre.
  *   2. Stale point: the engine sets `html { scroll-behavior: smooth }`, so a
  *      plain `scrollIntoView` animates — a force-tap fired before it settles
  *      lands at the pre-scroll coordinate and is lost. We scroll **instantly**
@@ -193,70 +219,129 @@ test("the mobile context emulates a real touch device (coarse pointer, no hover,
   }
 });
 
-test("the hide-all-highlights FAB is mobile-only and toggles on TAP", async () => {
-  // Desktop contrast first: the FAB is display:none ≥1100px, so it's not in the
-  // accessibility tree at all — proving the emulation, not the test, drives the
-  // responsive rule.
+// The single comments button is mobile-only (hidden ≥1100px, where the column is
+// the affordance) and a real touch tap opens the one menu.
+test("the comments button is mobile-only and opens the menu on TAP", async () => {
+  // Desktop contrast first: the button is display:none ≥1100px, so it's not in
+  // the accessibility tree at all — proving the emulation drives the rule.
   const desktop = await browser.newContext({ viewport: { width: 1400, height: 900 } });
   try {
     const dpage = await desktop.newPage();
     await gotoFirstPost(dpage);
-    // Let the comment layer mount, then confirm the FAB is absent at desktop width.
     await dpage.locator('[data-narration-src], [role="main"]').first().waitFor({ state: "attached", timeout: 10_000 }).catch(() => {});
-    expect(await dpage.getByRole("button", { name: "Toggle comment highlights" }).count()).toBe(0);
+    expect(await dpage.getByRole("button", { name: "Comments" }).count()).toBe(0);
   } finally {
     await desktop.close();
   }
 
-  // Mobile: the FAB is exposed and a real touch tap toggles aria-pressed.
+  // Mobile: the button is exposed and a real touch tap opens the menu popover.
   const ctx = await newMobileContext(browser);
-  await authorize(ctx, "mobile-fab");
+  await authorize(ctx, "mobile-btn");
   const page = await ctx.newPage();
   try {
     await gotoFirstPost(page);
-    const fab = page.getByRole("button", { name: "Toggle comment highlights" });
-    await fab.waitFor({ state: "visible", timeout: 15_000 });
-    const before = await fab.getAttribute("aria-pressed");
-    expect(before === "true" || before === "false", "aria-pressed is a boolean").toBe(true);
-    // A genuine touchscreen tap (hasTouch), not a mouse click. `force` because
-    // Playwright's actionability hit-test mis-resolves the tap point on this
-    // small (44px) position:fixed target under the device's 2.75 scale factor —
-    // the element is already asserted visible + in the a11y tree above, and a
-    // real 44px touch target is tappable; force sends the touch at its center.
-    await fab.tap({ force: true });
-    const after = await fab.getAttribute("aria-pressed");
-    expect(after === "true" || after === "false").toBe(true);
-    expect(after, "a tap flips the pressed state").not.toBe(before);
+    const btn = page.getByRole("button", { name: "Comments" });
+    await btn.waitFor({ state: "visible", timeout: 15_000 });
+    expect(await btn.getAttribute("aria-expanded"), "menu starts closed").toBe("false");
+    // A genuine touchscreen tap (hasTouch), `force` because the small (44px)
+    // position:fixed target is mis-hit-tested under the device scale factor.
+    await btn.tap({ force: true });
+    await page.waitForTimeout(300);
+    const open = await page.evaluate(() => ({
+      menu: !!document.querySelector(".cmt-menu")?.matches(":popover-open"),
+      expanded: document.querySelector(".cmt-comments-btn")?.getAttribute("aria-expanded"),
+    }));
+    expect(open.menu, "tapping the button opens the menu popover").toBe(true);
+    expect(open.expanded, "aria-expanded reflects the open menu").toBe("true");
   } finally {
     await ctx.close();
   }
 }, 60_000);
 
-// Tap-to-popover placement on a REAL touch device. This is the device-emulated
-// successor to the old `commentPositioning.e2e.ts` "mobile popover anchors below
-// its highlight" test, which faked mobile by resizing a *desktop* context (a
-// fine pointer with hover) and opened the card with a mouse `.click()`. Here the
-// context is a genuine phone (coarse pointer, no hover, touch) and the card is
-// opened by a real `tap()`.
-//
-// Regression guard for two spec bugs the original test caught: `span-inline`
-// (not a real `position-area` keyword → the declaration is dropped and the
-// value computes to `none`) and the desktop `top: anchor(top)` leaking into
-// `:popover-open` (which would pin the popover at the anchor's top instead of
-// letting `position-area: block-end span-all` place it below).
-//
-// Seeding note: the comment is seeded at phone width (the fixture works
-// unchanged — see `seedThreadViaUI`), then we RELOAD so the page opens in a
-// pristine reader state (comments rehydrated from the CRDT store, nothing
-// open). On mobile a freshly-submitted card is left open as its popover, so the
-// reload is what gives a clean "reader taps an existing highlight" starting
-// point. The tap itself is a plain `page.tap()` (no `{ force }`, no manual
-// `scrollIntoView`): a highlight is a normal-size inline span, so Playwright's
-// actionability scroll + hit-test resolve it correctly — and a manual
-// pre-scroll would make the immediately-following tap land stale (the click
-// fires at the pre-scroll point). Contrast the FAB above, a 44px `position:
-// fixed` target that genuinely needs `{ force }`.
-test("a tapped highlight opens its card as a top-layer popover placed below it", async () => {
+// Signed in: the menu carries the identity + sign out, and there is NO persistent
+// floating pill on mobile (the desktop `.cmt-identity` rail is display:none here).
+test("signed in, the menu shows the identity + sign out, with no persistent pill", async () => {
+  const ctx = await newMobileContext(browser);
+  await authorize(ctx, "mobile-id-in");
+  const page = await ctx.newPage();
+  try {
+    await gotoPost(page, "/posts/offer-files");
+    const pill = await page.evaluate(() => {
+      const id = document.querySelector<HTMLElement>(".cmt-identity");
+      return id ? getComputedStyle(id).display : "absent";
+    });
+    expect(pill, "the desktop identity pill is not shown on mobile").toBe("none");
+
+    const btn = page.getByRole("button", { name: "Comments" });
+    await btn.waitFor({ state: "visible", timeout: 15_000 });
+    await btn.tap({ force: true });
+    await page.waitForTimeout(300);
+    await page.locator(".cmt-menu .cmt-menu-item", { hasText: "Sign out" }).waitFor({ state: "visible", timeout: 5000 });
+    expect(
+      await page.locator(".cmt-menu .cmt-menu-name").count(),
+      "the menu shows who you're signed in as",
+    ).toBeGreaterThan(0);
+  } finally {
+    await ctx.close();
+  }
+}, 60_000);
+
+// Signed out: no pill, and the menu offers JIT sign-in (the only place sign-in
+// is asked on mobile). Even WITH a selection captured, the logged-out menu shows
+// ONLY sign-in — never a redundant "Leave comment on selection" entry that could
+// just route to the sign-in already shown (we can't pre-pick the account).
+test("signed out, the menu offers sign-in only — no redundant compose entry", async () => {
+  const ctx = await newMobileContext(browser);
+  const page = await ctx.newPage();
+  try {
+    await gotoPost(page, "/posts/offer-files");
+    await page.locator(".cmt-comments-btn").waitFor({ state: "visible", timeout: 15_000 });
+
+    // Reproduce the exact scenario: select article text, then open the menu with
+    // the selection live (pointerdown captures it, click opens) — all synchronous.
+    const opened = await page.evaluate(() => {
+      const block = [...document.querySelectorAll<HTMLElement>("[data-comment-block-id]")].find(
+        (b) => b.tagName === "P" && !b.closest("figure") && (b.textContent ?? "").trim().length > 80,
+      );
+      if (!block) return false;
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+      const text = walker.nextNode();
+      if (!text) return false;
+      const range = document.createRange();
+      range.setStart(text, 0);
+      range.setEnd(text, Math.min(28, (text.textContent ?? "").length));
+      const sel = window.getSelection()!;
+      sel.removeAllRanges();
+      sel.addRange(range);
+      const btn = document.querySelector<HTMLButtonElement>(".cmt-comments-btn");
+      if (!btn) return false;
+      btn.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      btn.click();
+      return true;
+    });
+    expect(opened, "could set a selection and open the menu").toBe(true);
+    await page.waitForTimeout(300);
+
+    expect(
+      await page.locator(".cmt-menu .cmt-identity-provider").count(),
+      "the menu offers sign-in providers when logged out",
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      await page.locator(".cmt-menu .cmt-menu-item-primary").count(),
+      "no redundant 'Leave comment on selection' entry when logged out",
+    ).toBe(0);
+  } finally {
+    await ctx.close();
+  }
+}, 60_000);
+
+// Tap-to-popover placement on a REAL touch device. The card does not anchor
+// below its highlight — every comment surface drops from the
+// corner button, so the open card anchors to `--cmt-comments-btn` and sits below
+// the button. Regression guard: the desktop `top: anchor(top)` must not leak into
+// `:popover-open` (it would pin the card mid-article), and `position-area` must
+// resolve (not be dropped to `none`).
+test("a tapped highlight opens its card as a top-layer popover under the comments button", async () => {
   const ctx = await newMobileContext(browser);
   await authorize(ctx, "mobile-popover");
   const page = await ctx.newPage();
@@ -269,9 +354,6 @@ test("a tapped highlight opens its card as a top-layer popover placed below it",
     // Reload → pristine reader state (nothing open).
     await gotoPost(page, "/posts/offer-files");
     const hl = page.locator(".cmt-highlight").first();
-    await hl.waitFor({ state: "attached", timeout: 15_000 });
-
-    // Real touch tap opens the popover. Assert visible first.
     await hl.waitFor({ state: "visible", timeout: 15_000 });
     const before = await openPopover(page);
     expect(before.count, "nothing is open before the tap").toBe(0);
@@ -279,30 +361,26 @@ test("a tapped highlight opens its card as a top-layer popover placed below it",
     await tapHighlight(page, 0);
 
     const r = await openPopover(page);
-    const hlBottom = await hl.evaluate((el) => Math.round(el.getBoundingClientRect().bottom));
     expect(r.count, "tapping a highlight opens exactly one popover").toBe(1);
-    // It's genuinely top-layer (the Popover API `:popover-open` state).
-    expect(r.positionArea, "position-area should resolve to block-end, not be dropped").toContain("block-end");
-    // Placed BELOW the anchor, not pinned at its top via a leaked desktop `top`.
+    expect(r.anchor, "the card anchors under the comments button").toBe("--cmt-comments-btn");
+    // The dropdown rule resolves `block-end span-inline-start` (serialized
+    // "end span-start"); the regression guard is that it isn't dropped to
+    // `none` (the old `span-inline` bug) and isn't the desktop placement.
+    expect(r.positionArea, "position-area resolves (not dropped to none)").not.toBe("none");
+    expect(r.positionArea, "placed via the dropdown rule (span-inline-start)").toContain("span-start");
     expect(
       r.cardTop!,
-      `popover should sit below the highlight (card ${r.cardTop} vs highlight bottom ${hlBottom})`,
-    ).toBeGreaterThanOrEqual(hlBottom - 4);
+      `the card drops below the button (card ${r.cardTop} vs button bottom)`,
+    ).toBeGreaterThanOrEqual((await buttonBottom(page)) - 8);
   } finally {
     await ctx.close();
   }
 }, 90_000);
 
-// The canonical mobile interaction: the tap-to-popover comment flow as a state
-// machine — open, re-tap to close, tap a different highlight to swap. On mobile
-// only one card is ever a live popover (the column layout is desktop-only), so
-// these are genuine top-layer transitions, not column scroll-into-view. Two
-// comments are seeded far apart; we reload to a pristine reader state (a
-// freshly-submitted mobile card is left open, so the reload is what gives a
-// clean "reader taps existing highlights" start) and drive the gesture with
-// real `tap()`s. We assert on the open card's `position-anchor` — not just the
-// open count — so "swap" proves a *different* card surfaced, not the same one
-// reopened.
+// The canonical mobile interaction as a state machine — open, re-tap to close,
+// tap a different highlight to swap. Only one card is ever a live popover. Since
+// every card now anchors to the same button, we discriminate the open card by
+// its `data-thread-id` (not by anchor) to prove a swap surfaced a DIFFERENT card.
 test("tapping highlights drives the popover: open → re-tap closes → a different tap swaps", async () => {
   const ctx = await newMobileContext(browser);
   await authorize(ctx, "mobile-flow");
@@ -311,53 +389,40 @@ test("tapping highlights drives the popover: open → re-tap closes → a differ
     await gotoPost(page, "/posts/offer-files");
     const blocks = await normalParagraphIndices(page);
     expect(blocks.length, "post should have several normal paragraphs").toBeGreaterThan(2);
-    // Two threads far apart vertically → two distinct highlights to swap between.
     await seedThreadViaUI(page, blocks[Math.floor(blocks.length * 0.3)]!, "mobile flow comment one");
     await seedThreadViaUI(page, blocks[Math.floor(blocks.length * 0.6)]!, "mobile flow comment two");
 
-    // Reload → pristine reader state; confirm two highlights, nothing open.
     await gotoPost(page, "/posts/offer-files");
     await page.locator(".cmt-highlight").first().waitFor({ state: "attached", timeout: 15_000 });
-    const count = await page.locator(".cmt-highlight").count();
-    expect(count, "two seeded threads → two highlights").toBeGreaterThanOrEqual(2);
+    expect(await page.locator(".cmt-highlight").count(), "two seeded threads → two highlights").toBeGreaterThanOrEqual(2);
     expect((await openPopover(page)).count, "nothing open on a fresh load").toBe(0);
 
     // 1) Tap the first highlight → its card opens as a top-layer popover.
     await tapHighlight(page, 0);
     const first = await openPopover(page);
     expect(first.count, "tapping highlight #1 opens exactly one popover").toBe(1);
-    expect(first.anchor, "the open card anchors to the tapped highlight").toBeTruthy();
-    expect(first.positionArea, "placed below via position-area block-end").toContain("block-end");
+    expect(first.threadId, "the open card has a thread id").toBeTruthy();
+    expect(first.positionArea, "placed under the button via the dropdown rule").not.toBe("none");
 
-    // 2) Tap the SAME highlight again → it toggles closed (the phone-friendly
-    //    dismiss; tap-outside is fiddly when the popover covers a screen strip).
+    // 2) Tap the SAME highlight again → it toggles closed.
     await tapHighlight(page, 0);
     expect((await openPopover(page)).count, "re-tapping the same highlight closes it").toBe(0);
 
-    // 3) Reopen the first, then tap the SECOND highlight → the popover swaps to
-    //    the other card (one-at-a-time), not a second one stacking open.
+    // 3) Reopen the first, then tap the SECOND highlight → the popover swaps.
     await tapHighlight(page, 0);
-    expect((await openPopover(page)).anchor, "first reopened").toBe(first.anchor);
+    expect((await openPopover(page)).threadId, "first reopened").toBe(first.threadId);
     await tapHighlight(page, 1);
     const swapped = await openPopover(page);
     expect(swapped.count, "still exactly one popover after the swap").toBe(1);
-    expect(swapped.anchor, "a DIFFERENT card surfaced (swap, not reopen)").not.toBe(first.anchor);
-    expect(swapped.positionArea, "the swapped-in card is also placed below its highlight").toContain("block-end");
+    expect(swapped.threadId, "a DIFFERENT card surfaced (swap, not reopen)").not.toBe(first.threadId);
   } finally {
     await ctx.close();
   }
 }, 120_000);
 
-// Anti-stacking + light-dismiss — the mobile counterpart to the desktop
-// "overlapping comments cascade" guard. On DESKTOP two comments on the same
-// passage anchor to the same `top` and `adjustCardStacking` cascades them so
-// they don't overlap. On MOBILE there is no cascade: `adjustCardStacking`
-// early-returns (`if (this.isMobile) return`) and cards are one-at-a-time
-// top-layer popovers. So the invariant to guard here is the inverse of the
-// desktop one — even when two comments share a passage, the screen never shows
-// two stacked cards: at most one popover is open at any moment, and each
-// highlight independently surfaces its own card. Also covers platform
-// light-dismiss: tapping outside the popover closes it.
+// Anti-stacking + light-dismiss. On mobile there is no cascade: cards are
+// one-at-a-time top-layer popovers. Even two comments on the same passage never
+// show two stacked cards, and tapping outside light-dismisses the open one.
 test("same-passage comments never stack on mobile — one popover at a time, tap-outside dismisses", async () => {
   const ctx = await newMobileContext(browser);
   await authorize(ctx, "mobile-overlap");
@@ -366,33 +431,36 @@ test("same-passage comments never stack on mobile — one popover at a time, tap
     await gotoPost(page, "/posts/offer-files");
     const blocks = await normalParagraphIndices(page);
     expect(blocks.length, "post should have several normal paragraphs").toBeGreaterThan(2);
-    // Two threads on the SAME block — the desktop-cascade scenario.
     const same = blocks[Math.floor(blocks.length * 0.4)]!;
     await seedThreadViaUI(page, same, "same-passage comment one");
     await seedThreadViaUI(page, same, "same-passage comment two");
 
-    // Reload → pristine reader state; confirm two distinct highlights, none open.
     await gotoPost(page, "/posts/offer-files");
     await page.locator(".cmt-highlight").first().waitFor({ state: "attached", timeout: 15_000 });
     expect(await page.locator(".cmt-highlight").count(), "two threads → two highlights").toBeGreaterThanOrEqual(2);
     expect((await openPopover(page)).count, "nothing open on a fresh load").toBe(0);
 
-    // Tapping the first surfaces exactly one popover (never two stacked).
     await tapHighlight(page, 0);
     const a = await openPopover(page);
     expect(a.count, "the first same-passage highlight opens exactly one popover").toBe(1);
 
-    // Tapping the second swaps to the other card — still exactly one, not a stack.
     await tapHighlight(page, 1);
     const b = await openPopover(page);
     expect(b.count, "the second still shows exactly one popover — no stacking").toBe(1);
-    expect(b.anchor, "it surfaced the OTHER same-passage thread, not the same one").not.toBe(a.anchor);
+    expect(b.threadId, "it surfaced the OTHER same-passage thread, not the same one").not.toBe(a.threadId);
 
-    // Light-dismiss: a tap outside any popover (the article heading) closes it —
-    // the platform behavior the popover model relies on for tap-away.
+    // Light-dismiss: a tap outside the popover closes it. The card now drops
+    // from the top-right and is ~full-width, so the top of the screen is UNDER
+    // it — tap at a point just below the card's bottom edge instead (still well
+    // above the narrator dock).
     await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior }));
     await page.waitForTimeout(200);
-    await page.locator("h1").first().tap({ force: true });
+    const pt = await page.evaluate(() => {
+      const c = [...document.querySelectorAll<HTMLElement>(".cmt-card")].find((x) => x.matches(":popover-open"));
+      const rect = c!.getBoundingClientRect();
+      return { x: 8, y: Math.round(rect.bottom + 40) };
+    });
+    await page.touchscreen.tap(pt.x, pt.y);
     await page.waitForTimeout(400);
     expect((await openPopover(page)).count, "tapping outside light-dismisses the open popover").toBe(0);
   } finally {
@@ -400,97 +468,45 @@ test("same-passage comments never stack on mobile — one popover at a time, tap
   }
 }, 120_000);
 
-// The hide-all FAB's interaction with an open popover, and its persistence.
-// Pressing the FAB doesn't just flatten highlights — it also dismisses any open
-// popover (otherwise the top-layer card floats over the dimmed article), and the
-// choice is written to localStorage so it survives a reload. Both are mobile-
-// specific: the FAB only exists below 1100px, and the popover only exists on
-// mobile. (The sibling FAB test above covers the mobile-only + aria-pressed
-// toggle; this covers the flow.)
-test("the hide-all FAB dismisses an open popover and the choice persists across reload", async () => {
+// Highlight visibility is toggled from a MENU ITEM now (folded in from the old
+// FAB). Hiding flattens the highlights, body.cmt-highlights-hidden is set, the
+// choice persists to localStorage, and reopening the menu shows the inverse label.
+test("hiding highlights from the menu flattens them and persists across reload", async () => {
   const ctx = await newMobileContext(browser);
-  await authorize(ctx, "mobile-fab-dismiss");
+  await authorize(ctx, "mobile-hide");
   const page = await ctx.newPage();
   try {
     await gotoPost(page, "/posts/offer-files");
     const blocks = await normalParagraphIndices(page);
-    await seedThreadViaUI(page, blocks[Math.floor(blocks.length * 0.4)]!, "fab dismiss comment");
+    await seedThreadViaUI(page, blocks[Math.floor(blocks.length * 0.4)]!, "hide-highlights comment");
 
-    // Reload → pristine reader state, then open the popover.
     await gotoPost(page, "/posts/offer-files");
     await page.locator(".cmt-highlight").first().waitFor({ state: "attached", timeout: 15_000 });
-    await tapHighlight(page, 0);
-    expect((await openPopover(page)).count, "the highlight's popover is open before pressing the FAB").toBe(1);
 
-    // Press the FAB → it flattens highlights AND dismisses the open popover.
-    const fab = page.getByRole("button", { name: "Toggle comment highlights" });
-    await fab.waitFor({ state: "visible", timeout: 10_000 });
-    await fab.tap({ force: true });
-    await page.waitForTimeout(400);
-    const after = await page.evaluate(() => ({
-      open: [...document.querySelectorAll<HTMLElement>(".cmt-card")].filter((c) => c.matches(":popover-open")).length,
-      hidden: document.body.classList.contains("cmt-highlights-hidden"),
-      pressed: document.querySelector(".cmt-hide-all-fab")?.getAttribute("aria-pressed"),
-    }));
-    expect(after.open, "pressing the FAB dismisses the open popover").toBe(0);
-    expect(after.hidden, "highlights are flattened (body.cmt-highlights-hidden)").toBe(true);
-    expect(after.pressed, "the FAB reports its pressed state").toBe("true");
+    const btn = page.getByRole("button", { name: "Comments" });
+    await btn.waitFor({ state: "visible", timeout: 10_000 });
+    await btn.tap({ force: true });
+    const hide = page.locator(".cmt-menu .cmt-menu-item", { hasText: "Hide comment highlights" });
+    await hide.waitFor({ state: "visible", timeout: 5000 });
+    await hide.click();
+    await page.waitForTimeout(300);
+    expect(
+      await page.evaluate(() => document.body.classList.contains("cmt-highlights-hidden")),
+      "highlights are flattened (body.cmt-highlights-hidden)",
+    ).toBe(true);
 
     // Reload → the hidden choice persists (written to localStorage).
     await gotoPost(page, "/posts/offer-files");
     await page.waitForTimeout(600);
-    const persisted = await page.evaluate(() => ({
-      hidden: document.body.classList.contains("cmt-highlights-hidden"),
-      pressed: document.querySelector(".cmt-hide-all-fab")?.getAttribute("aria-pressed"),
-    }));
-    expect(persisted.hidden, "the hidden choice survives a reload").toBe(true);
-    expect(persisted.pressed, "the FAB restores its pressed state from storage").toBe("true");
-  } finally {
-    await ctx.close();
-  }
-}, 120_000);
+    expect(
+      await page.evaluate(() => document.body.classList.contains("cmt-highlights-hidden")),
+      "the hidden choice survives a reload",
+    ).toBe(true);
 
-// The mobile sign-in / identity bar (`.cmt-identity`, a `position: fixed` pill
-// top-right on mobile) is hidden while a comment popover is open — the popover's
-// auto-placement can land in the upper viewport, so overlapping the bar would be
-// clutter. It re-appears the moment the popover closes. Driven by
-// `body.cmt-mobile-popover-active` (toggled in `setActiveCard`). Logged in (the
-// minted session), so the bar renders as the signed-in ID badge.
-test("the mobile identity bar hides while a comment popover is open", async () => {
-  const ctx = await newMobileContext(browser);
-  await authorize(ctx, "mobile-identity");
-  const page = await ctx.newPage();
-  try {
-    await gotoPost(page, "/posts/offer-files");
-    const blocks = await normalParagraphIndices(page);
-    await seedThreadViaUI(page, blocks[Math.floor(blocks.length * 0.4)]!, "identity-bar comment");
-
-    await gotoPost(page, "/posts/offer-files");
-    await page.locator(".cmt-highlight").first().waitFor({ state: "attached", timeout: 15_000 });
-
-    const identity = () => page.evaluate(() => {
-      const id = document.querySelector<HTMLElement>(".cmt-identity");
-      return {
-        display: id ? getComputedStyle(id).display : "absent",
-        popoverActive: document.body.classList.contains("cmt-mobile-popover-active"),
-      };
-    });
-
-    const before = await identity();
-    expect(before.display, "the identity bar is visible before any popover opens").not.toBe("none");
-    expect(before.popoverActive, "no popover active yet").toBe(false);
-
-    await tapHighlight(page, 0);
-    expect((await openPopover(page)).count, "a popover is open").toBe(1);
-    const during = await identity();
-    expect(during.popoverActive, "body.cmt-mobile-popover-active is set while open").toBe(true);
-    expect(during.display, "the identity bar is hidden while the popover is open").toBe("none");
-
-    await tapHighlight(page, 0); // re-tap closes
-    expect((await openPopover(page)).count, "the popover is closed").toBe(0);
-    const after = await identity();
-    expect(after.popoverActive, "the active flag clears on close").toBe(false);
-    expect(after.display, "the identity bar re-appears once the popover closes").not.toBe("none");
+    // Reopening the menu shows the inverse label.
+    const btn2 = page.getByRole("button", { name: "Comments" });
+    await btn2.tap({ force: true });
+    await page.locator(".cmt-menu .cmt-menu-item", { hasText: "Show comment highlights" }).waitFor({ state: "visible", timeout: 5000 });
   } finally {
     await ctx.close();
   }
@@ -501,23 +517,15 @@ test("the mobile identity bar hides while a comment popover is open", async () =
 // only resolve in a real engine — so this is the device tier's job.
 //
 // Reduced motion: the engine honors it. Site-wide, base.css drops
-// `html { scroll-behavior: smooth }` to `auto` under
-// `@media (prefers-reduced-motion: reduce)`; and the mobile comment UI's card
-// animation (`.cmt-card { transition: top 180ms }`) is cancelled to `none` by
-// comments.css. We read both, and prove the *emulation* drives them by
-// contrasting a plain (no-preference) mobile context where scroll-behavior is
-// still `smooth`.
+// `html { scroll-behavior: smooth }` to `auto`; and the mobile comment UI's card
+// animation (`.cmt-card { transition: top 180ms }`) is cancelled to `none`. We
+// read both, and prove the *emulation* drives them by contrasting a plain
+// (no-preference) mobile context where scroll-behavior is still `smooth`.
 //
-// Colour scheme: the engine is **light-only by design** — the article never
-// flips to dark, and the dock/player are forced dark unconditionally (NOT gated
-// on `prefers-color-scheme`), so the look can't change with the OS. There are no
-// dark theme tokens to "respond." So the faithful assertion is the inverse: with
-// the OS asking for dark (`matchMedia('(prefers-color-scheme: dark)')` true), the
-// document still declares no `color-scheme` (computed `normal`) — i.e. the
-// light-only decision holds under emulation, rather than inventing a dark theme
-// the engine doesn't ship.
+// Colour scheme: the engine is **light-only by design** — so the faithful
+// assertion is that with the OS asking for dark, the document still declares no
+// `color-scheme` (computed `normal`).
 test("media emulation: reduced-motion is honored; colour-scheme stays light-only by design", async () => {
-  // --- Reduced-motion + dark context ---------------------------------------
   const ctx = await browser.newContext({ ...MOBILE_DEVICE, reducedMotion: "reduce", colorScheme: "dark" });
   await authorize(ctx, "mobile-media");
   const page = await ctx.newPage();
@@ -530,18 +538,14 @@ test("media emulation: reduced-motion is honored; colour-scheme stays light-only
       scrollBehavior: getComputedStyle(document.documentElement).scrollBehavior,
       colorScheme: getComputedStyle(document.documentElement).colorScheme,
     }));
-    // Emulation is real (a desktop context can't fake these media features).
     expect(env.reduce, "prefers-reduced-motion: reduce is emulated").toBe(true);
     expect(env.dark, "prefers-color-scheme: dark is emulated").toBe(true);
-    // base.css honors reduced motion: smooth → auto site-wide.
     expect(env.scrollBehavior, "reduced motion drops smooth scrolling to auto").toBe("auto");
-    // Light-only by design: the OS asks for dark, the engine ships no
-    // `color-scheme`, so the document stays light (computed `normal`).
     expect(env.colorScheme, "engine declares no color-scheme — light-only, doesn't flip to dark").toBe("normal");
 
-    // The mobile comment UI's card animation is suppressed under reduced motion:
-    // `.cmt-card`'s default `transition: top 180ms` becomes `none` (0s). Seed one
-    // card to read the live computed value (not a static rule).
+    // The mobile card animation is suppressed under reduced motion: `.cmt-card`'s
+    // default `transition: top 180ms` becomes `none` (0s). Seed one card to read
+    // the live computed value (not a static rule).
     const blocks = await normalParagraphIndices(page);
     await seedThreadViaUI(page, blocks[Math.floor(blocks.length * 0.4)]!, "reduced-motion card");
     const cardTransition = await page
@@ -553,8 +557,7 @@ test("media emulation: reduced-motion is honored; colour-scheme stays light-only
     await ctx.close();
   }
 
-  // --- Contrast: a plain mobile context has NO reduced-motion / dark ---------
-  // Proves the assertions above track the emulated preferences, not a constant.
+  // Contrast: a plain mobile context has NO reduced-motion / dark.
   const plain = await newMobileContext(browser);
   const ppage = await plain.newPage();
   try {

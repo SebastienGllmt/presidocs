@@ -32,28 +32,29 @@ const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
 // `color-contrast` is NO LONGER deferred — as of 2026-06 it's a HARD GATE
 // (the figure palette + engine-chrome fixes that cleared it landed then; the
 // colour/contrast standard lives in DESIGN.md §1–2). Any text below 4.5:1
-// (3:1 large) anywhere now FAILS this suite, except the three
-// surfaces in CONTRAST_EXEMPT_SELECTORS below.
+// (3:1 large) anywhere now FAILS this suite, except the surface(s) in
+// CONTRAST_EXEMPT_SELECTORS below.
 const DEFERRED_RULES = new Set(["label-content-name-mismatch"]);
 
 // ⚠️  DELIBERATE, NON-EXTENSIBLE contrast exemptions. ⚠️
 //
-// These two surfaces fail SC 1.4.3 BY DESIGN — the low contrast is the
-// intended UX, not a bug we haven't gotten to. Their `color-contrast` nodes are
-// stripped before the gate asserts (per-node, so EVERY OTHER rule still applies
-// to them, and any *new* contrast failure anywhere else still hard-fails).
+// This surface fails SC 1.4.3 BY DESIGN — the low contrast is the intended UX,
+// not a bug we haven't gotten to. Its `color-contrast` nodes are stripped
+// before the gate asserts (per-node, so EVERY OTHER rule still applies to it,
+// and any *new* contrast failure anywhere else still hard-fails).
 //
 // This list is a fixed roster of conscious product decisions, NOT a pressure
 // valve. Do NOT add to it to silence a real failure. The bar for entry is
 // "the faintness is the deliberate point," and each entry is a known special
 // case the figure-authoring guidance (DESIGN.md §1, figure-journey Rule 17)
-// explicitly says NOT to imitate. If you're tempted to add a third, fix the
+// explicitly says NOT to imitate. If you're tempted to add another, fix the
 // colour instead — `bun run e2e/contrastReport.ts` shows you exactly what to fix.
+//
+// (The logged-out comments identity card — `.cmt-identity-loggedout` — used to
+// live here while it sat at a dim opacity .35 at rest. It now starts at opacity
+// 0 and fades in (comments.css), so axe finds no visible low-contrast text to
+// flag and the exemption is gone — it passes on its own. See proposal 29 §11.)
 const CONTRAST_EXEMPT_SELECTORS = [
-  // The logged-out comments identity card: dimmed (opacity .35) until the reader
-  // scrolls/engages, then brightens. Slated for a fundamental redesign (readers
-  // dislike it); exempt only until that lands, then remove this line.
-  ".cmt-identity-loggedout",
   // Narrator sub-chapter segments: subordinate-by-dim (opacity .7) beneath their
   // parent chapter on the dark dock — a transient, hover-restored affordance.
   ".ch-seg[data-sub]",

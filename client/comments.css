@@ -399,11 +399,15 @@
   flex-direction: column;
   align-items: stretch;
   gap: 10px;
-  /* Start the sign-in CTA dim. Most readers won't comment, so a
-     full-strength prompt at first paint reads as nag. Brightens once
-     the reader scrolls (engagement signal → `body.cmt-identity-revealed`,
-     set by comments.ts) or interacts with the card directly. */
-  opacity: 0.35;
+  /* Start the sign-in CTA fully transparent. Most readers won't comment, so a
+     full-strength prompt at first paint reads as nag. Fades in once the reader
+     scrolls (engagement signal → `body.cmt-identity-revealed`, set by
+     comments.ts) or interacts with the card directly (hover/focus-within).
+     Starting at 0 (vs a dim 0.35) also clears the Lighthouse/axe
+     `color-contrast` audit: at opacity 0 there is no visible low-contrast
+     text to flag, so the node drops out of the audit entirely — the dim 0.35
+     state was the sole remaining A11y contrast failure (proposal 29 §11). */
+  opacity: 0;
   transition: opacity 400ms ease;
 }
 .cmt-identity-loggedout:hover,
@@ -746,7 +750,7 @@ body.cmt-identity-dismissed .cmt-identity { display: none; }
    viewport. Anything bottom-anchored would collide with one or both
    of those.
    ============================================================================ */
-.cmt-hide-all-fab {
+.cmt-comments-btn {
   position: fixed;
   top: max(16px, env(safe-area-inset-top, 16px));
   right: max(16px, env(safe-area-inset-right, 16px));
@@ -763,13 +767,51 @@ body.cmt-identity-dismissed .cmt-identity { display: none; }
   box-shadow: var(--cmt-shadow);
   cursor: pointer;
   z-index: 1500;
-  transition: background 120ms ease, color 120ms ease;
+  /* Anchor the menu (and, on mobile, the thread/draft card popovers) under
+     this button so every comment surface drops down from the same place. */
+  anchor-name: --cmt-comments-btn;
+  transition: background 120ms ease, color 120ms ease, transform 120ms ease;
 }
-.cmt-hide-all-fab:hover { color: var(--cmt-fg); }
-.cmt-hide-all-fab[aria-pressed="true"] {
+.cmt-comments-btn:hover { color: var(--cmt-fg); }
+/* Menu open → accent the button so it reads as the active surface. */
+.cmt-comments-btn[aria-expanded="true"] {
   background: var(--cmt-accent);
   color: #fff;
   border-color: var(--cmt-accent);
+}
+/* Unread/thread count badge. */
+.cmt-comments-btn-count {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--cmt-accent);
+  color: #fff;
+  font: 600 11px/18px var(--font-sans);
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--cmt-bg);
+}
+.cmt-comments-btn[aria-expanded="true"] .cmt-comments-btn-count {
+  box-shadow: 0 0 0 2px var(--cmt-accent);
+}
+/* Pending-selection cue (decided: prominent pulse). The button pulses while
+   the reader has article text selected, so the corner button reads as
+   "comment on what you selected" even though it's nowhere near the text. */
+body.cmt-has-selection .cmt-comments-btn {
+  border-color: var(--cmt-accent);
+  color: var(--cmt-accent);
+  animation: cmt-btn-pulse 1.4s ease-in-out infinite;
+}
+@keyframes cmt-btn-pulse {
+  0%, 100% { box-shadow: var(--cmt-shadow), 0 0 0 0 rgba(9, 105, 218, 0.45); }
+  50% { box-shadow: var(--cmt-shadow), 0 0 0 7px rgba(9, 105, 218, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Reduced motion → keep the static accent state, drop the pulse. */
+  body.cmt-has-selection .cmt-comments-btn { animation: none; }
 }
 
 body.cmt-highlights-hidden .cmt-highlight {
@@ -813,7 +855,7 @@ body.cmt-highlights-hidden .cmt-action-bar { display: none; }
      want visible breathing room. */
   body { padding-right: max(0px, 1460px - 100vw); }
   /* Desktop hides the FAB — the column itself is the affordance. */
-  .cmt-hide-all-fab { display: none; }
+  .cmt-comments-btn { display: none; }
 
   /* The header rail (identity card + version banner / history + unresolved
      count) is pinned to the viewport so it holds its place as the reader
@@ -856,75 +898,117 @@ body.cmt-highlights-hidden .cmt-action-bar { display: none; }
   .cmt-version-history,
   .cmt-unresolved-count { display: none; }
 
-  /* Surface the identity header at the top of the viewport so a mobile
-     reader can sign in (or out) without needing the column. The column
-     itself stays pointer-events: none — the header rebinds events.
-     Right-anchored and pushed down below the hide-all button (44px
-     tall, ~16px top margin, ~12px gap = ~72px clearance) so the two
-     don't collide at the top-right corner. */
-  .cmt-identity {
-    position: fixed;
-    top: calc(max(16px, env(safe-area-inset-top, 16px)) + 56px);
-    right: 12px;
-    left: auto;
-    margin: 0;
-    /* Desktop column is 320px wide; the mobile pill is deliberately
-       ~30% narrower so it reads as a compact floating widget, not a
-       resized version of the column. */
-    max-width: min(220px, calc(100vw - 24px));
-    pointer-events: auto;
-    z-index: 1400;
-  }
+  /* Mobile (see methodology → Comments → Responsive): one small top-right
+     button (.cmt-comments-btn) is
+     the ONLY comments chrome at rest. The desktop identity rail and the
+     selection action bar are gone here — identity, sign-in, compose and
+     threads all surface in popovers that drop down UNDER the button. */
+  .cmt-identity { display: none; }
+  .cmt-action-bar { display: none; }
 
-  /* While a comment popover is open, hide the identity bar — the
-     popover may place itself near the top of the viewport (depending
-     on the tapped anchor's position) and overlapping the bar is
-     visual clutter. Re-shown on dismiss via the body class toggle in
-     `setActiveCard`. */
-  body.cmt-mobile-popover-active .cmt-identity { display: none; }
-
-  /* Cards carry `popover="auto"` on mobile; the platform's UA
-     stylesheet already gives them `display: none` until the popover
-     is shown, so we don't need our own hide rule. When the platform
-     promotes a card to the top layer (via `showPopover()` or a
-     light-dismiss-toggle), `:popover-open` matches and we override
-     the column's positioning with bottom-sheet geometry.
-
-     `position-area` would place the popover against an anchor —
-     wired in by stamping `anchor-name` on the tapped highlight and
-     `position-anchor` on the card (see comments.ts). `flip-block`
-     tries an above-anchor placement if below overflows; if both
-     overflow (anchor near top + tall dock) we fall through to the
-     `--cmt-bottom-sheet` rule, which pins the popover to the bottom
-     of the viewport above the player dock. */
+  /* The menu (identity / sign-in / compose-entry) and every thread/draft
+     card share one dropdown placement: a popover in the top layer anchored
+     under the button (anchor-name: --cmt-comments-btn), dropping down and
+     extending toward inline-start (the button is top-right). A top-anchored
+     panel sits ABOVE the on-screen keyboard, so composing/replying is never
+     covered. `--cmt-bottom-sheet` stays as the overflow fallback for very
+     tall content (a long thread on a short viewport). */
+  .cmt-menu:popover-open,
   .cmt-card:popover-open {
+    position: fixed;
     margin: 0;
     border: 1px solid var(--cmt-border);
-    border-radius: 10px;
+    border-radius: 12px;
     background: var(--cmt-bg);
     color: var(--cmt-fg);
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
-    width: calc(100vw - 24px);
-    max-width: 520px;
-    max-height: 60vh;
+    width: min(360px, calc(100vw - 24px));
+    /* Cap to the space below the button strip, leaving room above the dock +
+       safe area; scroll inside for long threads. */
+    max-height: calc(
+      100dvh
+      - (max(16px, env(safe-area-inset-top, 16px)) + 56px)
+      - var(--narrate-dock-height, 0px)
+      - 24px
+    );
     overflow-y: auto;
     /* Reset the desktop `.cmt-card` insets (it sets `top: calc(anchor(top)…)`
-       and `right: 24px`) so the popover is placed purely by `position-area`.
-       Without this the leftover `top` offsets the popover down inside the area
-       and fights the flip / bottom-sheet fallbacks. */
+       and `right: 24px`) so placement is purely by `position-area`. */
     inset: auto;
-    /* `span-all` = full inline extent (centered below the anchor). NOT
-       `span-inline`, which is not a real keyword — the only inline span
-       values are span-inline-start / span-inline-end / span-all. */
-    position-area: block-end span-all;
-    position-try-fallbacks: flip-block, --cmt-bottom-sheet;
+    /* Below the button, spanning toward inline-start (leftwards). */
+    position-area: block-end span-inline-start;
+    position-try-fallbacks: --cmt-bottom-sheet;
     margin-block: 8px;
+    z-index: 1450;
   }
 
+  /* Overflow fallback: if the dropdown can't fit below the button (a long
+     thread on a short screen), pin it as a bottom sheet above the dock. */
   @position-try --cmt-bottom-sheet {
     position-area: none;
     inset: auto 12px calc(var(--narrate-dock-height, 0px) + 24px) 12px;
+    width: auto;
+    max-width: 520px;
+    max-height: 70dvh;
     margin: 0;
+  }
+
+  /* Menu internals. */
+  .cmt-menu { padding: 12px; font: 13px/1.45 var(--font-sans); }
+  .cmt-menu-identity {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .cmt-menu-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  .cmt-menu hr {
+    border: none;
+    border-top: 1px solid var(--cmt-border);
+    margin: 10px 0;
+  }
+  /* Full-width tappable rows (compose entry, highlight toggle, sign out). */
+  .cmt-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 8px;
+    border: none;
+    border-radius: 8px;
+    background: none;
+    color: var(--cmt-fg);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .cmt-menu-item:hover { background: #eef0f3; }
+  .cmt-menu-item-primary {
+    background: var(--cmt-accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  .cmt-menu-item-primary:hover { background: var(--cmt-accent); filter: brightness(1.05); }
+  .cmt-menu-snippet {
+    display: block;
+    margin: 4px 8px 0;
+    color: var(--cmt-fg-muted);
+    font-size: 12px;
+    font-style: italic;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cmt-menu-hint {
+    margin: 6px 8px;
+    color: var(--cmt-fg-muted);
+    font-size: 12px;
   }
 }
 
