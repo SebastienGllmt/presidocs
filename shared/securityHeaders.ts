@@ -18,15 +18,27 @@ function isProd(): boolean {
   return process.env.NODE_ENV === "production";
 }
 
+// sha256 of the cascade-layer-order inline <style>'s content
+// (CSS_LAYER_ORDER_STATEMENT in shared/cssLayers.ts), base64 — the CSP hash
+// that allows that one engine-emitted inline style under a no-'unsafe-inline'
+// style-src. Hardcoded (no runtime crypto in workerd) and guarded against drift
+// by securityHeaders.test.ts, which recomputes it from the constant.
+const STYLE_LAYER_ORDER_HASH = "sha256-wmcq5f2L5SjOMdfmh0MPE8ZN1Aui78gc2GzM6aRHnf8=";
+
 // Content-Security-Policy. Two directives are easy to get wrong:
 //   - script-src needs 'wasm-unsafe-eval': Automerge instantiates its WASM
 //     core from a fetched buffer (client/commentsStore.ts), which 'self'
 //     alone does NOT permit. Omit it and the comment system dies under
 //     enforcement.
-//   - style-src has NO 'unsafe-inline': index.html's former inline <style>
-//     was externalized to client/landing.css, and every other stylesheet is
-//     <link>ed. The 21 client-side `.style.x =` writes are CSSOM, which CSP
-//     does not govern, so they keep working.
+//   - style-src has NO 'unsafe-inline'. Stylesheets are <link>ed, and the
+//     client-side `.style.x =` writes are CSSOM (which CSP does not govern),
+//     so they keep working. The ONE inline <style> we emit is the engine's
+//     cascade-layer-order pin (shared/cssLayers.ts, injected first in <head>
+//     by bunHtmlHeadPlugin) — a fixed, engine-controlled string. We allow it
+//     by HASH, not 'unsafe-inline': maximally tight (this exact style and
+//     nothing else). `STYLE_LAYER_ORDER_HASH` below is the sha256 of
+//     CSS_LAYER_ORDER_STATEMENT; securityHeaders.test.ts recomputes it from
+//     the constant and fails if they ever drift (e.g. a new layer is added).
 const CSP_DIRECTIVES = [
   "default-src 'none'",
   "base-uri 'self'",
@@ -36,7 +48,7 @@ const CSP_DIRECTIVES = [
   "form-action 'self' https://accounts.google.com https://login.microsoftonline.com",
   "frame-ancestors 'none'",
   "script-src 'self' 'wasm-unsafe-eval'",
-  "style-src 'self'",
+  `style-src 'self' '${STYLE_LAYER_ORDER_HASH}'`,
   // Both the bare host and the wildcard: a CSP wildcard `*.host` matches
   // subdomains but NOT the bare host, and Graph's photo endpoint is the
   // bare `graph.microsoft.com`.

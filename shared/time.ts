@@ -13,6 +13,7 @@
 // `number` in TypeScript's view, so cast the result back at the
 // boundary where it leaves the expression: `asSeconds(a + b)`.
 
+import "./zodJitless.ts"; // configure jitless before any schema parse (CSP)
 import { z } from "zod";
 
 export const SecondsSchema = z.number().brand<"Seconds">();

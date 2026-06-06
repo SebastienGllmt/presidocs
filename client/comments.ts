@@ -528,6 +528,13 @@ class CommentSystem {
 
     document.addEventListener("selectionchange", () => this.onSelectionChange());
     document.addEventListener("click", (e) => this.onAnyClick(e));
+    // Because boot is deferred (this module loads lazily on first engagement),
+    // the reader may already have a selection when we start (the very gesture
+    // that triggered the load, or a test's programmatic Range). Evaluate it once
+    // so the action bar appears for
+    // a selection that predates our listener. Fully guarded — no-ops unless the
+    // selection is genuine and the reader is signed in.
+    this.onSelectionChange();
     // No scroll listener — CSS Anchor Positioning re-evaluates
     // `anchor()` on every scroll frame in C++, so cards stay aligned
     // to their anchors without JS layout work.
@@ -2655,12 +2662,11 @@ class CommentSystem {
   }
 }
 
-function boot() {
+// Entry point. NOT self-invoking: `client/commentsLoader.ts` is the tiny module
+// the post loads eagerly; it `import()`s this one (emitted as its own chunk) and
+// calls `boot()` on first reader engagement / idle, keeping this ~150 KB off the
+// critical FCP/TBT path. So this file must export the starter and run nothing on
+// import. (Architecture: methodology.md → Comments, "Loading: a lazy boot".)
+export function boot(): void {
   new CommentSystem().init();
-}
-
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", boot);
-} else {
-  boot();
 }

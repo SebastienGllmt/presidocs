@@ -82,6 +82,14 @@ async function main(): Promise<void> {
     entrypoints: entries,
     outdir: paths.distDir,
     target: "browser",
+    // Code-splitting is required for `import()` to emit a SEPARATE chunk rather
+    // than inlining the dynamic dependency back into the importer. Without it,
+    // `client/commentsLoader.ts`'s lazy `import("./comments.ts")` would still
+    // ship the ~150 KB comment system in the eager entry.
+    // With it, shared code across the post's many <script> entries is also
+    // de-duplicated into shared chunks the HTML modulepreloads. Bundle-budget
+    // guarded by client/comments.budget.test.ts.
+    splitting: true,
     // Keep the self-hosted Red Hat woff2 OUT of the bundle. Without this Bun
     // inlines each @font-face `url(./fonts/*.woff2)` as a base64 data: URI into
     // every post's CSS chunk (~104 KB of fonts duplicated per post, re-fetched
@@ -102,7 +110,11 @@ async function main(): Promise<void> {
     sourcemap: "linked",
     // Injects the cascade-layer order + site footer (shared/bunHtmlHeadPlugin.ts).
     // The same plugin runs in dev via bunfig, so dev and prod render identically.
-    plugins: [htmlHeadPlugin()],
+    // `preloadFonts` is prod-only: it adds the critical-face <link rel=preload>,
+    // which dev must NOT emit (dev inlines the woff2, so a preload would point at
+    // a never-fetched URL). `external: ["*.woff2"]` above is what makes the prod
+    // fonts real URLs the preload can target.
+    plugins: [htmlHeadPlugin({ preloadFonts: true })],
     define: {
       // client/swRegister.ts uses `typeof __BUN_DEV__ === "undefined"` to
       // decide whether to register the SW. Substituting the identifier with

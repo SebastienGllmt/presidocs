@@ -16,6 +16,7 @@
 // Automerge change blobs stay opaque end-to-end: they are content-addressed
 // CRDT bytes with no JSON shape to validate, so zod would be a category error.
 
+import "./zodJitless.ts"; // configure jitless before any schema parse (CSP)
 import { z } from "zod";
 
 // --- Field primitives (the request side composes these in requestSchemas.ts) ---

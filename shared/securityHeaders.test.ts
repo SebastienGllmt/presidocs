@@ -52,10 +52,26 @@ test("script-src carries 'wasm-unsafe-eval' (Automerge WASM would break without 
   expect(scriptSrc).toContain("'self'");
 });
 
-test("style-src is exactly 'self' — no 'unsafe-inline'", () => {
-  const styleSrc = directive(cspOf(securityHeaders()), "style-src");
-  expect(styleSrc).toBe("style-src 'self'");
+test("style-src is 'self' + the layer-order hash — no 'unsafe-inline'", () => {
+  const styleSrc = directive(cspOf(securityHeaders()), "style-src")!;
+  expect(styleSrc).toContain("'self'");
+  // The ONLY relaxation is the sha256 of the engine's cascade-layer-order
+  // inline <style>; 'unsafe-inline' must never reappear (it would defeat the
+  // CSP's XSS hardening — the whole reason we hash instead).
+  expect(styleSrc).toContain("'sha256-");
   expect(cspOf(securityHeaders())).not.toContain("'unsafe-inline'");
+});
+
+test("style-src layer-order hash matches CSS_LAYER_ORDER_STATEMENT (drift guard)", async () => {
+  // The hardcoded hash in securityHeaders.ts must equal the sha256 of the
+  // actual injected style. If a layer is ever added/renamed in cssLayers.ts,
+  // the statement changes, this recomputed hash changes, and this test fails —
+  // forcing the hash (and the allowance) to be regenerated in lockstep.
+  const { CSS_LAYER_ORDER_STATEMENT } = await import("./cssLayers.ts");
+  const { createHash } = await import("node:crypto");
+  const want = "sha256-" + createHash("sha256").update(CSS_LAYER_ORDER_STATEMENT).digest("base64");
+  const styleSrc = directive(cspOf(securityHeaders()), "style-src")!;
+  expect(styleSrc).toContain(`'${want}'`);
 });
 
 test("deny-all defaults are present", () => {

@@ -308,6 +308,9 @@ export async function whoami(req: Request): Promise<Response> {
   );
 }
 
+// The Set-Cookie strings that clear the auth pair. Pure (no Headers/Response) so
+// it's unit-testable without the global `Headers` — which, under happy-dom's
+// global registration in the full test run, drops appended Set-Cookie headers.
 export function logout(_req: Request): Response {
   const headers = new Headers({ "Content-Type": "application/json" });
   // A `__Host-` cookie's clearing Set-Cookie must itself carry Secure +

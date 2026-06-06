@@ -19,6 +19,7 @@
 //   double1 = quartile number (25 | 50 | 75 | 100) for narration_quartile, else 0
 //   double2 = audio master-track duration in ms for narration_play, else 0
 
+import "./zodJitless.ts"; // configure jitless before any schema parse (CSP)
 import { z } from "zod";
 
 export const EVENT_NAMES = [
