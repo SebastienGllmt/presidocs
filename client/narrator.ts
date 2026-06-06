@@ -236,7 +236,10 @@ class Narrator {
     private artist: string,
   ) {}
 
-  async init() {
+  // `pendingKey`: the cold-start keyboard shortcut the lazy loader captured and
+  // preventDefault-ed before this module finished loading (e.g. the reader hit
+  // Space to start the talk). Replayed once the player is live, below.
+  async init(pendingKey?: KeyboardEvent) {
     let manifest: Manifest;
     try {
       const res = await fetch(this.manifestUrl);
@@ -333,6 +336,11 @@ class Narrator {
     // revealing it here slides it up via transform/opacity — neither of which
     // triggers layout shift — so the player costs zero CLS.
     this.revealDock();
+
+    // Replay the cold-start key the loader captured (Space/1-9/arrow pressed
+    // before Shikwasa finished loading) now that the player + manifest exist —
+    // so a reader who started the talk cold isn't left having to press twice.
+    if (pendingKey) this.handleKeyboardEvent(pendingKey);
 
     // Media Session arming deferred to `onPlay` — see `hasPlayed`. A
     // tab isn't the OS session target until audio actually plays
@@ -536,54 +544,65 @@ class Narrator {
   // knows the shortcut starts the talk cold, mirroring the in-page
   // play button. Skipped while typing in a form field or with a
   // modifier held.
+  //
+  // The narrator now boots lazily (`client/narratorLoader.ts`), so the loader
+  // *also* arms these keys from page load off the SAME `narratorDom` table and
+  // hands the first one to `init(pendingKey)`, which replays it here once the
+  // player exists (see `handleKeyboardEvent`). So the cold-start press still
+  // controls playback even though Shikwasa hadn't loaded when the key was hit.
   private setupKeyboardShortcuts() {
-    document.addEventListener("keydown", (e) => {
-      if (!this.player || !this.manifest) return;
-      // Modifier-and-focus filter lives in ./narratorDom.ts so the unit
-      // tests can exercise it directly without spinning up the rest of
-      // the narrator.
-      if (shouldIgnoreKeyboardShortcut(e.target, e)) return;
+    document.addEventListener("keydown", (e) => this.handleKeyboardEvent(e));
+  }
 
-      // Dispatch off the shared KEY_BINDINGS table (narratorDom.ts) — the same
-      // declaration the build-time help page renders, so the bindings and their
-      // documentation can't drift. Run the first matching binding and stop.
-      for (const binding of KEY_BINDINGS) {
-        if (!matchesKeyBinding(binding, e)) continue;
-        switch (binding.id) {
-          case "play-pause":
-            // Override the default Space-activates-focused-button behavior so a
-            // focused chapter pill or the visibility toggle doesn't intercept
-            // playback control. Buttons remain activatable via Enter.
+  // The per-event dispatch, shared by the live document listener and the
+  // boot-time replay of the loader's captured cold-start key. Idempotent and
+  // self-guarding: a no-op until the player + manifest are ready.
+  private handleKeyboardEvent(e: KeyboardEvent) {
+    if (!this.player || !this.manifest) return;
+    // Modifier-and-focus filter lives in ./narratorDom.ts so the unit
+    // tests can exercise it directly without spinning up the rest of
+    // the narrator.
+    if (shouldIgnoreKeyboardShortcut(e.target, e)) return;
+
+    // Dispatch off the shared KEY_BINDINGS table (narratorDom.ts) — the same
+    // declaration the build-time help page renders, so the bindings and their
+    // documentation can't drift. Run the first matching binding and stop.
+    for (const binding of KEY_BINDINGS) {
+      if (!matchesKeyBinding(binding, e)) continue;
+      switch (binding.id) {
+        case "play-pause":
+          // Override the default Space-activates-focused-button behavior so a
+          // focused chapter pill or the visibility toggle doesn't intercept
+          // playback control. Buttons remain activatable via Enter.
+          e.preventDefault();
+          this.lastPlayTrigger = "space";
+          this.player.toggle();
+          return;
+        case "skip-back":
+          e.preventDefault();
+          this.skipBy(asMs(-10_000));
+          return;
+        case "skip-forward":
+          e.preventDefault();
+          this.skipBy(asMs(10_000));
+          return;
+        case "jump-chapter": {
+          // 1-9 index the TOP-LEVEL chapters (parts + flat chapters),
+          // matching the number shown on the level-1 pills. Sub-chapters are
+          // reached by click or MediaSession next-track, not by number.
+          // Resolution (including the >9 truncation rule, and declining when
+          // there's no Nth chapter) lives in topLevelChapterByNumber — so a
+          // digit with no matching chapter falls through doing nothing, as
+          // before.
+          const chapter = topLevelChapterByNumber(this.manifest.chapters, e.key);
+          if (chapter) {
             e.preventDefault();
-            this.lastPlayTrigger = "space";
-            this.player.toggle();
-            return;
-          case "skip-back":
-            e.preventDefault();
-            this.skipBy(asMs(-10_000));
-            return;
-          case "skip-forward":
-            e.preventDefault();
-            this.skipBy(asMs(10_000));
-            return;
-          case "jump-chapter": {
-            // 1-9 index the TOP-LEVEL chapters (parts + flat chapters),
-            // matching the number shown on the level-1 pills. Sub-chapters are
-            // reached by click or MediaSession next-track, not by number.
-            // Resolution (including the >9 truncation rule, and declining when
-            // there's no Nth chapter) lives in topLevelChapterByNumber — so a
-            // digit with no matching chapter falls through doing nothing, as
-            // before.
-            const chapter = topLevelChapterByNumber(this.manifest.chapters, e.key);
-            if (chapter) {
-              e.preventDefault();
-              this.jumpToChapter(chapter);
-            }
-            return;
+            this.jumpToChapter(chapter);
           }
+          return;
         }
       }
-    });
+    }
   }
 
   // Injects a toggle inside Shikwasa's basic controls row that releases
@@ -1969,7 +1988,11 @@ class Narrator {
   }
 }
 
-function boot() {
+// Exported (not auto-run): the post's eager `<script>` is `narratorLoader.ts`,
+// which `import()`s this module and calls `boot()` on reader engagement / idle,
+// keeping Shikwasa off the critical FCP/TBT path. `pendingKey` carries the
+// cold-start keyboard shortcut the loader captured (see narratorLoader.ts).
+export function boot(pendingKey?: KeyboardEvent) {
   // Intentional opt-out: a post can declare `<article data-narration="none">`
   // to suppress narration entirely. We hide the dock (the markup can stay in
   // the post for template consistency) and never fetch a manifest, so there's
@@ -1999,11 +2022,5 @@ function boot() {
     root,
     root.dataset.narrationTitle ?? document.title,
     root.dataset.narrationArtist ?? "",
-  ).init();
-}
-
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", boot);
-} else {
-  boot();
+  ).init(pendingKey);
 }

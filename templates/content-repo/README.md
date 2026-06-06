@@ -15,7 +15,7 @@ copy or symlink "farm" to go stale. This repo holds only content:
 - `wrangler.toml` / `.env` — per-blog config (worker name, R2 bucket, secrets).
 - `engine` — a symlink pointing **directly at the sibling engine repo**
   (`../presidocs`), so posts can reference engine assets as
-  `../engine/client/narrator.ts` and Bun's bundler resolves + bundles them into
+  `../engine/client/narratorLoader.ts` and Bun's bundler resolves + bundles them into
   same-origin assets. It is *the real engine in one hop* — not an indirection
   through `node_modules`. (`node_modules/presidocs` is a separate single symlink
   to the same checkout, used only to resolve bare `presidocs/…` imports in
