@@ -57,7 +57,10 @@ export type ResolvedAuthor = {
 
 export type AuthorProfileResolution =
   | { ok: true; author: ResolvedAuthor }
-  | { ok: false; reason: string };
+  // `fatal` distinguishes an author MISCONFIGURATION the author must fix (e.g. a
+  // non-romanizable handle) — which `buildAuthorMap` turns into a build-failing
+  // throw — from a soft, degrade-and-skip gap (no profile json, no avatar).
+  | { ok: false; reason: string; fatal?: boolean };
 
 // WebP first: it's the optimized format we serve to browsers (a 192px PNG avatar
 // is ~49 KB; the same at 144px WebP is ~2.5 KB — Lighthouse's image-delivery
@@ -67,33 +70,53 @@ export type AuthorProfileResolution =
 // `avatarDataUri` sibling fallback.
 const AVATAR_EXTS = ["webp", "png", "jpg", "jpeg"] as const;
 
-// A public, URL- and filename-safe slug. Lowercased so the served path is
-// case-stable across filesystems; only `[a-z0-9._-]` survive. `@` and other
-// X-handle punctuation collapse to `-`. This is what keeps the email out of the
-// served URL — the slug derives from the public handle/name, never the address.
-function slugifyHandle(raw: string): string {
-  return raw
-    .trim()
+// Derive a public, URL- and filename-safe ASCII slug from `raw` — the handle
+// that lands in `/assets/authors/<handle>.<ext>` and the byline anchor (and is
+// what keeps the email out of the served URL). Lowercased so the path is
+// case-stable; only `[a-z0-9._-]` survive; `@` and other X-handle punctuation
+// collapse to `-`.
+//
+// Latin accents fold deterministically via NFKD (`José`→`jose`, `café`→`cafe`)
+// — the same fold the heading slugger (`client/headerLinks.ts`) uses, and an
+// unambiguous one. But returns **null** when `raw` carries a letter NFKD can't
+// fold to ASCII (Cyrillic, Greek, Arabic, Hebrew, CJK, Korean, or a
+// non-decomposable Latin letter like `Ł`): those have no single correct
+// romanization — a kanji name has several readings — so guessing one would
+// silently mislabel the author and risk a `/assets/authors/...` collision. We
+// refuse to guess; the caller turns a null into a build-failing error that
+// tells the author to set an explicit ASCII `handle`.
+function asciiHandle(raw: string): string | null {
+  const folded = raw.trim().normalize("NFKD").replace(/[̀-ͯ]/g, "");
+  // A letter that survived the accent-fold but isn't ASCII a–z is not
+  // deterministically romanizable.
+  if (/\p{L}/u.test(folded.replace(/[A-Za-z]/g, ""))) return null;
+  const slug = folded
     .toLowerCase()
     .replace(/^@/, "")
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^[-.]+|[-.]+$/g, "");
+  return slug || null;
 }
 
 // Derive the public handle, in priority order: explicit `handle`, then the X
-// link's last path segment, then a slug of the display name. Always sanitized.
+// link's last path segment, then a slug of the display name. Returns null when
+// no source yields a safe ASCII handle. An explicit `handle` is authoritative —
+// if the author set one, it must be the (ASCII) slug; we do NOT silently fall
+// back to the name when it isn't usable, so a bad explicit handle surfaces
+// rather than hiding.
 function resolveHandle(
   explicit: string | undefined,
   links: Record<string, string>,
   name: string,
-): string {
-  if (explicit && explicit.trim()) return slugifyHandle(explicit);
+): string | null {
+  if (explicit && explicit.trim()) return asciiHandle(explicit);
   const x = links.x;
-  if (x) {
-    const seg = x.replace(/\/+$/, "").split("/").pop();
-    if (seg) return slugifyHandle(seg);
+  const seg = x ? x.replace(/\/+$/, "").split("/").pop() : undefined;
+  if (seg) {
+    const h = asciiHandle(seg);
+    if (h) return h;
   }
-  return slugifyHandle(name) || "author";
+  return asciiHandle(name);
 }
 
 function coerceLinks(raw: unknown): Record<string, string> {
@@ -145,6 +168,19 @@ export async function resolveAuthorProfile(
     links,
     name,
   );
+  if (handle === null) {
+    // No source produced a safe ASCII handle (a non-Latin name/handle with no
+    // explicit ASCII one). FATAL — fail the build rather than silently collide
+    // every such author on `/assets/authors/author.<ext>`.
+    return {
+      ok: false,
+      fatal: true,
+      reason:
+        `author "${name}" (authors/${safe}.json) has no ASCII-derivable handle ` +
+        `— a non-Latin name/handle can't be romanized unambiguously, so set an ` +
+        "explicit ASCII `handle` (a chosen romanization, e.g. \"tanaka\") in the profile",
+    };
+  }
 
   // Avatar: explicit "avatar" filename (resolved under authors/) wins, else
   // discover authors/<email>.<ext> by the known extension list.
@@ -240,6 +276,11 @@ export async function buildAuthorMap(
       cache.set(email, res);
     }
     if (!res.ok) {
+      if (res.fatal) {
+        // Author misconfiguration — fail the build (this runs in CI) instead of
+        // degrading, so a non-romanizable handle can't silently ship.
+        throw new Error(`[author] ${postPath} (${email}): ${res.reason}`);
+      }
       warn(`  [byline] ${postPath} — ${res.reason}; no byline rendered`);
       continue;
     }

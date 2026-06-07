@@ -71,6 +71,54 @@ test("falls back to a name slug when there is no handle or X link", async () => 
   expect(r.author.profile.avatar).toBe("/assets/authors/carol-q.-public.png");
 });
 
+test("folds Latin accents deterministically — no explicit handle needed", async () => {
+  // NFKD-foldable accents have one unambiguous ASCII form, so we don't force an
+  // explicit handle for them: José → jose, café → cafe, Nguyễn → nguyen.
+  writeProfile("jose@example.com", { name: "José" });
+  writeAvatar("jose@example.com");
+  const r = await resolveAuthorProfile(root, "jose@example.com");
+  expect(r.ok).toBe(true);
+  if (!r.ok) return;
+  expect(r.author.profile.avatar).toBe("/assets/authors/jose.png");
+});
+
+test("a non-Latin name without an explicit handle is FATAL (no silent 'author' collision)", async () => {
+  // A kanji/Cyrillic/etc. name can't be romanized unambiguously — we refuse to
+  // guess and require the author to choose an explicit ASCII handle.
+  writeProfile("tanaka@example.com", { name: "田中" });
+  writeAvatar("tanaka@example.com");
+  const r = await resolveAuthorProfile(root, "tanaka@example.com");
+  expect(r.ok).toBe(false);
+  if (r.ok) return;
+  expect(r.fatal).toBe(true);
+  expect(r.reason).toContain("explicit ASCII `handle`");
+});
+
+test("an explicit ASCII handle is the escape hatch for a non-Latin name", async () => {
+  writeProfile("tanaka@example.com", { name: "田中", handle: "tanaka" });
+  writeAvatar("tanaka@example.com");
+  const r = await resolveAuthorProfile(root, "tanaka@example.com");
+  expect(r.ok).toBe(true);
+  if (!r.ok) return;
+  expect(r.author.profile.avatar).toBe("/assets/authors/tanaka.png");
+});
+
+test("a non-ASCII EXPLICIT handle is also fatal (the handle must itself be ASCII)", async () => {
+  writeProfile("tanaka@example.com", { name: "Tanaka", handle: "田中" });
+  writeAvatar("tanaka@example.com");
+  const r = await resolveAuthorProfile(root, "tanaka@example.com");
+  expect(r.ok).toBe(false);
+  if (r.ok) return;
+  expect(r.fatal).toBe(true);
+});
+
+test("buildAuthorMap FAILS THE BUILD on a non-romanizable handle (not a silent skip)", async () => {
+  writeProfile("tanaka@example.com", { name: "田中" });
+  writeAvatar("tanaka@example.com");
+  writePost("post-jp", "tanaka@example.com");
+  expect(buildAuthorMap(join(root, "posts"), root)).rejects.toThrow(/explicit ASCII/);
+});
+
 test("prefers the WebP avatar when both WebP and PNG exist (optimized browser delivery)", async () => {
   writeProfile("erin@example.com", { name: "Erin", handle: "ErinE" });
   writeAvatar("erin@example.com", "png"); // raster source kept for share cards
