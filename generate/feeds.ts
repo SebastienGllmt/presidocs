@@ -32,6 +32,7 @@ import { buildAuthorMap, type PublicAuthorProfile } from "../shared/authorProfil
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 import { decodeHtmlEntities } from "../shared/htmlEntities.ts";
 import { parseHTML } from "linkedom";
+import { XMLValidator } from "fast-xml-parser";
 import { encodeXML } from "entities";
 import { findManifestName } from "../shared/manifestFile.ts";
 import { stableEpisodePath } from "../shared/stableAudio.ts";
@@ -56,6 +57,31 @@ export function escapeXml(s: string): string {
 // `]]>` so it can't close the section early.
 function cdata(html: string): string {
   return `<![CDATA[${html.replace(/]]>/g, "]]]]><![CDATA[>")}]]>`;
+}
+
+// Whole-feed well-formedness gate. Both feeds are hand-assembled by string
+// concatenation over deeply-nested, conditional `podcast:*`/`itunes:*` branches
+// (alternateEnclosure, transcripts, locked/person/license) — exactly where a
+// single mis-closed or mis-escaped branch yields well-formed-LOOKING output a
+// strict parser (and a podcast directory's ingest) rejects wholesale. Substring
+// `toContain` assertions structurally cannot see that class of bug: they pass
+// whether or not the surrounding document is balanced. So before either feed is
+// written (or its per-tag goldens are trusted), it is round-tripped through
+// `XMLValidator` from fast-xml-parser — already a direct dependency on this same
+// build path — which catches unbalanced tags, broken entities, and malformed
+// attributes. Throws (fail-loud) so a malformed feed fails the build instead of
+// shipping a file a directory will bounce. Exported so feeds.test.ts asserts the
+// same gate over the pure builders. Note: this proves well-formedness, NOT
+// directory acceptance (Apple/Podcast Index cover-art/category/policy rules live
+// beyond any local parser) and NOT namespace-declaration survival (a separate
+// parse-side assertion checks the root xmlns:* decls). See methodology.md →
+// Subscription feeds → "Feed validity gate".
+export function assertFeedWellFormed(xml: string, label: string): void {
+  const result = XMLValidator.validate(xml);
+  if (result !== true) {
+    const { msg, line, col } = result.err;
+    throw new Error(`${label}: emitted feed is not well-formed XML — ${msg} (line ${line}, col ${col})`);
+  }
 }
 
 export type FeedAuthor = { name: string; links: Record<string, string> };
@@ -630,10 +656,17 @@ async function main(): Promise<void> {
     licenseUrl: cfg.licenseUrl,
   };
 
-  await writeFile(join(distDir, "feed.xml"), buildAtomFeed(site, posts), "utf8");
+  // Validity gate: round-trip each feed through XMLValidator before it touches
+  // disk, so a malformed branch fails the build rather than shipping a file a
+  // podcast directory / feed reader rejects.
+  const atom = buildAtomFeed(site, posts);
+  assertFeedWellFormed(atom, "feed.xml (Atom)");
+  await writeFile(join(distDir, "feed.xml"), atom, "utf8");
   const audioPosts = posts.filter((p) => p.audio);
   if (audioPosts.length > 0) {
-    await writeFile(join(distDir, "podcast.xml"), buildRssFeed(site, posts), "utf8");
+    const rss = buildRssFeed(site, posts);
+    assertFeedWellFormed(rss, "podcast.xml (RSS)");
+    await writeFile(join(distDir, "podcast.xml"), rss, "utf8");
   }
 
   console.log(

@@ -5,6 +5,7 @@ import {
   buildAtomFeed,
   buildRssFeed,
   buildChaptersJson,
+  assertFeedWellFormed,
   uuidv5,
   type FeedSite,
   type FeedPost,
@@ -269,6 +270,74 @@ test("RSS owner email is opt-in (absent unless set)", () => {
 test("feeds never leak an author email by default", () => {
   expect(buildAtomFeed(SITE, [POST_WITH_AUDIO])).not.toContain("@gmail.com");
   expect(buildRssFeed(SITE, [POST_WITH_AUDIO])).not.toContain("@gmail.com");
+});
+
+// ---- whole-feed validity gate ----------------------------------------------
+// The per-tag assertions above are all substring checks, which pass whether or
+// not the surrounding document is balanced — they cannot see an unbalanced tag,
+// a broken entity, or a mis-closed conditional branch. These round-trip the
+// emitted feeds through the real parser (the same gate feeds.ts runs before it
+// writes to disk) so that class of bug fails the suite. methodology.md →
+// Subscription feeds → "Feed validity gate".
+
+test("Atom: the emitted feed is well-formed XML", () => {
+  // Mix of audio + no-audio + older-dated entries to exercise every entry branch.
+  assertFeedWellFormed(buildAtomFeed(SITE, [POST_WITH_AUDIO, POST_NO_AUDIO, POST_OLDER]), "atom");
+});
+
+test("RSS: the fully-populated feed is well-formed XML (every conditional branch on)", () => {
+  // Turn on every opt-in branch at once — owner, locked-owner, license+url, hub,
+  // cover image, person, alternateEnclosure (hashed + SRI), and both transcripts
+  // — so a mis-closed branch in the deeply-nested podcast:*/itunes:* tree trips
+  // the validator rather than a directory's ingest.
+  const maximalSite: FeedSite = {
+    ...SITE,
+    ownerEmail: "owner@example.com",
+    coverUrl: "https://blog.example.com/assets/podcast-cover.png",
+    hubUrl: "https://websubhub.com/hub",
+    license: "my-blog-license-v1",
+    licenseUrl: "https://example.org/license.pdf",
+  };
+  const aligned: FeedPost = {
+    ...POST_WITH_AUDIO,
+    audio: {
+      ...POST_WITH_AUDIO.audio!,
+      captionsUrl: "https://blog.example.com/generated/offer-files/captions.vtt",
+    },
+  };
+  assertFeedWellFormed(buildRssFeed(maximalSite, [aligned, POST_NO_AUDIO]), "rss");
+});
+
+test("RSS: the five root namespace declarations survive a parse", () => {
+  // Well-formedness alone doesn't guarantee the xmlns:* decls reached the root —
+  // a dropped namespace decl gets the whole feed rejected by a strict reader.
+  const parsed = new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: "@_",
+  }).parse(buildRssFeed(SITE, [POST_WITH_AUDIO]));
+  const rss = parsed.rss;
+  expect(rss["@_version"]).toBe("2.0");
+  expect(rss["@_xmlns:itunes"]).toBe("http://www.itunes.com/dtds/podcast-1.0.dtd");
+  expect(rss["@_xmlns:content"]).toBe("http://purl.org/rss/1.0/modules/content/");
+  expect(rss["@_xmlns:atom"]).toBe("http://www.w3.org/2005/Atom");
+  expect(rss["@_xmlns:podcast"]).toBe("https://podcastindex.org/namespace/1.0");
+});
+
+test("Atom: the single Atom namespace survives a parse", () => {
+  const parsed = new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: "@_",
+  }).parse(buildAtomFeed(SITE, [POST_WITH_AUDIO]));
+  expect(parsed.feed["@_xmlns"]).toBe("http://www.w3.org/2005/Atom");
+});
+
+test("the validity gate actually rejects malformed XML (it is not a no-op)", () => {
+  // Unbalanced tag and a raw unescaped ampersand — the two classes the substring
+  // goldens are blind to. The gate must throw, naming the feed.
+  expect(() => assertFeedWellFormed("<feed><title>x</feed>", "atom")).toThrow(/not well-formed/);
+  expect(() => assertFeedWellFormed("<feed><title>a & b</title></feed>", "atom")).toThrow(
+    /not well-formed/,
+  );
 });
 
 test("chapters JSON converts ms → seconds in Podlove shape", () => {
