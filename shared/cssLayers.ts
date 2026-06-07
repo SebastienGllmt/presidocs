@@ -17,7 +17,8 @@
 // truth lives here and a layer-order change needs no per-post edit.
 // `client/base.css` restates the order as a backstop; build-html.ts asserts the
 // built HTML still satisfies it. `injectLayerOrderStyle` below is the shared
-// injector; `checkHeadLayerOrder` is the assertion.
+// injector (it `prepend`s the <style> via HTMLRewriter, the same engine the
+// other head/body injectors use); `checkHeadLayerOrder` is the assertion.
 
 export const CSS_LAYER_ORDER = [
   "engine-tokens",
@@ -45,7 +46,16 @@ export const CSS_LAYER_ORDER_STYLE_TAG = `<style id="engine-layer-order">${CSS_L
 export function injectLayerOrderStyle(html: string): string {
   if (!html.includes("base.css")) return html;
   if (html.includes('id="engine-layer-order"')) return html;
-  return html.replace(/<head(\s[^>]*)?>/i, (head) => `${head}${CSS_LAYER_ORDER_STYLE_TAG}`);
+  // `prepend` makes the <style> the FIRST child of <head>, which the cascade
+  // requires (it must precede any linked/imported layer-bearing CSS). Same
+  // HTMLRewriter the sibling head/body injectors use (injectPwaHead,
+  // injectSiteFooter, injectPostChrome): the element handler fires only on the
+  // first <head>, so this stays idempotent on unusual HTML and — unlike the old
+  // `/<head…>/` regex — can't be fooled by a stray `<head` inside a comment,
+  // CDATA section, or attribute value.
+  return new HTMLRewriter()
+    .on("head", { element(el) { el.prepend(CSS_LAYER_ORDER_STYLE_TAG, { html: true }); } })
+    .transform(html);
 }
 
 /** Whitespace-insensitive comparison key. */

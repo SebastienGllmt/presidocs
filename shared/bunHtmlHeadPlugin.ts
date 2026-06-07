@@ -64,7 +64,16 @@ const FONT_PRELOAD_TAGS = PRELOAD_FONT_FACES.map(
  */
 export function injectFontPreloads(html: string): string {
   if (html.includes('rel="preload" as="font"')) return html;
-  return html.replace(/<head(\s[^>]*)?>/i, (head) => `${head}${FONT_PRELOAD_TAGS}`);
+  // `prepend` puts the preloads among the first <head> children so the woff2
+  // fetch starts with the document. HTMLRewriter is the engine's house head
+  // injector (injectLayerOrderStyle, injectPwaHead, injectSiteFooter); first-
+  // <head>-only and immune to a stray `<head` in a comment/attribute, where the
+  // old `/<head…>/` regex was not. (Runs after injectLayerOrderStyle in the
+  // chain, so the preloads end up just before the layer-order <style> — the
+  // same relative order the two regexes produced.)
+  return new HTMLRewriter()
+    .on("head", { element(el) { el.prepend(FONT_PRELOAD_TAGS, { html: true }); } })
+    .transform(html);
 }
 
 export function htmlHeadPlugin(
