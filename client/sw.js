@@ -131,11 +131,14 @@ async function networkFirst(req) {
 }
 
 // Cache-first with Range support. The cache holds the full 200; on a Range hit
-// we slice the body and synthesize a 206 with Content-Range. Parse semantics
-// mirror shared/httpRange.ts (the single source of truth used by the dev
-// server + Worker). The SW can't import TS from `shared/`; this is the same
-// logic in plain JS, tighter scope — only `bytes=N-M` / `bytes=N-` / `bytes=-N`,
-// plus the suffix-clamp + 416 branch.
+// we slice the body and synthesize a 206 with Content-Range. The parser is no
+// longer a third hand-rolled copy: it's `resolveRange` from shared/httpRange.ts
+// — the SAME resolver the dev server + prod Worker use — transpiled to plain JS
+// and spliced in below at copy time (the SW can't `import` TS). Verdict mapping:
+//   none          → full 200 (no/invalid range, incl. the bare `bytes=-`, which
+//                    the old hand-rolled copy wrongly 416'd)
+//   satisfiable   → 206 slice with Content-Range
+//   unsatisfiable → 416 with `bytes */size`
 async function cacheFirstRanged(cache, req, rangeHeader) {
   // Cache key is the request without the Range header — we store the full body.
   const cacheKey = new Request(req.url);
@@ -148,17 +151,17 @@ async function cacheFirstRanged(cache, req, rangeHeader) {
   }
   const bytes = new Uint8Array(await full.arrayBuffer());
   const size = bytes.byteLength;
-  const outcome = parseRange(rangeHeader, size);
+  const outcome = resolveRange(rangeHeader, size);
   if (outcome.kind === "unsatisfiable") {
     return new Response("range not satisfiable", {
       status: 416,
       headers: {
         "Accept-Ranges": "bytes",
-        "Content-Range": `bytes */${size}`,
+        "Content-Range": unsatisfiedRangeHeader(size),
       },
     });
   }
-  if (outcome.kind === "passthrough") {
+  if (outcome.kind === "none") {
     return new Response(bytes, {
       headers: {
         "Accept-Ranges": "bytes",
@@ -171,35 +174,53 @@ async function cacheFirstRanged(cache, req, rangeHeader) {
     status: 206,
     headers: {
       "Accept-Ranges": "bytes",
-      "Content-Range": `bytes ${start}-${end}/${size}`,
+      "Content-Range": contentRangeHeader(start, end, size),
       "Content-Length": String(end - start + 1),
     },
   });
 }
 
-function parseRange(header, size) {
-  const m = /^bytes=(\d+)?-(\d+)?$/.exec(header.trim());
-  if (!m) return { kind: "unsatisfiable" };
-  const a = m[1];
-  const b = m[2];
-  let start;
-  let end;
-  if (a !== undefined && b !== undefined) {
-    start = parseInt(a, 10);
-    end = parseInt(b, 10);
-    if (start > end) return { kind: "unsatisfiable" };
-  } else if (a !== undefined) {
-    start = parseInt(a, 10);
-    end = size - 1;
-  } else if (b !== undefined) {
-    const suffix = parseInt(b, 10);
-    if (suffix === 0) return { kind: "unsatisfiable" };
-    start = Math.max(0, size - suffix);
-    end = size - 1;
-  } else {
-    return { kind: "unsatisfiable" };
-  }
-  if (start >= size) return { kind: "unsatisfiable" };
-  end = Math.min(end, size - 1);
-  return { kind: "satisfiable", start, end };
+// The single shared RFC 7233 resolver from shared/httpRange.ts. The block
+// between the two markers below is REGENERATED from that source at copy time by
+// engine/generate/copy-static.ts (transpiled to plain JS, `export` stripped),
+// so the shipped SW never drifts from the dev-server/Worker parser. The
+// authored copy here is kept faithful for readability + so the raw file is
+// valid, but it is never executed (the dev server never registers the SW); the
+// shipped behaviour is what generate/swHttpRange.test.ts guards.
+// __HTTP_RANGE_START__
+const SINGLE_RANGE_RE = /^bytes=(\d*)-(\d*)$/;
+function isResolvableRangeHeader(header) {
+  if (!header)
+    return false;
+  const m = SINGLE_RANGE_RE.exec(header.trim());
+  return m !== null && !(m[1] === "" && m[2] === "");
 }
+function resolveRange(rangeHeader, size) {
+  if (!rangeHeader || size <= 0)
+    return { kind: "none" };
+  const m = SINGLE_RANGE_RE.exec(rangeHeader.trim());
+  if (!m)
+    return { kind: "none" };
+  if (m[1] === "" && m[2] === "")
+    return { kind: "none" };
+  let start = m[1] === "" ? NaN : Number(m[1]);
+  let end = m[2] === "" ? NaN : Number(m[2]);
+  if (Number.isNaN(start)) {
+    start = Math.max(0, size - Number(m[2]));
+    end = size - 1;
+  } else if (Number.isNaN(end)) {
+    end = size - 1;
+  }
+  if (start > end || start >= size) {
+    return { kind: "unsatisfiable", size };
+  }
+  end = Math.min(end, size - 1);
+  return { kind: "satisfiable", start, end, size };
+}
+function contentRangeHeader(start, end, size) {
+  return `bytes ${start}-${end}/${size}`;
+}
+function unsatisfiedRangeHeader(size) {
+  return `bytes */${size}`;
+}
+// __HTTP_RANGE_END__

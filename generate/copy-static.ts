@@ -34,6 +34,7 @@ import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { buildAuthorMap } from "../shared/authorProfile.ts";
 import { buildPublicPostVersionsMap } from "../shared/publicPostVersions.ts";
 import { MANIFEST_HASHED_RE } from "../shared/manifestFile.ts";
+import { renderHttpRangeForSw, spliceHttpRangeIntoSw } from "./swHttpRange.ts";
 
 const paths = resolveBlogPaths();
 const ROOT = paths.contentRoot;
@@ -223,17 +224,22 @@ async function copyPublicPostVersions(): Promise<number> {
 async function copyPwaFiles(): Promise<{ sw: boolean; manifest: boolean; icons: number }> {
   const out = { sw: false, manifest: false, icons: 0 };
 
-  // Engine-owned: the SW source. Substitute __SW_VERSION__ at copy time so
-  // each deploy invalidates activate's cache reap. Bun's bundler doesn't
-  // process sw.js (served as top-level /sw.js, not in the bundle graph), so
-  // the rewrite happens here, not via Bun.build's `define`.
+  // Engine-owned: the SW source. Two copy-time rewrites (Bun's bundler doesn't
+  // process sw.js — it's served as top-level /sw.js, outside the bundle graph):
+  //   1. Splice the ONE shared RFC 7233 range resolver (shared/httpRange.ts,
+  //      transpiled to plain JS) into the `__HTTP_RANGE__` block, so the SW
+  //      doesn't carry a third hand-rolled parser that drifts from the dev
+  //      server + Worker. See generate/swHttpRange.ts.
+  //   2. Substitute __SW_VERSION__ so each deploy invalidates activate's reap.
   const swSrc = join(ENGINE, "client/sw.js");
   if (await exists(swSrc)) {
     const swText = await Bun.file(swSrc).text();
+    const rangeSrc = await Bun.file(join(ENGINE, "shared/httpRange.ts")).text();
+    const spliced = spliceHttpRangeIntoSw(swText, renderHttpRangeForSw(rangeSrc));
     const version = Date.now().toString();
     await writeFile(
       join(DIST, "sw.js"),
-      swText.replaceAll("__SW_VERSION__", version),
+      spliced.replaceAll("__SW_VERSION__", version),
       "utf8",
     );
     out.sw = true;
