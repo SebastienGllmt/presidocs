@@ -1,0 +1,22 @@
+# Engine install policy. The reader-facing posture (tiny dependency set, vendoring
+# over CDNs, no transitive-dep SDKs) is preventive; this file is the *enforcement*
+# the package manager applies at install time. See methodology.md → "Supply-chain:
+# install policy". (trustedDependencies lives in package.json, not here — it's a
+# manifest field; this repo blocks ALL lifecycle scripts via `trustedDependencies: []`.)
+
+# Disable Bun's usage analytics. (Top-level key; equivalent to DO_NOT_TRACK=1.)
+telemetry = false
+
+[install]
+# 7-day release-age cooldown. An npm version published in the last week is filtered
+# out at install time, so a maliciously-published patch can't be pulled in during
+# the realistic window before the registry/Socket/maintainers take it down. Only
+# affects *newly-resolved* versions — restoring an unchanged bun.lock is unaffected,
+# so day-to-day installs see no friction. Override per-command (`bun add --exact …`
+# won't bypass it; pull the version explicitly or add it to minimumReleaseAgeExcludes)
+# when you deliberately want a fresh release. 604800 s = 7 days.
+minimumReleaseAge = 604800
+
+# frozenLockfile is deliberately NOT set here: with a single author and no CI, a
+# global frozen install only adds local friction (an intended dep bump would need a
+# flag). It belongs in a future CI lane as `bun install --frozen-lockfile`, not here.

@@ -2,6 +2,8 @@
   "name": "presidocs",
   "type": "module",
   "private": true,
+  "//trustedDependencies": "Empty on purpose: ALL dependency lifecycle scripts (preinstall/install/postinstall) are blocked. Verified safe — the native-binary deps (sharp, esbuild, workerd via wrangler) ship their binaries as optionalDependencies platform packages, not via these scripts, so a clean install still works with everything blocked. A future dep that genuinely needs a script is blocked and surfaced by `bun pm untrusted` for a deliberate decision. See methodology.md → Supply-chain: install policy.",
+  "trustedDependencies": [],
   "//": "This is the reusable blog ENGINE, consumed by content repos via a `file:` dependency (see methodology.md → Repository layout, and templates/content-repo/ for the starter). It is not a deployable blog itself; the dev/build/deploy/generate scripts live in each content repo's package.json.",
   "scripts": {
     "test": "bun test",
