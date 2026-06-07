@@ -92,7 +92,9 @@ describe("stableAudioHeaders", () => {
   test("adds an inline Content-Disposition with the per-post name when given", () => {
     const h = stableAudioHeaders('"88ec61b30372d408"', "offer-files.mp3");
     // inline (NOT attachment) so players keep streaming; per-post filename.
-    expect(h["Content-Disposition"]).toBe('inline; filename="offer-files.mp3"');
+    // jshttp content-disposition emits the unquoted RFC token form for a name
+    // that is all token chars (`-`/`.` qualify) — still a valid `filename`.
+    expect(h["Content-Disposition"]).toBe("inline; filename=offer-files.mp3");
   });
 });
 
@@ -103,25 +105,36 @@ describe("episodeDownloadName + contentDispositionInline", () => {
     expect(episodeDownloadName("offer-files", "")).toBe("offer-files");
   });
 
-  test("ASCII filename uses the plain quoted-string form, no filename*", () => {
+  test("is always inline (never attachment), so players keep streaming", () => {
+    // The default disposition is `attachment`, which stops streaming — assert we
+    // always pass `{ type: "inline" }`.
+    expect(contentDispositionInline("offer-files.mp3").startsWith("inline;")).toBe(true);
+    expect(contentDispositionInline("日本語.mp3").startsWith("inline;")).toBe(true);
+  });
+
+  test("ASCII filename uses the plain token/quoted form, no filename*", () => {
     const cd = contentDispositionInline("offer-files.mp3");
-    expect(cd).toBe('inline; filename="offer-files.mp3"');
+    expect(cd).toBe("inline; filename=offer-files.mp3");
     expect(cd).not.toContain("filename*");
   });
 
-  test("non-ASCII slug gets an ASCII fallback AND an RFC 5987 filename*", () => {
+  test("non-ASCII slug gets a US-ASCII fallback AND an RFC 5987 filename*", () => {
     const cd = contentDispositionInline("日本語.mp3");
-    // ASCII fallback maps non-ASCII bytes to "_" (always a valid token)…
-    expect(cd).toContain('filename="___.mp3"');
-    // …and the UTF-8 ext-value carries the real name, percent-encoded.
+    // The `filename` token stays pure US-ASCII (non-ASCII bytes → "?"), so the
+    // header transmits cleanly under workerd/Fetch's UTF-8 header serialization…
+    expect(cd).toContain('filename="???.mp3"');
+    expect(cd).not.toMatch(/filename="[^"]*[^\x20-\x7e]/); // no raw non-ASCII in the token
+    // …and the UTF-8 ext-value carries the real name, percent-encoded, so a
+    // client that reads filename* recovers the Unicode slug.
     expect(cd).toContain("filename*=UTF-8''");
     expect(cd).toContain(encodeURIComponent("日本語"));
   });
 
   test("escapes characters that would break the quoted-string", () => {
-    // A double-quote / backslash in the name must not terminate filename="…".
+    // A double-quote / backslash in the name must not terminate filename="…";
+    // they're escaped as quoted-pairs (`\"`, `\\`), not stripped.
     const cd = contentDispositionInline('a"b\\c.mp3');
-    expect(cd).toBe('inline; filename="abc.mp3"');
+    expect(cd).toBe('inline; filename="a\\"b\\\\c.mp3"');
   });
 });
 

@@ -28,6 +28,8 @@
 //     versioned hashed path) and NO `must-revalidate` (RFC 9111 §5.2.2.2 would
 //     forbid the stale-while-revalidate serving above).
 
+import { create as createContentDisposition } from "content-disposition";
+
 /** Matches a stable episode URL path: `/generated/<slug>/episode.<ext>`. */
 export const STABLE_EPISODE_RE = /^\/generated\/([^/]+)\/episode\.[a-z0-9]+$/;
 
@@ -74,34 +76,25 @@ export function episodeDownloadName(slug: string, ext: string): string {
   return e ? `${slug}.${e}` : slug;
 }
 
-// Percent-encode for an RFC 5987 ext-value (the `filename*` form): like
-// encodeURIComponent but also escaping `'()*`, which encodeURIComponent leaves
-// bare yet are not in RFC 5987's attr-char set.
-function encodeRfc5987(s: string): string {
-  return encodeURIComponent(s).replace(
-    /['()*]/g,
-    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
-  );
-}
-
 /**
  * RFC 6266 `Content-Disposition` for an *inline* (still-streamable) response
  * with a human-readable download name. `inline`, not `attachment`, so players
  * keep streaming; a manual "Save As" gets `<filename>` instead of the generic
- * `episode.mp3`. Emits an ASCII `filename` fallback and, when the name carries
- * non-ASCII bytes, an RFC 5987 `filename*=UTF-8''…` (RFC 6266 §5) so a Unicode
- * slug survives in clients that read it.
+ * `episode.mp3`.
+ *
+ * Built by jshttp [`content-disposition`](https://github.com/jshttp/content-disposition)
+ * (MIT, zero-dep, Buffer-free → safe on the Workers path). It owns the RFC 5987
+ * `attr-char` escape (`'()*`, which `encodeURIComponent` leaves bare) that this
+ * module used to hand-roll. Crucially for this runtime: v2 emits a **US-ASCII**
+ * `filename` fallback (a non-ASCII byte becomes `?`) **plus an always-present**
+ * `filename*=UTF-8''…` — so the header is pure ASCII on the wire and a Unicode
+ * slug still survives in clients that read `filename*`. (The latin1-fallback
+ * variants — tinyhttp / pre-2.0 jshttp — kept a raw non-ASCII byte in the token
+ * and emitted no `filename*`, which corrupts under the UTF-8 header
+ * serialization workerd/Fetch use; this one is correct there.)
  */
 export function contentDispositionInline(filename: string): string {
-  // ASCII fallback token: strip quotes/backslashes (which would break the
-  // quoted-string) and map any non-ASCII byte to "_"; never empty.
-  const ascii =
-    filename.replace(/["\\]/g, "").replace(/[^\x20-\x7e]/g, "_").trim() || "episode";
-  let cd = `inline; filename="${ascii}"`;
-  if (/[^\x20-\x7e]/.test(filename)) {
-    cd += `; filename*=UTF-8''${encodeRfc5987(filename)}`;
-  }
-  return cd;
+  return createContentDisposition(filename, { type: "inline" });
 }
 
 /**
