@@ -46,6 +46,10 @@ import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 import { decodeHtmlEntities } from "../shared/htmlEntities.ts";
 import { findManifestName } from "../shared/manifestFile.ts";
 import { injectSiteFooter } from "../shared/injectFooter.ts";
+// Typed Schema.org vocabulary (Apache-2.0), `import type` only → erased at
+// compile time, never bundled. Catches a misspelled `@type`/property in the
+// FAQ graph at `tsc` instead of in Google's validator post-deploy.
+import type { WithContext, FAQPage, Question } from "schema-dts";
 import { injectPwaHead } from "../shared/injectPwaHead.ts";
 import { readSiteMeta } from "./feeds.ts";
 import { KEY_BINDINGS } from "../client/narratorDom.ts";
@@ -317,12 +321,16 @@ export function buildQuestions(ctx: HelpContext): HelpQuestion[] {
 // a crawler sees one connected site rather than a floating node.
 export function buildFaqJsonLd(questions: HelpQuestion[], siteUrl: string): string {
   const base = siteUrl.replace(/\/+$/, "");
-  const ld = {
+  const ld: WithContext<FAQPage> = {
     "@context": "https://schema.org",
     "@type": "FAQPage",
     "@id": `${base}/help#faq`,
     isPartOf: { "@id": `${base}/#website` },
-    mainEntity: questions.map((q) => ({
+    // Explicit `: Question` return type so each mapped node is excess-property
+    // checked — otherwise a typo INSIDE the map callback (e.g. `acceptedAnswerz`)
+    // would slip past, since excess-property checks don't propagate through
+    // `.map()` to the contextual `mainEntity` type.
+    mainEntity: questions.map((q): Question => ({
       "@type": "Question",
       "@id": `${base}/help#${q.id}`,
       name: q.question,

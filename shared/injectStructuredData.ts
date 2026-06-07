@@ -21,6 +21,13 @@
 // Idempotent: if a JSON-LD block is already present, the whole inject is skipped.
 
 import { decodeHtmlEntities } from "./htmlEntities.ts";
+// Google's own typed Schema.org vocabulary (Apache-2.0). `import type` only, so
+// it is fully erased at compile time — no runtime value, never bundled, never
+// shipped (this whole module is the build-time `dist/` rewrite). It turns every
+// `@type` and property name from an unchecked string into a `tsc`-checked one,
+// so a `"BlogPosing"`/`acceptedAnswers` typo fails the build instead of silently
+// shipping invalid JSON-LD that only Google's Rich Results Test would catch.
+import type { WithContext, BlogPosting, Person, ImageObject, WebSite, Blog, Graph } from "schema-dts";
 
 // The generated share card is a fixed 1200x630 PNG (generate/share-card.ts).
 // We know its dimensions here, so og:image:width/height and the JSON-LD
@@ -231,7 +238,7 @@ export function injectStructuredData(
   // sees one connected graph (one Blog, N BlogPostings) instead of two
   // unrelated documents. A bare `@id` reference is sufficient — the consumer
   // dereferences to the landing page's full Blog node.
-  const ld: Record<string, unknown> = {
+  const ld: WithContext<BlogPosting> = {
     "@context": "https://schema.org",
     "@type": "BlogPosting",
     "@id": `${url}#article`,
@@ -246,7 +253,7 @@ export function injectStructuredData(
   if (ctx.publishedAt) ld.datePublished = ctx.publishedAt;
   if (ctx.modifiedAt) ld.dateModified = ctx.modifiedAt;
   if (ctx.author) {
-    const person: Record<string, unknown> = {
+    const person: Person = {
       "@type": "Person",
       name: ctx.author.name,
     };
@@ -262,8 +269,15 @@ export function injectStructuredData(
   // dimensions) is the documented-preferred shape for the Article rich result.
   // We only know the dims for our own card; an override stays a URL string.
   if (shareImage) {
+    // Numeric width/height: the Google Article rich-result examples emit them as
+    // plain integers and the validator accepts that, but strict Schema.org (and
+    // schema-dts) type the `width`/`height` Distance properties as
+    // string|QuantitativeValue, not a bare number. We keep the numbers
+    // (changing them would alter the emitted JSON, which is out of scope), so
+    // this one deliberately-non-canonical node carries a documented cast — the
+    // type still guards the surrounding graph; only the dimensions opt out.
     ld.image = usingCard
-      ? { "@type": "ImageObject", url: shareImage, width: CARD_WIDTH, height: CARD_HEIGHT }
+      ? ({ "@type": "ImageObject", url: shareImage, width: CARD_WIDTH, height: CARD_HEIGHT } as unknown as ImageObject)
       : shareImage;
   }
   if (ctx.audio) {
@@ -492,7 +506,7 @@ export function injectSiteStructuredData(
   // notes — makes the @graph genuinely connected instead of two parallel
   // nodes), and both share the same author Person / publisher Organization
   // the posts already use.
-  const webSite: Record<string, unknown> = {
+  const webSite: WebSite = {
     "@type": "WebSite",
     "@id": `${siteUrl}/#website`,
     url: `${siteUrl}/`,
@@ -505,7 +519,7 @@ export function injectSiteStructuredData(
     webSite.publisher = { "@type": "Organization", name: publisher };
   }
 
-  const blog: Record<string, unknown> = {
+  const blog: Blog = {
     "@type": "Blog",
     "@id": `${siteUrl}/#blog`,
     url: `${siteUrl}/`,
@@ -514,7 +528,7 @@ export function injectSiteStructuredData(
   };
   if (description) blog.description = description;
   if (ctx.author) {
-    const person: Record<string, unknown> = {
+    const person: Person = {
       "@type": "Person",
       name: ctx.author.name,
     };
@@ -527,12 +541,14 @@ export function injectSiteStructuredData(
     blog.publisher = { "@type": "Organization", name: publisher };
   }
   if (shareImage) {
+    // Documented cast for the numeric ImageObject dimensions — see the matching
+    // note in injectStructuredData() above.
     blog.image = usingCard
-      ? { "@type": "ImageObject", url: shareImage, width: CARD_WIDTH, height: CARD_HEIGHT }
+      ? ({ "@type": "ImageObject", url: shareImage, width: CARD_WIDTH, height: CARD_HEIGHT } as unknown as ImageObject)
       : shareImage;
   }
 
-  const graph: Record<string, unknown> = {
+  const graph: Graph = {
     "@context": "https://schema.org",
     "@graph": [webSite, blog],
   };
