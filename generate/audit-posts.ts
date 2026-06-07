@@ -11,15 +11,34 @@
 // this tier browser-free is what lets it run on every `bun run build` as a hard
 // publish gate without a Chrome dependency.
 //
-// Each rule mirrors a Lighthouse/axe audit that is purely structural:
+// Each bespoke rule mirrors a Lighthouse/axe audit that is purely structural:
 //   title              — Lighthouse SEO `document-title`
 //   html-lang          — Lighthouse SEO `html-has-lang`
 //   meta-description   — Lighthouse SEO `meta-description`
 //   landmark-one-main  — axe `landmark-one-main` (the static part)
 //   image-alt          — axe `image-alt` (a static <img> with no alt attribute)
+//
+// On top of those five hand-rolled invariants, this gate also runs an offline
+// HTML5 conformance + structural sub-check via `html-validate` (MIT, build-time
+// only, zero client JS) over the same served markup — the render-INDEPENDENT
+// structural checks axe deliberately drops (its best-practice tag isn't failed)
+// and `audit-posts` never had: duplicate `id` (which silently breaks
+// `aria-labelledby`/fragment links/`position-anchor`), invalid HTML5 nesting /
+// content-model violations, skipped heading levels, non-unique landmarks, and an
+// ARIA-validity cluster. It is ONE gate, not two: the html-validate rule set is
+// kept DISJOINT from the five bespoke checks above (we don't enable html-validate's
+// own title/alt/lang rules), so nothing is double-reported. The rule set is
+// curated (not the full `recommended` preset) so it's green on the current served
+// markup and fails only real regressions; `aria-label-misuse` is ratcheted to a
+// non-failing WARNING (w=0) — exactly as the axe tier ratchets
+// `label-content-name-mismatch` — because an authored roleless container carrying
+// `aria-label` is ineffective-not-broken (see methodology → WCAG/landmark
+// conformance). NB: duplicate-id/well-formedness is HYGIENE (broken id-dependent
+// machinery), NOT a WCAG 4.1.1 bar — SC 4.1.1 was obsoleted in WCAG 2.2.
 
 import { readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
+import { HtmlValidate, type ConfigData } from "html-validate";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 
 export type AuditViolation = { rule: string; detail: string };
@@ -91,6 +110,57 @@ export function auditPostHtml(html: string): AuditViolation[] {
   return v;
 }
 
+// Curated html-validate rule set for the structural sub-check. Deliberately a
+// hand-picked list, NOT `extends: ["html-validate:recommended"]`: the recommended
+// preset fights authored prose and vendored (Shikwasa) markup and would fail the
+// build on day one. Every rule here is DISJOINT from the five bespoke checks above
+// (no title/alt/lang rules) so the same invariant is never reported twice.
+//
+// `aria-label-misuse` started as a w=0 warning while the one pre-existing finding
+// stood (an authored roleless `<div ... aria-label="Chapters">` — the narration
+// chapter strip). That markup was fixed (`role="group"` makes the label effective),
+// so the rule is now a hard `error` like the rest: any future aria-label on an
+// element/role that can't expose it (an ineffective accessible name) blocks the gate.
+export const HTML_VALIDATE_CONFIG: ConfigData = {
+  root: true,
+  rules: {
+    "no-dup-id": "error", // duplicate id breaks aria-labelledby / fragment links / position-anchor
+    "element-permitted-content": "error", // invalid HTML5 nesting / content model
+    "no-implicit-close": "error", // an element implicitly closed by the parser changing the tree
+    "heading-level": "error", // no skipped heading levels (document outline)
+    "unique-landmark": "error", // same-type landmarks must be distinguishable by name
+    "aria-hidden-body": "error",
+    "aria-label-misuse": "error", // aria-label on an element/role that can't expose it
+    "no-abstract-role": "error",
+    "no-redundant-aria-label": "error",
+    "no-redundant-role": "error",
+  },
+};
+
+/**
+ * Offline HTML5 structural validation of one served post via html-validate.
+ * Returns violations split by severity: html-validate `error`s (severity 2) fail
+ * the gate; `warn`s (severity 1) are reported-not-failed (the w=0 ratchet).
+ * Exported for unit tests. Pass a shared `HtmlValidate` instance to avoid
+ * reconstructing it per file.
+ */
+export async function validateHtmlStructure(
+  html: string,
+  filename = "post.html",
+  hv: HtmlValidate = new HtmlValidate(HTML_VALIDATE_CONFIG),
+): Promise<{ errors: AuditViolation[]; warnings: AuditViolation[] }> {
+  const report = await hv.validateString(html, filename);
+  const errors: AuditViolation[] = [];
+  const warnings: AuditViolation[] = [];
+  for (const result of report.results) {
+    for (const m of result.messages) {
+      const v: AuditViolation = { rule: m.ruleId, detail: `${m.message} (${m.line}:${m.column})` };
+      (m.severity === 2 ? errors : warnings).push(v);
+    }
+  }
+  return { errors, warnings };
+}
+
 async function postHtmlFiles(postsDir: string): Promise<string[]> {
   let entries;
   try {
@@ -116,24 +186,39 @@ async function main(): Promise<void> {
     return;
   }
 
+  // One shared validator instance for the structural sub-check, reused per file.
+  const hv = new HtmlValidate(HTML_VALIDATE_CONFIG);
   let failed = 0;
+  let warnings = 0;
   for (const file of files) {
     const html = await Bun.file(file).text();
-    const violations = auditPostHtml(html);
     const rel = relative(paths.contentRoot, file);
-    if (violations.length === 0) continue;
+    // Bespoke SEO/a11y invariants (all hard errors) + the html-validate structural
+    // sub-check (errors fail; warnings are reported-not-failed).
+    const struct = await validateHtmlStructure(html, rel, hv);
+    const errors = [...auditPostHtml(html), ...struct.errors];
+
+    if (struct.warnings.length > 0) {
+      warnings += struct.warnings.length;
+      console.warn(`  ~ ${rel}`);
+      for (const { rule, detail } of struct.warnings) console.warn(`      [${rule}] ${detail} (warn)`);
+    }
+    if (errors.length === 0) continue;
     failed++;
     console.error(`  ✗ ${rel}`);
-    for (const { rule, detail } of violations) console.error(`      [${rule}] ${detail}`);
+    for (const { rule, detail } of errors) console.error(`      [${rule}] ${detail}`);
   }
 
   if (failed > 0) {
     console.error(
-      `Post audit FAILED: ${failed}/${files.length} post(s) have accessibility/SEO regressions (see above).`,
+      `Post audit FAILED: ${failed}/${files.length} post(s) have accessibility/SEO/structural regressions (see above).`,
     );
     process.exit(1);
   }
-  console.log(`Post audit: ${files.length} post(s) OK (title, lang, meta-description, one-main, img-alt).`);
+  const warnNote = warnings > 0 ? ` (${warnings} non-failing warning(s))` : "";
+  console.log(
+    `Post audit: ${files.length} post(s) OK — title/lang/meta-description/one-main/img-alt + html-validate structural (dup-id, nesting, heading-level, landmark, ARIA)${warnNote}.`,
+  );
 }
 
 // CLI only — importing the helpers (tests) must not run the gate.
