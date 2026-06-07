@@ -25,9 +25,9 @@
 // not `/.../<email>.<ext>`.
 
 import { existsSync } from "node:fs";
-import { readdir } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { safeEmailComponent } from "./voiceResolution.ts";
+import { collectHtmlFiles } from "./walkHtml.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 
 // What the client byline renders. No `handle` field and no email: the avatar
@@ -233,37 +233,22 @@ export type AuthorMap = {
   avatars: Record<string, string>;
 };
 
-async function walkPostEmails(
-  rootDir: string,
-  currentDir: string,
-  out: Record<string, string>,
-): Promise<void> {
-  let entries;
-  try {
-    entries = await readdir(currentDir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const ent of entries) {
-    const full = join(currentDir, ent.name);
-    if (ent.isDirectory()) {
-      await walkPostEmails(rootDir, full, out);
-    } else if (ent.isFile() && ent.name.endsWith(".html")) {
-      const email = parseAuthorEmailFromHtml(await Bun.file(full).text());
-      if (!email) continue;
-      const noExt = relative(rootDir, full).split(sep).join("/").replace(/\.html$/, "");
-      out[`/posts/${noExt}`] = email;
-    }
-  }
-}
-
 export async function buildAuthorMap(
   postsDir: string,
   contentRoot: string,
   warn: (msg: string) => void = () => {},
 ): Promise<AuthorMap> {
+  // Recursive `**/*.html` under posts/, ENOENT → empty (a content repo may have
+  // no posts/ yet) — the same Bun.Glob helper the other engine `.html`
+  // collectors use. Each post's author email comes from its
+  // `<meta name="author-email">` (same convention as generate/post-meta.ts).
   const emails: Record<string, string> = {};
-  await walkPostEmails(postsDir, postsDir, emails);
+  for (const full of collectHtmlFiles(postsDir, { onMissing: "empty" })) {
+    const email = parseAuthorEmailFromHtml(await Bun.file(full).text());
+    if (!email) continue;
+    const noExt = relative(postsDir, full).split(sep).join("/").replace(/\.html$/, "");
+    emails[`/posts/${noExt}`] = email;
+  }
 
   const map: Record<string, PublicAuthorProfile> = {};
   const avatars: Record<string, string> = {};
