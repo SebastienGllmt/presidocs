@@ -77,6 +77,14 @@ Not active yet: Web Push is deferred to [proposal 21](../proposals/21-pwa-offlin
 - Tapping the notification opens the right post and scrolls to the right thread.
 - Repeat on Chrome desktop, Safari desktop, and the iOS Safari PWA (each implements Push differently; Safari ignores notification `actions`).
 
+## 10. Secret scan (tracked-file credential sweep)
+
+Opt-in, per content repo (the engine ships a recommended config template, not a forced gate — see [methodology → Secrets](../methodology.md#secrets)). Run before every push from the content repo:
+
+- `bun run secret-scan` — [secretlint](https://github.com/secretlint/secretlint) over the tracked tree (preset-recommend for generic vendor token shapes + a project `pattern` rule for this engine's own credential shapes: `SESSION_SECRET(S)`, `*_OAUTH_CLIENT_SECRET`, `VAPID_PRIVATE_KEY`, `whsec_…` signing secrets, and Discord/Slack webhook URLs with embedded tokens). Exit 0 = clean; any finding fails with the file + line (value masked via `--maskSecrets`).
+- This catches the one path the [gitignored-`.env` + Cloudflare-secret-store posture](../methodology.md#secrets) doesn't: a real credential pasted into a *tracked* file (a post's HTML while debugging an auth flow, a code sample with a real token, a `.dev.vars` that escaped `.gitignore`). The real secret stores (`.env`/`.dev.vars`) and the `engine` symlink are excluded via `.secretlintignore`, so a legitimately-placed secret never trips it.
+- Manual rung on purpose. Promote to a pre-commit hook and/or a CI lane (blocking) only once it catches a real near-miss or the false-positive set is tuned out — the same manual-then-automate ladder this list uses. Until then it's a "remember to run it" item, kept advisory so it can't surprise an author mid-flow.
+
 ## Promotion criteria
 
 If any item here ever turns into "this is the third time we've shipped a regression here in this corner," lift it to the automated layer:
