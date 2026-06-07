@@ -10,7 +10,8 @@
     "test:e2e": "for f in ./e2e/*.e2e.ts; do echo \"=== $f ===\"; bun test \"$f\" || exit 1; done",
     "test:e2e:prod": "bun test ./e2e/prodAudioSmoke.ts",
     "test:e2e:sw": "bun test ./e2e/serviceWorker.ts",
-    "test:e2e:csp": "bun test ./e2e/cspConsole.ts"
+    "test:e2e:csp": "bun test ./e2e/cspConsole.ts",
+    "test:e2e:links": "bun test ./e2e/brokenLinks.ts"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.3",
@@ -24,6 +25,7 @@
     "discord-api-types": "^0.38.48",
     "fast-check": "4.8.0",
     "fast-xml-parser": "^5.7.3",
+    "linkinator": "^7.6.1",
     "playwright": "^1.60.0",
     "satori": "^0.26.0",
     "schema-dts": "^2.0.0",
