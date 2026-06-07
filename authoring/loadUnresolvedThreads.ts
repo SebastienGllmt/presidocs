@@ -66,13 +66,6 @@ async function ensureWasm(): Promise<void> {
   wasmInited = true;
 }
 
-function base64ToBytes(b64: string): Uint8Array {
-  const s = atob(b64);
-  const out = new Uint8Array(s.length);
-  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
-  return out;
-}
-
 // ---------- Public API ----------
 
 export type UnresolvedThread = {
@@ -125,7 +118,9 @@ export async function loadUnresolvedThreads(
   await ensureWasm();
   const store = fsAdapter(opts.commentsDir);
 
-  const seedBytes = base64ToBytes(SEED_BYTES_B64);
+  // Native TC39 `Uint8Array.fromBase64()` (Bun) — replaces a hand-rolled
+  // atob+charCode loop that was copy-pasted from client/commentsStore.ts.
+  const seedBytes = Uint8Array.fromBase64(SEED_BYTES_B64);
 
   // Per-user merged docs. We keep them separate so we know which
   // user "owns" each thread (for the CLI summary + future R2 follow-

@@ -65,10 +65,8 @@ export async function sha256Hex(bytes: ArrayBufferView | ArrayBuffer): Promise<s
     bytes.byteOffset + bytes.byteLength,
   ) as ArrayBuffer;
   const digest = await crypto.subtle.digest("SHA-256", buf);
-  const arr = new Uint8Array(digest);
-  let out = "";
-  for (let i = 0; i < arr.length; i++) {
-    out += arr[i]!.toString(16).padStart(2, "0");
-  }
-  return out;
+  // Native TC39 `Uint8Array.prototype.toHex()` (present in Bun and the pinned
+  // Workers runtime) — byte-identical to the old padStart loop, one source of
+  // truth instead of a copy-pasted byte loop.
+  return new Uint8Array(digest).toHex();
 }

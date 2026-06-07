@@ -12,8 +12,13 @@
 // hex we store in the manifest, and NOT base64url. The manifest persists the
 // full hex (generate.ts); these helpers convert at emit time.
 //
-// Pure and runtime-agnostic (`btoa` exists in Bun and the Workers runtime).
-// Deliberately NOT imported by the client bundle — only servers/feeds need it.
+// Pure and runtime-agnostic: the hex→base64 conversion uses the native TC39
+// `Uint8Array.fromHex()` / `toBase64()` codecs, present in Bun and the pinned
+// Workers runtime (verified against the bundled workerd — they are V8 intrinsics
+// independent of the `compatibility_date`). `toBase64()` defaults to standard
+// Base64 (RFC 4648), exactly the alphabet these strings need (NOT base64url).
+// Deliberately NOT imported by the client bundle — only servers/feeds need it,
+// so the native methods' "Newly available" browser Baseline is a non-issue here.
 
 /** Full lowercase SHA-256 hex (64 chars). */
 export function isSha256Hex(s: string): boolean {
@@ -21,13 +26,7 @@ export function isSha256Hex(s: string): boolean {
 }
 
 function hexToBase64(hex: string): string {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  }
-  let binary = "";
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary);
+  return Uint8Array.fromHex(hex).toBase64();
 }
 
 /** RFC 9530 `Repr-Digest` field value for a full SHA-256 hex digest. */
