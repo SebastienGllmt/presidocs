@@ -30,6 +30,8 @@
 // still anchor correctly. Anything the matcher misses, the author fixes the
 // way they already do: add another <grapheme>.
 
+import { XMLParser } from "fast-xml-parser";
+
 // One lexeme's worth of the lexicon: the spellings it matches plus the two
 // pronunciation forms it can carry. PLS allows both in one <lexeme>; we read
 // both and pick per-engine at apply time.
@@ -42,48 +44,66 @@ export type LexEntry = {
   ipa?: string;
 };
 
-const LEXEME_RE = /<lexeme\b[^>]*>([\s\S]*?)<\/lexeme\s*>/gi;
-const GRAPHEME_RE = /<grapheme\b[^>]*>([\s\S]*?)<\/grapheme\s*>/gi;
-const ALIAS_RE = /<alias\b[^>]*>([\s\S]*?)<\/alias\s*>/i;
-const PHONEME_RE = /<phoneme\b[^>]*>([\s\S]*?)<\/phoneme\s*>/i;
+// PLS is real XML, so parse it with the same `XMLParser` the feed reader uses
+// (fast-xml-parser — already a direct dependency, build-time only). This retires
+// four hand-rolled element regexes (which mishandled CDATA / attributes-with-`>`
+// / nested tags) AND the bespoke `decodeEntities`, whose self-documented
+// `&amp;`-must-run-last ordering was a correctness hazard: the parser decodes
+// the XML predefined + numeric entities natively. The substitution MATCHER below
+// stays hand-rolled (no library does in-band PLS substitution), and the merge in
+// generate.ts stays a string-stitch on purpose (its output feeds the TTS cache
+// key — round-tripping it through a serializer would bust every cached segment).
+const plsParser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: "@_",
+  // Keep every grapheme/alias/phoneme a string — a pure-digit grapheme like
+  // "256" must NOT be coerced to a number.
+  parseTagValue: false,
+});
 
-// Minimal XML entity decode for the small set that can legitimately appear in
-// grapheme/alias/phoneme text. PLS files are real XML, so an author writing a
-// grapheme containing `&` or `<` would escape it.
-function decodeEntities(s: string): string {
-  return s
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
-    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
-    .replace(/&amp;/g, "&"); // last, so a literal "&amp;amp;" survives correctly
+// fast-xml-parser returns a scalar for a tag that appears once and an array when
+// it repeats; normalize to an array either way (undefined → []).
+function toArray<T>(v: T | T[] | undefined): T[] {
+  if (v === undefined || v === null) return [];
+  return Array.isArray(v) ? v : [v];
+}
+
+// A parsed text node is a bare string, OR — when the element also carries an
+// attribute (e.g. `<phoneme alphabet="ipa">taʊ</phoneme>`) — an object whose
+// text content sits under `#text`. Pull the text out of either shape.
+function textOf(node: unknown): string {
+  if (node == null) return "";
+  if (typeof node === "string") return node;
+  if (typeof node === "object" && "#text" in node) {
+    const t = (node as { "#text"?: unknown })["#text"];
+    return t == null ? "" : String(t);
+  }
+  return String(node);
 }
 
 // Collapse internal whitespace (graphemes/aliases are single tokens or short
-// phrases; authored newlines/indentation are never significant) and trim.
+// phrases; authored newlines/indentation are never significant) and trim. The
+// XMLParser already decoded entities, so this no longer decodes.
 function clean(s: string): string {
-  return decodeEntities(s).replace(/\s+/g, " ").trim();
+  return s.replace(/\s+/g, " ").trim();
 }
 
 // Parse a merged PLS lexicon (one <lexicon> root, many <lexeme>) into entries.
-// Regex-based on purpose: it matches how the lexicon is already sliced
-// upstream (generate.ts), and the format is small, flat, and author-written.
 export function parseLexicon(xml: string): LexEntry[] {
+  const parsed = plsParser.parse(xml) as { lexicon?: { lexeme?: unknown } };
   const entries: LexEntry[] = [];
-  for (const lex of xml.matchAll(LEXEME_RE)) {
-    const body = lex[1] ?? "";
+  for (const lex of toArray(parsed.lexicon?.lexeme) as Record<string, unknown>[]) {
     const graphemes: string[] = [];
-    for (const g of body.matchAll(GRAPHEME_RE)) {
-      const grapheme = clean(g[1] ?? "");
+    for (const g of toArray(lex.grapheme)) {
+      const grapheme = clean(textOf(g));
       if (grapheme) graphemes.push(grapheme);
     }
     if (graphemes.length === 0) continue; // nothing to match on
-    const aliasM = ALIAS_RE.exec(body);
-    const phonemeM = PHONEME_RE.exec(body);
-    const alias = aliasM ? clean(aliasM[1] ?? "") : undefined;
-    const ipa = phonemeM ? clean(phonemeM[1] ?? "") : undefined;
+    // A lexeme may carry several <alias>/<phoneme>; the original took the first.
+    const aliasNode = toArray(lex.alias)[0];
+    const phonemeNode = toArray(lex.phoneme)[0];
+    const alias = aliasNode != null ? clean(textOf(aliasNode)) : undefined;
+    const ipa = phonemeNode != null ? clean(textOf(phonemeNode)) : undefined;
     if (!alias && !ipa) continue; // nothing to say
     entries.push({ graphemes, alias: alias || undefined, ipa: ipa || undefined });
   }

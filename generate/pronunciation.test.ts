@@ -72,6 +72,32 @@ test("parseLexicon collapses whitespace and decodes entities", () => {
   ]);
 });
 
+// A single <grapheme> comes back as a scalar from the XML parser (not an array)
+// — the most common lexeme shape, and the #1 normalization trap of the swap.
+test("parseLexicon reads a lexeme with a single grapheme", () => {
+  const xml = `<lexicon><lexeme><grapheme>nginx</grapheme><alias>engine x</alias></lexeme></lexicon>`;
+  expect(parseLexicon(xml)).toEqual([
+    { graphemes: ["nginx"], alias: "engine x", ipa: undefined },
+  ]);
+});
+
+// A pure-digit grapheme must stay a string, not be coerced to a number.
+test("parseLexicon keeps a numeric-looking grapheme as a string", () => {
+  const xml = `<lexicon><lexeme><grapheme>256</grapheme><alias>two fifty six</alias></lexeme></lexicon>`;
+  expect(parseLexicon(xml)).toEqual([
+    { graphemes: ["256"], alias: "two fifty six", ipa: undefined },
+  ]);
+});
+
+// `<phoneme alphabet="ipa">` carries an attribute, so the parser returns the
+// text under `#text` rather than as a scalar — the value must still be read.
+test("parseLexicon reads phoneme text even with an alphabet attribute", () => {
+  const xml = `<lexicon><lexeme><grapheme>Tao</grapheme><phoneme alphabet="ipa">taʊ</phoneme></lexeme></lexicon>`;
+  expect(parseLexicon(xml)).toEqual([
+    { graphemes: ["Tao"], alias: undefined, ipa: "taʊ" },
+  ]);
+});
+
 // --- applyLexicon: basic substitution ---------------------------------------
 
 const shaEntry: LexEntry[] = [
