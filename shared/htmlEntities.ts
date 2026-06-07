@@ -10,24 +10,20 @@
 //
 // Used by shared/injectStructuredData.ts (og:/JSON-LD plain-text fields) and
 // generate/feeds.ts (Atom/RSS plain-text fields).
+//
+// Backed by `entities` (BSD-2-Clause, build-time only): `decodeHTMLStrict`
+// decodes the full ~2,100-entity WHATWG named set plus all numeric refs,
+// replacing an 18-entry hand-rolled table that silently passed everything else
+// through un-decoded (so `&eacute;`/`&euro;`/`&frac12;`/arrows/Greek then got
+// double-escaped by the destination). STRICT is deliberate: it requires the
+// terminating `;`, so `&notareal;` and `&not` (no semicolon) stay literal —
+// matching this module's original contract. `decodeHTML` (non-strict) would
+// apply the WHATWG legacy longest-prefix rule (`&notareal;` → `¬areal;`) and
+// corrupt prose mid-word. Note `&nbsp;` now decodes to U+00A0 (the spec
+// non-breaking space the author typed), not U+0020.
 
-const NAMED_ENTITIES: Record<string, string> = {
-  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
-  mdash: "—", ndash: "–", hellip: "…", copy: "©",
-  reg: "®", trade: "™", lsquo: "‘", rsquo: "’",
-  ldquo: "“", rdquo: "”", deg: "°", times: "×",
-};
+import { decodeHTMLStrict } from "entities";
 
 export function decodeHtmlEntities(s: string): string {
-  return s.replace(/&(#x?[0-9a-f]+|[a-z][a-z0-9]*);/gi, (m, body: string) => {
-    if (body[0] === "#") {
-      const code =
-        body[1] === "x" || body[1] === "X"
-          ? parseInt(body.slice(2), 16)
-          : parseInt(body.slice(1), 10);
-      return Number.isFinite(code) ? String.fromCodePoint(code) : m;
-    }
-    const named = NAMED_ENTITIES[body.toLowerCase()];
-    return named ?? m;
-  });
+  return decodeHTMLStrict(s);
 }

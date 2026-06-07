@@ -31,6 +31,7 @@ import { resolveFeedConfig, type FeedConfig } from "../shared/feedConfig.ts";
 import { buildAuthorMap, type PublicAuthorProfile } from "../shared/authorProfile.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 import { decodeHtmlEntities } from "../shared/htmlEntities.ts";
+import { encodeXML } from "entities";
 import { findManifestName } from "../shared/manifestFile.ts";
 import { stableEpisodePath } from "../shared/stableAudio.ts";
 import { isSha256Hex, sriSha256 } from "../shared/audioDigest.ts";
@@ -40,13 +41,14 @@ const paths = resolveBlogPaths();
 
 // ---- pure XML/JSON builders (exported for tests) ----------------------------
 
+// XML-escape a plain-text field. Backed by `entities`' `encodeXML` — the same
+// audited library as the decode side (shared/htmlEntities.ts) — so both halves
+// of the decode-before-escape step share one source of truth. `encodeXML`
+// emits the identical five XML metacharacter entities (incl. `&apos;`) the
+// hand-rolled five-replace version did. Kept as `escapeXml` so the ~50 call
+// sites here and the re-export in site-discovery.ts are untouched.
 export function escapeXml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
+  return encodeXML(s);
 }
 
 // Wrap HTML in CDATA for a feed <content>/<description>; split any literal
