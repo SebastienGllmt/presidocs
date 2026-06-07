@@ -31,6 +31,7 @@
 import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
 import TurndownService from "turndown";
+import { stringify } from "yaml";
 
 export type MarkdownExtract = {
   /** The post title (its `<h1 id="title">`, falling back to `<title>`). */
@@ -194,26 +195,25 @@ export type FrontMatter = {
 // source URL, last-updated) followed by the article Markdown. The front matter
 // gives a pasted-into-an-LLM document its provenance without the body having to
 // repeat the title heading.
+//
+// The block is serialized by `yaml` (eemeli, ISC, build-time only — already a
+// transitive of openapi3-ts, so zero install footprint; never the client bundle
+// or the production Worker). It implements the YAML scalar grammar properly:
+// where the previous hand-rolled `yamlScalar()` heuristic emitted a title of
+// `true`/`null`/`2026` bare — so a strict consumer parsed `title:` as a boolean,
+// null, or number instead of the string the author wrote — and silently broke
+// the `---` block on an embedded newline/tab, `stringify` quotes (or block-folds)
+// exactly the values that need it so the provenance header always round-trips as
+// the string it denotes. Insertion order (title → source → updated) is the
+// emitted field order.
 export function renderMarkdownDocument(extract: MarkdownExtract, fm: FrontMatter): string {
-  const lines: string[] = ["---"];
-  lines.push(`title: ${yamlScalar(fm.title || extract.title)}`);
-  if (fm.url) lines.push(`source: ${yamlScalar(fm.url)}`);
-  if (fm.updated) lines.push(`updated: ${yamlScalar(fm.updated)}`);
-  lines.push("---", "");
-  const heading = (fm.title || extract.title).trim();
-  if (heading) lines.push(`# ${heading}`, "");
+  const title = (fm.title || extract.title).trim();
+  const data: Record<string, string> = { title };
+  if (fm.url) data.source = fm.url;
+  if (fm.updated) data.updated = fm.updated;
+  const front = stringify(data).trimEnd();
+  const lines: string[] = ["---", front, "---", ""];
+  if (title) lines.push(`# ${title}`, "");
   lines.push(extract.markdown, "");
   return lines.join("\n");
-}
-
-// Quote a YAML scalar only when it could be misparsed (contains a colon-space,
-// leading quote/special, etc.). Keeps the common case (a plain title) unquoted
-// and readable while staying valid YAML.
-function yamlScalar(v: string): string {
-  const s = v.trim();
-  if (s === "") return '""';
-  if (/[:#\[\]{}&*!|>'"%@`]/.test(s) || /^[\s-]/.test(s) || /:\s/.test(s)) {
-    return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-  }
-  return s;
 }

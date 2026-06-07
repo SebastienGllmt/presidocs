@@ -33,6 +33,7 @@
         "playwright": "^1.60.0",
         "satori": "^0.26.0",
         "wrangler": "^4.90.0",
+        "yaml": "^2.9.0",
       },
       "peerDependencies": {
         "typescript": "^5",

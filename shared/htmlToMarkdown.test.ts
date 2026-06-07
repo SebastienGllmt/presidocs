@@ -1,8 +1,16 @@
 import { test, expect } from "bun:test";
+import { parse } from "yaml";
 import {
   htmlToMarkdown,
   renderMarkdownDocument,
 } from "./htmlToMarkdown.ts";
+
+// Parse the `---`-fenced front-matter block back into an object.
+function parseFrontMatter(doc: string): Record<string, unknown> {
+  const m = doc.match(/^---\n([\s\S]*?)\n---\n/);
+  if (!m) throw new Error("no front matter block");
+  return parse(m[1]!) as Record<string, unknown>;
+}
 
 // A representative post exercising the transform's full surface: the title-h1
 // we render ourselves, prose with inline marks, both list kinds, a figure with
@@ -35,8 +43,8 @@ const y = 2;</code></pre>
 
 const GOLDEN = `---
 title: Fixture Post
-source: "https://blog.example/posts/fixture"
-updated: "2026-06-03T12:00:00Z"
+source: https://blog.example/posts/fixture
+updated: 2026-06-03T12:00:00Z
 ---
 
 # Fixture Post
@@ -125,4 +133,40 @@ test("front matter omits source/updated when not provided", () => {
   expect(doc).toContain("title: Fixture Post");
   expect(doc).not.toContain("source:");
   expect(doc).not.toContain("updated:");
+});
+
+// The reason the hand-rolled `yamlScalar()` heuristic was replaced: a
+// boolean-/null-/number-shaped title was emitted bare, so a strict YAML
+// consumer parsed `title:` as a boolean/null/number, not the author's string.
+// `yaml.stringify` quotes exactly these so the provenance header round-trips as
+// a string in every case.
+test("a boolean-/null-/number-shaped title round-trips as a string", () => {
+  const extract = htmlToMarkdown(FIXTURE);
+  for (const t of ["true", "false", "null", "2026", "1.0", "yes: no"]) {
+    const fmObj = parseFrontMatter(renderMarkdownDocument(extract, { title: t }));
+    expect(typeof fmObj.title).toBe("string");
+    expect(fmObj.title).toBe(t);
+  }
+});
+
+// An embedded newline used to break the `---` block silently (neither the
+// trigger regex nor the quote path handled control characters). It must now
+// survive as a single scalar.
+test("a title with an embedded newline stays a single valid scalar", () => {
+  const extract = htmlToMarkdown(FIXTURE);
+  const fmObj = parseFrontMatter(renderMarkdownDocument(extract, { title: "line1\nline2" }));
+  expect(fmObj.title).toBe("line1\nline2");
+});
+
+// Insertion order (title → source → updated) is the emitted field order; lock
+// it so a future reorder of the assembly is caught.
+test("front-matter fields are emitted in title → source → updated order", () => {
+  const extract = htmlToMarkdown(FIXTURE);
+  const doc = renderMarkdownDocument(extract, {
+    title: extract.title,
+    url: "https://blog.example/posts/fixture",
+    updated: "2026-06-03T12:00:00Z",
+  });
+  expect(doc.indexOf("title:")).toBeLessThan(doc.indexOf("source:"));
+  expect(doc.indexOf("source:")).toBeLessThan(doc.indexOf("updated:"));
 });
