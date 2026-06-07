@@ -26,6 +26,7 @@
 
 import { join } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
+import { parseCliArgs } from "../shared/cliArgs.ts";
 import {
   loadUnresolvedThreads,
   type UnresolvedThread,
@@ -41,47 +42,45 @@ type CliArgs = {
   out: string | null;
 };
 
-function parseArgs(argv: string[]): CliArgs {
-  let slug: string | null = null;
-  let all = false;
-  let base: string | null = null;
-  let out: string | null = null;
+const USAGE =
+  "Usage: bun authoring/exportAnnotations.ts <slug> [--all] [--base <iri>] [--out <file>]";
 
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]!;
-    if (a === "--all") {
-      all = true;
-    } else if (a === "--base") {
-      base = argv[++i] ?? null;
-      if (!base) throw new Error("--base requires a value");
-    } else if (a === "--out") {
-      out = argv[++i] ?? null;
-      if (!out) throw new Error("--out requires a value");
-    } else if (a === "-h" || a === "--help") {
-      console.log(
-        "Usage: bun authoring/exportAnnotations.ts <slug> [--all] [--base <iri>] [--out <file>]",
-      );
-      process.exit(0);
-    } else if (a.startsWith("-")) {
-      throw new Error(`unknown flag: ${a}`);
-    } else if (slug === null) {
-      slug = a;
-    } else {
-      throw new Error(`unexpected positional arg: ${a}`);
-    }
+function parseCli(argv: string[]): CliArgs {
+  // `parseArgs` (via the shared wrapper) gives us strict unknown-flag rejection,
+  // `--x val`/`--x=val` both, value-required checks, and `-h` for free — the
+  // hand-rolled loop this replaced did all of that by hand.
+  const { values, positionals } = parseCliArgs(
+    {
+      args: argv,
+      allowPositionals: true,
+      options: {
+        all: { type: "boolean" },
+        base: { type: "string" },
+        out: { type: "string" },
+        help: { type: "boolean", short: "h" },
+      },
+    },
+    { usage: USAGE, exitCode: 1 },
+  );
+
+  if (values.help) {
+    console.log(USAGE);
+    process.exit(0);
   }
-
-  if (!slug) {
-    console.error(
-      "Usage: bun authoring/exportAnnotations.ts <slug> [--all] [--base <iri>] [--out <file>]",
-    );
+  if (positionals.length !== 1) {
+    console.error(USAGE); // missing slug, or an unexpected extra positional
     process.exit(1);
   }
-  return { slug, all, base, out };
+  return {
+    slug: positionals[0]!,
+    all: values.all ?? false,
+    base: values.base ?? null,
+    out: values.out ?? null,
+  };
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseCli(process.argv.slice(2));
   const postPath = `/posts/${args.slug}`;
 
   const result = await loadUnresolvedThreads({

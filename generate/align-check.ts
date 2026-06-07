@@ -19,33 +19,30 @@
 
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { parseCliArgs } from "../shared/cliArgs.ts";
 import { createQwen3Aligner } from "./aligner.ts";
 
+const USAGE =
+  "usage: bun generate/align-check.ts <audio.wav> <transcript> [--language English]";
+
 function usage(): never {
-  console.error(
-    "usage: bun generate/align-check.ts <audio.wav> <transcript> [--language English]",
-  );
+  console.error(USAGE);
   process.exit(2);
 }
 
-const args = process.argv.slice(2);
-if (args.length < 2) usage();
-
-let language: string | undefined;
-const positional: string[] = [];
-for (let i = 0; i < args.length; i++) {
-  const a = args[i]!;
-  if (a === "--language") {
-    language = args[++i];
-    if (!language) usage();
-  } else if (a.startsWith("--language=")) {
-    language = a.slice("--language=".length);
-  } else {
-    positional.push(a);
-  }
-}
-if (positional.length !== 2) usage();
-const [audioArg, transcript] = positional as [string, string];
+// `--language English` and `--language=English` are both handled by parseArgs;
+// a bad/unknown flag prints USAGE and exits 2 via the shared wrapper.
+const { values, positionals } = parseCliArgs(
+  {
+    args: process.argv.slice(2),
+    allowPositionals: true,
+    options: { language: { type: "string" } },
+  },
+  { usage: USAGE, exitCode: 2 },
+);
+if (positionals.length !== 2) usage();
+const language = values.language;
+const [audioArg, transcript] = positionals as [string, string];
 const audioPath = resolve(audioArg);
 if (!existsSync(audioPath)) {
   console.error(`align-check: audio file not found: ${audioPath}`);

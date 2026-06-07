@@ -61,19 +61,40 @@ import { asMs, msToSeconds, type Milliseconds } from "../shared/time.ts";
 import { resolveAuthorVoice } from "../shared/voiceResolution.ts";
 import { manifestFileName, MANIFEST_HASHED_RE } from "../shared/manifestFile.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
+import { parseCliArgs } from "../shared/cliArgs.ts";
 
 const argv = Bun.argv.slice(2);
-const flags = new Map<string, string>();
-const positional: string[] = [];
-for (const arg of argv) {
-  if (arg.startsWith("--")) {
-    const eq = arg.indexOf("=");
-    if (eq >= 0) flags.set(arg.slice(2, eq), arg.slice(eq + 1));
-    else flags.set(arg.slice(2), "true");
-  } else {
-    positional.push(arg);
-  }
-}
+// One declared option set (replaces the old `Map` loop that mapped every `--x`
+// to the string `"true"` and silently swallowed typos): booleans come back as
+// real booleans, valued flags as typed strings, and an undeclared flag is now a
+// hard error instead of a no-op. `argv` is kept raw so batch mode can forward
+// the original flags to each per-post `generate.ts` spawn unchanged.
+const { values: flags, positionals: positional } = parseCliArgs(
+  {
+    args: argv,
+    allowPositionals: true,
+    options: {
+      tts: { type: "string" },
+      voice: { type: "string" },
+      rate: { type: "string" },
+      bitrate: { type: "string" },
+      "segment-gap": { type: "string" },
+      "force-mark": { type: "string" },
+      align: { type: "string" },
+      "align-language": { type: "string" },
+      chapters: { type: "string" },
+      mock: { type: "boolean" },
+    },
+  },
+  {
+    usage:
+      "Usage: bun generate/generate.ts <post.html> [--tts=NAME] [--voice=V] [--rate=N]\n" +
+      "       [--bitrate=64k] [--segment-gap=200] [--align=NAME] [--align-language=English]\n" +
+      "       [--chapters=ID,...] [--force-mark=NAME,...] [--mock]\n" +
+      "  (no <post.html> → batch mode over every narrated post)",
+    exitCode: 1,
+  },
+);
 
 const htmlPath = positional[0];
 // No post path → batch mode: generate over every narrated post (delegated to
@@ -83,8 +104,8 @@ const htmlPath = positional[0];
 // one specific post), so reject them here rather than forward a nonsensical
 // filter to every post.
 if (!htmlPath) {
-  for (const single of ["chapters", "force-mark"]) {
-    if (flags.has(single)) {
+  for (const single of ["chapters", "force-mark"] as const) {
+    if (flags[single] !== undefined) {
       console.error(`--${single} requires a specific post; pass one: bun run generate/generate.ts <post.html> --${single}=...`);
       process.exit(1);
     }
@@ -93,12 +114,12 @@ if (!htmlPath) {
   process.exit(await runBatch(argv));
 }
 
-const mock = flags.has("mock");
+const mock = flags.mock ?? false;
 // `--tts=NAME` picks the provider factory. Default is platform-aware: `say` on
 // macOS (preinstalled), `espeak-ng` everywhere else — the Linux equivalent in
 // the same rough-draft role. Read here so the `voice` default below can be
 // provider-aware.
-const ttsName = flags.get("tts") ?? (process.platform === "darwin" ? "say" : "espeak-ng");
+const ttsName = flags.tts ?? (process.platform === "darwin" ? "say" : "espeak-ng");
 // `--voice` is the `say` voice name OR, for `moss`, the path to the clone
 // reference clip. When --voice isn't passed and tts=moss, we auto-resolve from
 // the post's `<meta name="author-email">` via `authors/<email>.wav` — see the
@@ -108,20 +129,20 @@ const ttsName = flags.get("tts") ?? (process.platform === "darwin" ? "say" : "es
 // name; `espeak-ng` → a language voice id; `moss` → "" (resolved per-author from
 // authors/<email>.wav after the HTML loads, below).
 const DEFAULT_VOICE: Record<string, string> = { say: "Samantha", "espeak-ng": "en-us" };
-let voice = flags.get("voice") ?? (DEFAULT_VOICE[ttsName] ?? "");
-const rate = Number(flags.get("rate") ?? "180"); // words/min for `say` / `espeak-ng`
+let voice = flags.voice ?? (DEFAULT_VOICE[ttsName] ?? "");
+const rate = Number(flags.rate ?? "180"); // words/min for `say` / `espeak-ng`
 const sampleRate = 22050;
 const channels = 1;
 const bitsPerSample = 16;
 
-const mp3Bitrate = flags.get("bitrate") ?? "64k";
+const mp3Bitrate = flags.bitrate ?? "64k";
 
 // Silence inserted between adjacent segments (and between chapters) at concat
 // time, so sentences get a natural beat instead of running straight into each
 // other. TTS engines leave little/no gap of their own, especially under
 // continuation prompting. Mark times below are computed against this gapped
 // layout so highlighting stays in sync. Set --segment-gap=0 to disable.
-const segmentGapMs = asMs(Math.max(0, Number(flags.get("segment-gap") ?? "200")));
+const segmentGapMs = asMs(Math.max(0, Number(flags["segment-gap"] ?? "200")));
 
 // `--force-mark=NAME[,NAME...]` re-rolls specific segment(s): the named marks'
 // segments bypass the cache (forcing a fresh, possibly different MOSS take)
@@ -129,7 +150,7 @@ const segmentGapMs = asMs(Math.max(0, Number(flags.get("segment-gap") ?? "200"))
 // author's per-segment "regenerate" button (see methodology.md). No-op for
 // `--mock` (which skips the cache entirely).
 const forceMarks = new Set(
-  (flags.get("force-mark") ?? "")
+  (flags["force-mark"] ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean),
@@ -140,8 +161,8 @@ const forceMarks = new Set(
 // off, so existing builds are unchanged. Today the only backend is `qwen3`,
 // gated by QWEN3_ALIGNER_DIR (see generate/aligner.ts). `--align-language`
 // picks the language fed to the aligner (default English).
-const alignName = flags.get("align") as ForcedAlignerName | undefined;
-const alignLanguage = flags.get("align-language") ?? "English";
+const alignName = flags.align as ForcedAlignerName | undefined;
+const alignLanguage = flags["align-language"] ?? "English";
 
 // `--chapters=ID[,ID,...]` keeps only the listed chapters (matched by
 // data-chapter-id), in document order. Mostly a quick-iteration knob — the
@@ -152,7 +173,7 @@ const alignLanguage = flags.get("align-language") ?? "English";
 // committing to the full render. The resulting manifest, audio, and
 // captions.vtt only contain those chapters — re-run without the flag to
 // produce the full set.
-const chapterFilter = flags.get("chapters");
+const chapterFilter = flags.chapters;
 const chapterAllowlist = chapterFilter
   ? new Set(
       chapterFilter
