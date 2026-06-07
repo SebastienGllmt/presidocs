@@ -18,6 +18,7 @@
     "@slack/types": "^2.21.1",
     "@types/bun": "latest",
     "@types/turndown": "^5.0.6",
+    "@types/web-app-manifest": "^1.0.9",
     "discord-api-types": "^0.38.48",
     "fast-check": "4.8.0",
     "fast-xml-parser": "^5.7.3",

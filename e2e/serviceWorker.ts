@@ -29,6 +29,7 @@ import type { Browser, BrowserContext, Page } from "playwright";
 import { launchChrome, resolveBlogDir, startWranglerServer, type BlogServer } from "./harness.ts";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import type { WebAppManifest } from "web-app-manifest";
 
 let browser: Browser;
 let server: BlogServer;
@@ -193,7 +194,7 @@ test("the built pages are an installable PWA — manifest linked, served, and in
     }, head.manifestHref!);
     expect(m.ok, `/manifest.webmanifest is served (status ${m.status})`).toBe(true);
 
-    const man = m.json as Record<string, unknown> & { icons?: Array<{ sizes?: string }> };
+    const man = m.json as WebAppManifest;
     expect(typeof man.name === "string" && (man.name as string).length > 0, "manifest has a name").toBe(true);
     // Root entry point + identity — the engine pins these to "/" for stable
     // app identity and a post-list start.

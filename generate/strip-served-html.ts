@@ -18,6 +18,11 @@ import { join, relative, sep } from "node:path";
 import { stripServedHtml } from "../shared/stripServedHtml.ts";
 import { injectSiteFooter } from "../shared/injectFooter.ts";
 import { injectPwaHead, type PwaHeadOptions } from "../shared/injectPwaHead.ts";
+// W3C-accurate type for the authored manifest.webmanifest (DefinitelyTyped,
+// MIT, types-only — erased at compile time, never shipped). One shared spec
+// interface for both manifest readers (here + e2e/serviceWorker.ts) instead of
+// two ad-hoc shapes; a typo like `icons[0].url` is a `tsc` error.
+import type { WebAppManifest } from "web-app-manifest";
 import {
   injectStructuredData,
   injectSiteStructuredData,
@@ -241,10 +246,7 @@ async function main(): Promise<void> {
   const manifestPath = join(ROOT, "manifest.webmanifest");
   if (existsSync(manifestPath)) {
     try {
-      const m = (await Bun.file(manifestPath).json()) as {
-        theme_color?: string;
-        icons?: { src?: string }[];
-      };
+      const m = (await Bun.file(manifestPath).json()) as WebAppManifest;
       pwaOpts = {
         themeColor: m.theme_color,
         appleTouchIcon: m.icons?.[0]?.src,
