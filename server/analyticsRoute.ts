@@ -30,6 +30,11 @@
 // hold to "two characters + slash" rather than e.g. `/analytics`.
 
 import type { PostMetaIndex } from "./postMeta.ts";
+// Official Workers binding types (types-only devDep, erased at build) — the same
+// `AnalyticsEngineDataset`/`RateLimit` `server/env.ts` types the bindings with,
+// so the handler consumes the exact contract the platform guarantees instead of
+// a narrower hand-declared duplicate.
+import type { AnalyticsEngineDataset, RateLimit } from "@cloudflare/workers-types";
 import { StatusCodes } from "http-status-codes";
 import {
   AnalyticsPayloadSchema,
@@ -43,34 +48,21 @@ import {
   type AnalyticsPayload,
 } from "../shared/analyticsSchema.ts";
 
-// Minimal binding shape — the Workers Analytics Engine binding matches it
-// (`writeDataPoint` returns void), and dev passes `null` to skip the write.
-// We model `writeDataPoint` as taking the exact shape we send so the slot
-// map in `analyticsSchema.ts` is the only source of positional meaning.
-export type AnalyticsSink = {
-  writeDataPoint(point: {
-    indexes?: string[];
-    blobs?: string[];
-    doubles?: number[];
-  }): void;
-};
-
-// Same Workers Rate Limit binding shape as `server/comments/routes.ts`.
-export type RateLimiter = {
-  limit(opts: { key: string }): Promise<{ success: boolean }>;
-};
-
 export type AnalyticsDeps = {
   // The Analytics Engine binding from the Worker (`env.ANALYTICS`), or null
   // in dev. A null sink turns every emit into a no-op while keeping the route
-  // alive — no client-visible difference, no warnings on every request.
-  sink: AnalyticsSink | null;
+  // alive — no client-visible difference, no warnings on every request. The
+  // official `AnalyticsEngineDataset` type (accepts `(ArrayBuffer|string|null)[]`
+  // blobs/indexes) is wider than what we write today; `buildDataPoint` keeps the
+  // narrow `string[]` shape and `analyticsSchema.ts` stays the only source of
+  // positional slot meaning.
+  sink: AnalyticsEngineDataset | null;
   // Same `postMetaIndex` the comments + version routes use, for the
   // allowlist check on `post`. The landing path is allowed in addition.
   postMeta: PostMetaIndex;
   // Workers Rate Limiting binding (prod) or null (dev). Keyed on edge IP so
   // a flood from one source can't drown the dataset.
-  rateLimiter: RateLimiter | null;
+  rateLimiter: RateLimit | null;
 };
 
 // Reasonable upper bound on a known good crawler's UA string for early

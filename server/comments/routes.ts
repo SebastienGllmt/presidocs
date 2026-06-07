@@ -18,6 +18,7 @@
 
 import { getSessionFromRequest } from "../auth/routes.ts";
 import { StatusCodes } from "http-status-codes";
+import type { RateLimit } from "@cloudflare/workers-types";
 import type { Session } from "../auth/session.ts";
 import { isPostAuthor, type PostMetaIndex } from "../postMeta.ts";
 import {
@@ -37,16 +38,13 @@ import type {
 // UX cap).
 export const MAX_CHANGE_BYTES = 8 * 1024;
 
-// Minimal rate-limit binding shape — Workers Rate Limiting API
-// matches it; dev passes null (no limiting locally).
-export type RateLimiter = {
-  limit(opts: { key: string }): Promise<{ success: boolean }>;
-};
-
 export type CommentsDeps = {
   store: CommentChangeStore;
   postMeta: PostMetaIndex;
-  rateLimiter: RateLimiter | null;
+  // Official Workers Rate Limiting binding (`env.RATE_LIMITER`), or null in dev
+  // (no limiting locally) — the same `RateLimit` type `server/env.ts` declares,
+  // instead of a local re-declaration of the identical shape.
+  rateLimiter: RateLimit | null;
 };
 
 function unauthorized(): Response {
