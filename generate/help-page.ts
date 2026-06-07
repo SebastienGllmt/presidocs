@@ -39,6 +39,7 @@
 import { readdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { parseHTML } from "linkedom";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { resolveFeedConfig } from "../shared/feedConfig.ts";
 import { buildAuthorMap } from "../shared/authorProfile.ts";
@@ -449,8 +450,12 @@ export type VersionEntry = { hash: string; builtAt: string };
 // resolves identically. Falls back to the engine's source landing.css if the
 // landing somehow carries no stylesheet link (degraded but not broken).
 export function extractStylesheetLinks(landingHtml: string): string {
-  const matches = landingHtml.match(/<link\b[^>]*rel=["']stylesheet["'][^>]*>/gi);
-  if (matches && matches.length) return matches.join("");
+  // Parsed with linkedom (build-time only) rather than a `<link …>` regex: a
+  // real parser matches the rel token correctly (`rel="stylesheet"` and the
+  // multi-value `rel="preload stylesheet"` form), ignores `<link>`-looking text
+  // inside scripts/comments, and re-serializes each tag as well-formed HTML.
+  const links = [...parseHTML(landingHtml).document.querySelectorAll('link[rel~="stylesheet"]')];
+  if (links.length) return links.map((l) => l.outerHTML).join("");
   return `<link rel="stylesheet" href="/engine/client/landing.css" />`;
 }
 

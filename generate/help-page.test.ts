@@ -6,9 +6,26 @@ import {
   featureChips,
   buildFeatureChipsHtml,
   injectFeatureChips,
+  extractStylesheetLinks,
   type FeatureSet,
   type HelpContext,
 } from "./help-page.ts";
+
+test("extractStylesheetLinks lifts only the stylesheet <link>s, in order", () => {
+  const out = extractStylesheetLinks(
+    `<head><link rel="icon" href="/x.png"><link rel="stylesheet" href="./a.css"><link rel="preload stylesheet" href="/b.css"></head>`,
+  );
+  expect(out).toContain(`<link rel="stylesheet" href="./a.css">`);
+  // The multi-value rel form, which the old exact-match regex silently dropped.
+  expect(out).toContain(`href="/b.css"`);
+  expect(out).not.toContain("/x.png");
+});
+
+test("extractStylesheetLinks falls back to the engine stylesheet when none present", () => {
+  expect(extractStylesheetLinks(`<head><title>x</title></head>`)).toContain(
+    `href="/engine/client/landing.css"`,
+  );
+});
 
 const ALL_FEATURES: FeatureSet = {
   narration: true,

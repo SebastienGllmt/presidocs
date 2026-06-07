@@ -31,6 +31,7 @@ import { resolveFeedConfig, type FeedConfig } from "../shared/feedConfig.ts";
 import { buildAuthorMap, type PublicAuthorProfile } from "../shared/authorProfile.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 import { decodeHtmlEntities } from "../shared/htmlEntities.ts";
+import { parseHTML } from "linkedom";
 import { encodeXML } from "entities";
 import { findManifestName } from "../shared/manifestFile.ts";
 import { stableEpisodePath } from "../shared/stableAudio.ts";
@@ -424,9 +425,13 @@ export async function readSiteMeta(): Promise<{ title: string; description: stri
 }
 
 // Inner HTML of the first <article> in a stripped post — the feed <content>.
+// Parsed with linkedom (build-time only) rather than a `<article>…</article>`
+// regex: the regex truncated at the first nested `</article>` and grabbed raw
+// bytes; querySelector + innerHTML returns exactly the article's children as
+// well-formed HTML, which is what a feed reader renders.
 function extractArticle(html: string): string {
-  const m = html.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i);
-  return m ? m[1]!.trim() : "";
+  const article = parseHTML(html).document.querySelector("article");
+  return article ? article.innerHTML.trim() : "";
 }
 
 // Title + lede from a source post. Exported so site-discovery.ts reuses the

@@ -3,16 +3,34 @@
 // continuation signal — is unit-testable in isolation (same rationale as
 // audio-pipeline.ts).
 //
-// The in-chapter format is plain text plus `<mark name="..."/>` boundaries —
-// no `<speak>` wrapper, no nested tags, no namespace. So we do not need an
-// XML parser; a single regex over `<mark name=...>` (self-closing or with an
-// explicit close tag, single or double quotes) gives the boundary positions,
-// and everything between two boundaries is the segment's text.
+// The in-chapter format is a sentinel DSL, NOT HTML: plain prose plus
+// `<mark .../>` boundary markers — no `<speak>` wrapper, no nested tags, no
+// namespace. It must NOT be handed to an HTML/XML tree-builder. `<mark/>` is
+// authored self-closing, but HTML has no self-closing for non-void elements, so
+// a real parser treats each `<mark>` as an *opening* tag and nests every later
+// segment inside it, collapsing the flat boundary structure (verified against
+// linkedom: a 3-marker chapter parses to 2 mutually-nested <mark>s that each
+// swallow the rest of the prose). So the BOUNDARY scan below is a deliberate
+// regex over the sentinels; everything between two boundaries is one segment's
+// text, and the whitespace in that gap (notably a blank line) is load-bearing —
+// see `blankLineBeforeMark`. This is the rare case where regex-over-angle-
+// brackets is the CORRECT tool, because the input is not actually HTML.
 //
-// Entities are intentionally NOT decoded: HTMLRewriter hands us script
-// content byte-for-byte (RAWTEXT semantics), and the authoring format is
-// plain prose — `&` means `&`, not `&amp;`. A literal `<` mid-prose is fine
-// because the regex only matches `<mark ...>`, not arbitrary tags.
+// Entities in the prose are intentionally NOT decoded: HTMLRewriter hands the
+// `<script type="text/narration">` body to extractNarration() byte-for-byte
+// (RAWTEXT semantics), and the authoring format is plain prose — `&` means `&`,
+// not `&amp;`. A literal `<` mid-prose is fine: the boundary regex only matches
+// `<mark ...>`, not arbitrary tags.
+//
+// The ATTRIBUTES of an individual marker, by contrast, ARE just HTML attributes
+// with no nesting to confuse a parser — so `readMarkAttrs` parses each isolated
+// `<mark ...>` tag with linkedom (a real parser) instead of a hand-rolled
+// attribute regex, getting attribute order, quote style, and the present-but-
+// empty (`figure=""`, an explicit clear) vs absent (null) distinction right.
+// linkedom is safe here: this module runs only under Bun (the build + dev
+// server), never in the browser or the Worker.
+
+import { parseHTML } from "linkedom";
 
 // `continuesPrevious` carries cross-segment prosody intent (see methodology.md,
 // "Cross-segment continuity"): it
@@ -36,21 +54,30 @@ export type Segment = {
   continuesPrevious: boolean;
 };
 
-// Match a whole `<mark …>` boundary (self-closing or with an explicit close
-// tag), capturing its attribute blob — the individual attributes are then read
-// out of the blob by `readMarkAttr`, so they may appear in ANY order
-// (`<mark figure="x" name="y"/>` parses the same as `name`-first). `[^>]*?` is
-// lazy and the class excludes `>`, so it stops at the tag's own close.
+// Locate each `<mark …>` boundary (self-closing or with an explicit close tag)
+// in the sentinel DSL and capture its raw attribute blob. This is boundary
+// DETECTION over a non-HTML format (see the module header for why a tree-
+// builder is the wrong tool) — the blob is parsed properly by `readMarkAttrs`.
+// `[^>]*?` is lazy and excludes `>`, so it stops at the tag's own close.
 const markRegex = /<mark\s+([^>]*?)\s*\/?\s*>(?:\s*<\/mark\s*>)?/g;
 
-// Read one quoted attribute (single or double quotes) out of a `<mark>`'s
-// attribute blob, or null when the attribute is absent. The `(?:^|\s)` anchor
-// keeps `name` from matching the tail of an unrelated attribute (e.g. a
-// hypothetical `data-name`). An explicitly-empty value (`figure=""`) returns
-// "" (an explicit clear), distinct from null (absent).
-function readMarkAttr(attrs: string, name: string): string | null {
-  const m = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(attrs);
-  return m ? (m[1] ?? m[2] ?? "") : null;
+// Parse the name/figure/step attributes off ONE `<mark>` marker. The blob is an
+// isolated tag with no nesting, so a real HTML parser reads it soundly: any
+// attribute order, single/double/unquoted values, and — critically —
+// present-but-empty (`figure=""` → "", an explicit stage clear) distinct from
+// absent (null, "leave the stage unchanged"). getAttribute returns exactly that
+// "" vs null distinction; a `data-name` does not leak into `name`.
+function readMarkAttrs(attrs: string): {
+  name: string | null;
+  figure: string | null;
+  step: string | null;
+} {
+  const el = parseHTML(`<mark ${attrs}>`).document.querySelector("mark");
+  return {
+    name: el?.getAttribute("name") ?? null,
+    figure: el?.getAttribute("figure") ?? null,
+    step: el?.getAttribute("step") ?? null,
+  };
 }
 
 function normalizeWhitespace(s: string): string {
@@ -165,10 +192,10 @@ export function splitChapter(content: string): Segment[] {
     // The whitespace at the end of `before` is the gap immediately preceding
     // THIS mark, so it decides whether the mark's segment is a fresh start.
     breakBeforeNext = blankLineBeforeMark(before);
-    const attrs = match[1] ?? "";
-    currentMark = readMarkAttr(attrs, "name");
-    currentFigure = readMarkAttr(attrs, "figure");
-    currentStep = readMarkAttr(attrs, "step");
+    const { name, figure, step } = readMarkAttrs(match[1] ?? "");
+    currentMark = name;
+    currentFigure = figure;
+    currentStep = step;
     lastEnd = match.index + match[0].length;
   }
   push(content.slice(lastEnd));

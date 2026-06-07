@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { XMLParser } from "fast-xml-parser";
 import {
   escapeXml,
   buildAtomFeed,
@@ -8,6 +9,11 @@ import {
   type FeedSite,
   type FeedPost,
 } from "./feeds.ts";
+
+// Parse feed XML with a real parser for assertions that extract/count elements
+// (regex-scraping the serialized string is the fragile pattern we avoid).
+const xmlParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
+const asArray = <T>(v: T | T[] | undefined): T[] => [v ?? []].flat() as T[];
 
 const SITE: FeedSite = {
   baseUrl: "https://blog.example.com",
@@ -90,8 +96,10 @@ test("Atom: per-entry tag-URI year comes from the entry's own publish date", () 
 test("Atom: adding an older-dated post does NOT change another entry's id", () => {
   const before = buildAtomFeed(SITE, [POST_WITH_AUDIO]);
   const after = buildAtomFeed(SITE, [POST_OLDER, POST_WITH_AUDIO]);
-  const idOf = (xml: string) =>
-    xml.match(/<id>(tag:[^<]*:\/posts\/offer-files)<\/id>/)![1];
+  const idOf = (xml: string) => {
+    const entries = asArray<{ id?: string }>(xmlParser.parse(xml)?.feed?.entry);
+    return entries.map((e) => e.id).find((id) => typeof id === "string" && id.includes("/posts/offer-files"));
+  };
   expect(idOf(after)).toBe(idOf(before)); // permanence (RFC 4287 §4.2.6)
 });
 
@@ -122,9 +130,9 @@ test("RSS: channel carries a stable podcast:guid + atom:link self", () => {
   expect(xml).toContain('xmlns:atom="http://www.w3.org/2005/Atom"');
   expect(xml).toContain('<atom:link href="https://blog.example.com/podcast.xml" rel="self" type="application/rss+xml"/>');
   // guid is a UUIDv5 (deterministic over the feed URL)
-  const m = xml.match(/<podcast:guid>([0-9a-f-]+)<\/podcast:guid>/);
-  expect(m).not.toBeNull();
-  expect(m![1]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  const guid = xmlParser.parse(xml)?.rss?.channel?.["podcast:guid"];
+  expect(typeof guid).toBe("string");
+  expect(guid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 });
 
 test("uuidv5 is deterministic and matches the podcast-namespace example", () => {
@@ -136,7 +144,7 @@ test("uuidv5 is deterministic and matches the podcast-namespace example", () => 
 
 test("RSS: only audio posts become items, with a STABLE enclosure URL + chapters", () => {
   const xml = buildRssFeed(SITE, [POST_WITH_AUDIO, POST_NO_AUDIO]);
-  expect((xml.match(/<item>/g) ?? []).length).toBe(1);
+  expect(asArray(xmlParser.parse(xml)?.rss?.channel?.item).length).toBe(1);
   // Enclosure points at the stable `…/episode.mp3` (no hash), while `length`
   // still matches the hashed file's byte size — methodology.md → Subscription feeds.
   expect(xml).toContain(

@@ -20,6 +20,7 @@
 //
 // Idempotent: if a JSON-LD block is already present, the whole inject is skipped.
 
+import { parseHTML } from "linkedom";
 import { decodeHtmlEntities } from "./htmlEntities.ts";
 // Google's own typed Schema.org vocabulary (Apache-2.0). `import type` only, so
 // it is fully erased at compile time — no runtime value, never bundled, never
@@ -144,14 +145,26 @@ function collapseWs(s: string): string {
 // (Schema.org wordCount is a number, no precision spec). 0 when no <article>
 // is present — the caller then omits the field.
 export function countArticleWords(html: string): number {
-  const m = html.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i);
-  if (!m) return 0;
-  const text = m[1]!
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<[^>]+>/g, " ");
-  return text.split(/\s+/).filter(Boolean).length;
+  // Parse with linkedom (build-time only — see the module header) rather than a
+  // chain of `<article>`/tag-stripping regexes: the regex truncated at a nested
+  // `</article>`, mishandled `>` inside attribute values, and double-counted
+  // entity text. `textContent` already excludes comment nodes; we only need to
+  // drop <script>/<style> so their source isn't counted as prose.
+  const article = parseHTML(html).document.querySelector("article");
+  if (!article) return 0;
+  for (const el of [...article.querySelectorAll("script, style")]) el.remove();
+  // Collect text nodes and join with a space so element boundaries separate
+  // words (textContent would merge `<h1>One Two</h1><p>three…` into "Twothree").
+  // This mirrors the old "every tag becomes whitespace" behavior, faithfully.
+  const parts: string[] = [];
+  const walk = (node: Node) => {
+    for (const child of node.childNodes) {
+      if (child.nodeType === 3) parts.push(child.textContent ?? ""); // TEXT_NODE
+      else if (child.nodeType === 1) walk(child); // ELEMENT_NODE
+    }
+  };
+  walk(article);
+  return parts.join(" ").split(/\s+/).filter(Boolean).length;
 }
 
 // Escape for use inside a double-quoted HTML attribute.

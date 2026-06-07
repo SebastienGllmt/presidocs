@@ -112,40 +112,77 @@ export function layerOrderStatements(css: string): string[] {
 export function checkHeadLayerOrder(html: string): string[] {
   const problems: string[] = [];
 
-  // Find the first inline <style> that contains a layer-ordering statement.
-  const styleRe = /<style\b[^>]*>([\s\S]*?)<\/style>/gi;
-  let styleIdx = -1;
+  // Walk the document with HTMLRewriter (a runtime global, same parser as the
+  // injector above) instead of regex/.search() over the raw string. The check
+  // is fundamentally about DOCUMENT ORDER — does the qualifying inline <style>
+  // precede the first layer-bearing <link>/<script>? — and HTMLRewriter streams
+  // in document order, so "did we see X before the style?" is a single flag.
+  // The old `.search(/<link …>/)` approach was fooled by `<link>`-looking text
+  // inside comments/scripts and by attribute-value `>` characters.
+  //
+  // The `@layer …;` extraction below stays a regex: it parses CSS text (a
+  // <style>'s body), not HTML structure, and there's no CSS DOM here — same as
+  // the sibling helpers (collectLayerNames / layerOrderStatements).
   let statement: string | null = null;
-  let m: RegExpExecArray | null;
-  while ((m = styleRe.exec(html))) {
-    const found = (m[1] ?? "").match(/@layer\s+[^{;]+;/);
-    if (found?.[0]) {
-      styleIdx = m.index;
-      statement = found[0];
-      break;
-    }
-  }
+  let styleFound = false; // a qualifying <style> has fully closed
+  let linkBeforeStyle = false;
+  let scriptBeforeStyle = false;
+  let currentStyleText: string[] | null = null;
 
-  if (statement == null) {
+  new HTMLRewriter()
+    .on("style", {
+      element(el) {
+        currentStyleText = [];
+        el.onEndTag(() => {
+          const text = (currentStyleText ?? []).join("");
+          currentStyleText = null;
+          if (styleFound) return; // first qualifying <style> wins
+          const found = text.match(/@layer\s+[^{;]+;/);
+          if (found?.[0]) {
+            statement = found[0];
+            styleFound = true;
+          }
+        });
+      },
+      text(t) {
+        currentStyleText?.push(t.text);
+      },
+    })
+    .on('link[rel~="stylesheet"]', {
+      element() {
+        if (!styleFound) linkBeforeStyle = true;
+      },
+    })
+    .on('script[type="module"]', {
+      element() {
+        if (!styleFound) scriptBeforeStyle = true;
+      },
+    })
+    .transform(html);
+
+  // `statement` is written only inside the HTMLRewriter closure, which TS's
+  // control-flow analysis can't see — it believes the value is always the
+  // initial `null` and would narrow the else-branch below to `never`. Re-assert
+  // the real type so the null check narrows correctly.
+  const layerStatement = statement as string | null;
+  if (layerStatement == null) {
     problems.push(
       `no inline <style> with an "@layer …;" ordering statement (expected ${CSS_LAYER_ORDER_STATEMENT})`,
     );
     return problems; // ordering checks below are meaningless without one
   }
 
-  if (norm(statement) !== norm(CSS_LAYER_ORDER_STATEMENT)) {
+  if (norm(layerStatement) !== norm(CSS_LAYER_ORDER_STATEMENT)) {
     problems.push(
-      `inline layer order "${statement.trim()}" does not match canonical "${CSS_LAYER_ORDER_STATEMENT}"`,
+      `inline layer order "${layerStatement.trim()}" does not match canonical "${CSS_LAYER_ORDER_STATEMENT}"`,
     );
   }
 
-  const firstLink = html.search(/<link\b[^>]*\brel=["']?stylesheet/i);
-  if (firstLink !== -1 && firstLink < styleIdx) {
+  if (linkBeforeStyle) {
     problems.push('a <link rel="stylesheet"> appears before the inline @layer statement');
   }
 
-  const firstModule = html.search(/<script\b[^>]*\btype=["']?module/i);
-  if (firstModule !== -1 && firstModule < styleIdx) {
+  if (scriptBeforeStyle) {
     problems.push('a <script type="module"> appears before the inline @layer statement');
   }
 

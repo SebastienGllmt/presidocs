@@ -20,7 +20,16 @@
 // versions.json per normal build behavior — run on an ephemeral/CI checkout.
 
 import { test, expect, beforeAll, afterAll } from "bun:test";
+import { XMLParser } from "fast-xml-parser";
 import { startWranglerServer, type BlogServer } from "./harness.ts";
+import { HASHED_AUDIO_RE } from "../shared/stableAudio.ts";
+
+type Source = { "@_uri"?: string };
+type AltEnclosure = { "podcast:source"?: Source | Source[] };
+type FeedItem = {
+  enclosure?: { "@_url"?: string };
+  "podcast:alternateEnclosure"?: AltEnclosure | AltEnclosure[];
+};
 
 let server: BlogServer;
 let stableUrl: string; // absolute …/episode.<ext>
@@ -34,8 +43,26 @@ beforeAll(async () => {
   const res = await fetch(`${server.baseURL}/podcast.xml`);
   expect(res.status, "podcast.xml should be served by the Worker").toBe(200);
   feedXml = await res.text();
-  const stablePath = feedXml.match(/<enclosure url="[^"]*(\/generated\/[^"]+\/episode\.[a-z0-9]+)"/i)?.[1];
-  const hashedPath = feedXml.match(/<podcast:source uri="[^"]*(\/generated\/[^"]+\/full\.[0-9a-f]{16}\.[a-z0-9]+)"/i)?.[1];
+  // Discover the URLs with fast-xml-parser (the project's XML parser) rather
+  // than regex-scraping attributes; the URL API gives the path portion. The
+  // enclosure is the stable episode URL, podcast:source the content-hashed one.
+  const parsed = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" }).parse(feedXml) as {
+    rss?: { channel?: { item?: FeedItem | FeedItem[] } };
+  };
+  const items: FeedItem[] = [parsed?.rss?.channel?.item ?? []].flat();
+  // The stable URL is the <enclosure>; the content-hashed one is the
+  // <podcast:source> (nested in <podcast:alternateEnclosure>) whose path matches
+  // the shared hashed-audio pattern. Picking it by HASHED_AUDIO_RE (a filename
+  // matcher, not markup) keeps a single source of truth with stableAudio.ts.
+  const enclosureUrl = items.find((i) => i.enclosure?.["@_url"])?.enclosure?.["@_url"];
+  const sourceUris = items
+    .flatMap((i) => [i["podcast:alternateEnclosure"] ?? []].flat())
+    .flatMap((ae) => [ae["podcast:source"] ?? []].flat())
+    .map((s) => s["@_uri"])
+    .filter((u): u is string => Boolean(u));
+  const hashedUri = sourceUris.find((u) => HASHED_AUDIO_RE.test(new URL(u).pathname));
+  const stablePath = enclosureUrl ? new URL(enclosureUrl).pathname : undefined;
+  const hashedPath = hashedUri ? new URL(hashedUri).pathname : undefined;
   expect(stablePath, "feed must carry a stable episode enclosure (is audio generated?)").toBeTruthy();
   expect(hashedPath, "feed must advertise the content-addressed source").toBeTruthy();
   stableUrl = `${server.baseURL}${stablePath}`;

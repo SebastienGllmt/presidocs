@@ -21,13 +21,14 @@
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { readdir } from "node:fs/promises";
+import { parseHTML } from "linkedom";
 import { CAPTURE_DEFAULTS } from "./capture-defaults.ts";
 
 // Bump to invalidate every figure cache entry at once — the video clips AND the
 // height test's pass-record — e.g. after an ffmpeg upgrade you want re-encoded,
 // or a capture-param change not otherwise fingerprinted below. (Also stamped
 // into render-video.ts's separate whole-video cache key, which imports this.)
-export const CACHE_VERSION = "v8"; // v8: blog switched to self-hosted Red Hat Text/Mono web fonts
+export const CACHE_VERSION = "v9"; // v9: figureSubtree now serialized via a real HTML parser (linkedom outerHTML), not a regex slice — the fingerprint string changed, so every figure re-keys once
 
 export function hashStr(s: string): string {
   return createHash("sha256").update(s).digest("hex").slice(0, 16);
@@ -106,13 +107,20 @@ export async function figureEnvHash(paths: FigureCacheRoots): Promise<string> {
 }
 
 /** A figure's own markup (the static SVG the enhancer animates + any inline
- *  data it reads). Figures never nest, so a non-greedy match to the first
- *  `</figure>` is exact; on no match, fall back to the whole doc (a false miss
- *  is safe, a false hit is not). */
+ *  data it reads), serialized as a stable fingerprint of the authored figure.
+ *
+ *  Parsed with a real HTML parser (linkedom) and matched by `id`, not a
+ *  `<figure …>…</figure>` regex slice: the regex truncated at the first nested
+ *  `</figure>`, missed a `</figure >` with stray whitespace, and was sensitive
+ *  to raw byte noise. `querySelector` resolves the exact subtree regardless.
+ *  On no match we still fall back to the whole doc (a false miss only over-
+ *  invalidates the cache — safe; a false hit would ship a stale capture). */
 export function figureSubtree(html: string, id: string): string {
-  const esc = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const m = html.match(new RegExp(`<figure\\b[^>]*\\bid=["']${esc}["'][\\s\\S]*?</figure>`, "i"));
-  return m ? m[0] : html;
+  // Escape the id for a double-quoted CSS attribute selector (figure ids are
+  // author-controlled slugs, so `"` / `\` are the only chars that need it).
+  const sel = `figure[id="${id.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"]`;
+  const el = parseHTML(html).document.querySelector(sel);
+  return el ? el.outerHTML : html;
 }
 
 /**

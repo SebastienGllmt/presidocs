@@ -564,8 +564,24 @@ function slidePlate(_ctx: PostCtx, chapter: Chapter, parentTitle: string | null)
 // --- post metadata helpers ---------------------------------------------------
 
 function extractTitle(html: string): string {
-  const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  return m ? decodeHtmlEntities(m[1]!.replace(/\s+/g, " ").trim()) : "";
+  // HTMLRewriter (a Bun built-in, same as feeds.ts's extractPostMeta) rather
+  // than a `<title>…</title>` regex: a real parser handles attributes on the
+  // tag, RCDATA content, and entity boundaries correctly. Text arrives raw, so
+  // we decode entities ourselves afterward (matching the feeds.ts extractor).
+  let title = "";
+  let inTitle = false;
+  new HTMLRewriter()
+    .on("title", {
+      element() {
+        inTitle = true;
+      },
+      text(t) {
+        if (inTitle) title += t.text;
+        if (t.lastInTextNode) inTitle = false;
+      },
+    })
+    .transform(html);
+  return decodeHtmlEntities(title.replace(/\s+/g, " ").trim());
 }
 
 async function readSiteName(): Promise<string> {

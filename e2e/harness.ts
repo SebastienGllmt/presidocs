@@ -38,6 +38,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, dirname } from "node:path";
 import { createSessionToken } from "../server/auth/session.ts";
+import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 
 /**
  * Mint a session cookie the dev server will accept. `nodejs_compat` maps the
@@ -94,17 +95,17 @@ export async function mintAuthorSessionCookie(
   uniq: string,
 ): Promise<{ name: string; value: string }> {
   const html = readFileSync(join(blogDir, "posts", `${slug}.html`), "utf8");
-  const m =
-    html.match(/<meta\s+[^>]*name=["']author-email["'][^>]*content=["']([^"']+)["']/i) ??
-    html.match(/<meta\s+[^>]*content=["']([^"']+)["'][^>]*name=["']author-email["']/i);
-  if (!m) throw new Error(`no <meta name="author-email"> in posts/${slug}.html`);
+  // Use the shared, parser-based extractor (server/postMeta.ts) — same answer
+  // the real auth path uses — rather than re-implementing a `<meta …>` regex.
+  const email = parseAuthorEmailFromHtml(html);
+  if (!email) throw new Error(`no <meta name="author-email"> in posts/${slug}.html`);
   const devVars = readFileSync(join(blogDir, ".dev.vars"), "utf8");
   const secret = devVars.match(/^SESSION_SECRET\s*=\s*"?([^"\n]+)"?/m);
   if (!secret) throw new Error(`SESSION_SECRET not found in ${blogDir}/.dev.vars`);
   process.env.SESSION_SECRET = secret[1]!.trim();
   const value = await createSessionToken({
     userId: `google:e2e-author-${uniq}`,
-    email: m[1]!.trim(),
+    email,
     emailVerified: true,
     name: "E2E Author",
     provider: "google",

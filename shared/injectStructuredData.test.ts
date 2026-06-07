@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { parseHTML } from "linkedom";
 import {
   injectStructuredData,
   injectSiteStructuredData,
@@ -39,9 +40,16 @@ const CTX: StructuredDataContext = {
 };
 
 function jsonLd(html: string): any {
-  const m = html.match(/<script type="application\/ld\+json">(.*?)<\/script>/s);
-  if (!m) throw new Error("no JSON-LD block");
-  return JSON.parse(m[1]!.replace(/\\u003c/g, "<"));
+  const script = parseHTML(html).document.querySelector('script[type="application/ld+json"]');
+  if (!script) throw new Error("no JSON-LD block");
+  // The injector escapes `<` as `<` so the JSON-LD can't break out of the
+  // <script>; undo it before parsing (JSON.parse would too, but be explicit).
+  return JSON.parse((script.textContent ?? "").replace(/\\u003c/g, "<"));
+}
+
+// Count elements via a real parser, not a regex over the serialized string.
+function countSelector(html: string, selector: string): number {
+  return parseHTML(html).document.querySelectorAll(selector).length;
 }
 
 test("emits a BlogPosting with audio, author Person, dates, and publisher", () => {
@@ -92,8 +100,7 @@ test("post inject: does NOT duplicate an existing meta description", () => {
     '<meta name="description" content="Author supplied." />\n<title>',
   );
   const out = injectStructuredData(withDesc, CTX);
-  const count = (out.match(/<meta name="description"/g) ?? []).length;
-  expect(count).toBe(1);
+  expect(countSelector(out, 'meta[name="description"]')).toBe(1);
   expect(out).toContain('<meta name="description" content="Author supplied." />');
 });
 
@@ -328,7 +335,7 @@ test("landing inject: does NOT duplicate an existing meta description", () => {
     '<meta name="description" content="hand-authored" />\n<title>',
   );
   const out = injectSiteStructuredData(withDesc, SITE_CTX);
-  expect((out.match(/<meta name="description"/g) ?? []).length).toBe(1);
+  expect(countSelector(out, 'meta[name="description"]')).toBe(1);
   expect(out).toContain('<meta name="description" content="hand-authored" />');
 });
 

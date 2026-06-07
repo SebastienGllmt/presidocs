@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { XMLParser } from "fast-xml-parser";
 import {
   buildRobotsTxt,
   buildSitemapXml,
@@ -40,7 +41,8 @@ test("sitemap.xml: emits one <url> per entry with escaped loc and lastmod", () =
   const xml = buildSitemapXml(entries);
   expect(xml).toContain('<?xml version="1.0" encoding="UTF-8"?>');
   expect(xml).toContain('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">');
-  expect((xml.match(/<url>/g) ?? []).length).toBe(2);
+  const urls = [new XMLParser().parse(xml)?.urlset?.url ?? []].flat();
+  expect(urls.length).toBe(2);
   expect(xml).toContain(
     "<url><loc>https://blog.example.com/posts/offer-files</loc><lastmod>2026-05-31T05:02:17.626Z</lastmod></url>",
   );

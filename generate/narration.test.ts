@@ -58,6 +58,14 @@ test("attributes parse in any order (figure before name)", () => {
   expect(segs[0]!.figure).toBe("merge-figure");
 });
 
+test("a prefix-colliding attribute does not leak into the real one", () => {
+  // `data-name` must not be read as `name` (the parser scopes by attribute
+  // name; the old regex relied on a `(?:^|\s)` anchor to avoid this).
+  const segs = splitChapter(`<mark data-name="decoy" name="real" data-figure="x"/> Go.`);
+  expect(segs[0]!.markName).toBe("real");
+  expect(segs[0]!.figure).toBeNull();
+});
+
 // --- cache-neutrality invariant (methodology.md → "Audio caching", REQUIRED) -----------
 // Adding or changing `step=`/`figure=` annotations MUST NOT invalidate the
 // per-segment TTS audio cache (a MOSS re-render is minutes per segment) nor the

@@ -45,22 +45,34 @@ export function createPostMetaIndex(
   };
 }
 
-// HTML parser shared between the dev scanner and the build-time
-// generator. Deliberately regex-based — we control the input shape and
-// don't need a real HTML parser for one well-known meta tag.
-const META_AUTHOR_EMAIL =
-  /<meta\s+[^>]*name=["']author-email["'][^>]*content=["']([^"']+)["']/i;
-const META_AUTHOR_EMAIL_ALT =
-  /<meta\s+[^>]*content=["']([^"']+)["'][^>]*name=["']author-email["']/i;
-
+// Parse the author-email out of a post's `<meta name="author-email">`.
+// Used by the dev scanner and the build-time generator (never on the hot
+// request path — prod imports a static map).
+//
+// Parsed with HTMLRewriter (a Bun/Workers built-in, lol-html under the hood),
+// NOT a regex. This is an authorization input — the answer to "who owns this
+// post?" — so soundness matters: a real parser is attribute-order agnostic
+// (the spec allows `name` before or after `content`), quote/casing tolerant,
+// and immune to the `[^>]*` traps a hand-rolled `<meta …>` regex falls into.
+// HTMLRewriter (not linkedom) specifically, because this module is bundled
+// into the Cloudflare Worker via createPostMetaIndex() and HTMLRewriter is a
+// runtime global — no heavy DOM dependency gets pulled into the worker.
+//
+// NOTE to future maintainers: do NOT "simplify" this back to a regex. A regex
+// over `<meta …>` is unsound (and here, a security regression).
 export function parseAuthorEmailFromHtml(html: string): string | null {
-  // Try the conventional attribute order first, then the reversed one
-  // (HTML spec allows either order; both are equally valid).
-  const m1 = html.match(META_AUTHOR_EMAIL);
-  if (m1) return m1[1]!.trim();
-  const m2 = html.match(META_AUTHOR_EMAIL_ALT);
-  if (m2) return m2[1]!.trim();
-  return null;
+  let email: string | null = null;
+  new HTMLRewriter()
+    .on("meta", {
+      element(el) {
+        if (email !== null) return; // first match wins (mirrors prior behavior)
+        if ((el.getAttribute("name") ?? "").trim().toLowerCase() !== "author-email") return;
+        const content = (el.getAttribute("content") ?? "").trim();
+        if (content) email = content;
+      },
+    })
+    .transform(html);
+  return email;
 }
 
 // Helpers for the typical author check that callers do: "is this

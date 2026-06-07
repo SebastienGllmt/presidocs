@@ -54,6 +54,34 @@ test("checkHeadLayerOrder flags a missing / mis-ordered statement", () => {
   ]);
 });
 
+test("checkHeadLayerOrder flags a <script type=module> before the @layer style", () => {
+  const html =
+    '<head><script type="module" src="x.ts"></script>' +
+    `<style>${CSS_LAYER_ORDER_STATEMENT}</style></head>`;
+  expect(checkHeadLayerOrder(html)).toEqual([
+    expect.stringContaining('<script type="module"> appears before'),
+  ]);
+});
+
+test("checkHeadLayerOrder flags a statement that does not match the canonical order", () => {
+  const html = "<head><style>@layer post, engine-tokens;</style></head>";
+  expect(checkHeadLayerOrder(html)).toEqual([
+    expect.stringContaining("does not match canonical"),
+  ]);
+});
+
+test("checkHeadLayerOrder is not fooled by <link>/<script> strings in comments or script text", () => {
+  // A real parser does not treat markup inside an HTML comment or a <script>
+  // body as elements — the old .search(/<link …>/) regex would false-positive.
+  const html =
+    "<head>" +
+    '<!-- <link rel="stylesheet" href="ghost.css"> -->' +
+    `<style>${CSS_LAYER_ORDER_STATEMENT}</style>` +
+    `<script>const s = '<script type="module">';</script>` +
+    "</head>";
+  expect(checkHeadLayerOrder(html)).toEqual([]);
+});
+
 test("injectLayerOrderStyle pins the order first for a layer-system page", () => {
   const src =
     '<html><head><meta charset="utf-8">' +
