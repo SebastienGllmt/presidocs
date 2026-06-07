@@ -19,6 +19,7 @@ import type { Dirent } from "node:fs";
 import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
+import { collectHtmlFiles } from "../shared/walkHtml.ts";
 
 const paths = resolveBlogPaths();
 
@@ -43,25 +44,6 @@ async function exists(p: string): Promise<boolean> {
     return true;
   } catch {
     return false;
-  }
-}
-
-async function walkPosts(
-  rootDir: string,
-  currentDir: string,
-  out: string[],
-): Promise<void> {
-  let entries;
-  try {
-    entries = await readdir(currentDir, { withFileTypes: true });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw err;
-  }
-  for (const ent of entries) {
-    const full = join(currentDir, ent.name);
-    if (ent.isDirectory()) await walkPosts(rootDir, full, out);
-    else if (ent.isFile() && ent.name.endsWith(".html")) out.push(full);
   }
 }
 
@@ -105,9 +87,11 @@ async function main(): Promise<void> {
     });
   }
 
-  const postFiles: string[] = [];
-  await walkPosts(paths.postsDir, paths.postsDir, postFiles);
-  postFiles.sort();
+  // Recursive `**/*.html` under posts/ (sorted; ENOENT → empty, matching the
+  // old walker for a content repo that has no posts/ yet). The root-level pass
+  // above stays a flat readdir on purpose — it must NOT recurse into posts/ and
+  // it excludes index.html.
+  const postFiles = collectHtmlFiles(paths.postsDir, { onMissing: "empty" });
   for (const full of postFiles) {
     const relNoExt = relative(paths.postsDir, full)
       .split(sep)

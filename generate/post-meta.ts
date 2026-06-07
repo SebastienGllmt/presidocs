@@ -12,45 +12,35 @@
 // Run via `bun run build` (which chains this script before
 // `bun build`). Idempotent — running twice produces the same output.
 
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, relative, sep } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, relative, sep } from "node:path";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
+import { collectHtmlFiles } from "../shared/walkHtml.ts";
 
 const paths = resolveBlogPaths();
 const POSTS_DIR = paths.postsDir;
 const OUT_PATH = paths.postMetaMap;
 
-async function walk(
-  rootDir: string,
-  currentDir: string,
-  out: Record<string, { authorEmail: string }>,
-): Promise<void> {
-  const entries = await readdir(currentDir, { withFileTypes: true });
-  for (const ent of entries) {
-    const full = join(currentDir, ent.name);
-    if (ent.isDirectory()) {
-      await walk(rootDir, full, out);
-    } else if (ent.isFile() && ent.name.endsWith(".html")) {
-      const html = await readFile(full, "utf8");
-      const email = parseAuthorEmailFromHtml(html);
-      if (!email) {
-        console.warn(`  [skip] ${ent.name} — no <meta name="author-email">`);
-        continue;
-      }
-      const relPath = relative(rootDir, full).split(sep).join("/");
-      const noExt = relPath.replace(/\.html$/, "");
-      const postPath = `/posts/${noExt}`;
-      out[postPath] = { authorEmail: email };
-      console.log(`  ${postPath} → ${email}`);
-    }
-  }
-}
-
 async function main(): Promise<void> {
   console.log("Generating post meta…");
   const map: Record<string, { authorEmail: string }> = {};
-  await walk(POSTS_DIR, POSTS_DIR, map);
+  // Recursive `**/*.html` under posts/ (throws on a missing posts/ — a real
+  // build-time misconfiguration). This is the walk the other engine `.html`
+  // collectors were modelled on; it now shares the one Bun.Glob helper.
+  for (const full of collectHtmlFiles(POSTS_DIR)) {
+    const html = await readFile(full, "utf8");
+    const relPath = relative(POSTS_DIR, full).split(sep).join("/");
+    const email = parseAuthorEmailFromHtml(html);
+    if (!email) {
+      console.warn(`  [skip] ${relPath} — no <meta name="author-email">`);
+      continue;
+    }
+    const noExt = relPath.replace(/\.html$/, "");
+    const postPath = `/posts/${noExt}`;
+    map[postPath] = { authorEmail: email };
+    console.log(`  ${postPath} → ${email}`);
+  }
 
   // Stable key order so the generated file is byte-identical between
   // runs (helps with git diffs / build caching).

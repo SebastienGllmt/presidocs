@@ -7,14 +7,15 @@
 // Idempotent — running twice without editing any post is a no-op on
 // disk and produces a byte-identical generated TS file.
 
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, relative, sep } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, relative, sep } from "node:path";
 import {
   sha256Hex,
   type PostVersion,
   type PostVersionRecord,
 } from "../server/postVersions.ts";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
+import { collectHtmlFiles } from "../shared/walkHtml.ts";
 
 const paths = resolveBlogPaths();
 const POSTS_DIR = paths.postsDir;
@@ -23,25 +24,20 @@ const OUT_PATH = paths.postVersionsMap;
 
 type HistoryFile = Record<string, PostVersion[]>;
 
-async function walk(
+// Hash every `*.html` under `rootDir` into `out` (postPath -> currentHash).
+// Throws on a missing rootDir (a missing posts/ at build time is a real error).
+async function hashPostsInto(
   rootDir: string,
-  currentDir: string,
-  out: Record<string, string>, // postPath -> currentHash
+  out: Record<string, string>,
 ): Promise<void> {
-  const entries = await readdir(currentDir, { withFileTypes: true });
-  for (const ent of entries) {
-    const full = join(currentDir, ent.name);
-    if (ent.isDirectory()) {
-      await walk(rootDir, full, out);
-    } else if (ent.isFile() && ent.name.endsWith(".html")) {
-      const bytes = await readFile(full);
-      const hash = await sha256Hex(bytes);
-      const relPath = relative(rootDir, full).split(sep).join("/");
-      const noExt = relPath.replace(/\.html$/, "");
-      const postPath = `/posts/${noExt}`;
-      out[postPath] = hash;
-      console.log(`  ${postPath} → ${hash.slice(0, 12)}…`);
-    }
+  for (const full of collectHtmlFiles(rootDir)) {
+    const bytes = await readFile(full);
+    const hash = await sha256Hex(bytes);
+    const relPath = relative(rootDir, full).split(sep).join("/");
+    const noExt = relPath.replace(/\.html$/, "");
+    const postPath = `/posts/${noExt}`;
+    out[postPath] = hash;
+    console.log(`  ${postPath} → ${hash.slice(0, 12)}…`);
   }
 }
 
@@ -58,7 +54,7 @@ async function loadHistory(): Promise<HistoryFile> {
 async function main(): Promise<void> {
   console.log("Generating post versions…");
   const current: Record<string, string> = {};
-  await walk(POSTS_DIR, POSTS_DIR, current);
+  await hashPostsInto(POSTS_DIR, current);
 
   const history = await loadHistory();
   let mutated = false;

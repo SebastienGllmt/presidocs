@@ -31,6 +31,7 @@ import {
 } from "../shared/injectStructuredData.ts";
 import { buildAuthorMap, type PublicAuthorProfile } from "../shared/authorProfile.ts";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
+import { collectHtmlFiles } from "../shared/walkHtml.ts";
 import { findManifestName } from "../shared/manifestFile.ts";
 
 const paths = resolveBlogPaths();
@@ -205,25 +206,6 @@ function injectPostMainLandmark(html: string, postPath: string): string {
 // shared/bunHtmlHeadPlugin.ts (via shared/articleChromeReserve.ts), which runs in
 // both dev and prod — not in this prod-only strip, so the dev server reserves too.
 
-async function walkHtml(dir: string): Promise<string[]> {
-  const out: string[] = [];
-  let entries;
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw err;
-  }
-  for (const ent of entries) {
-    const full = join(dir, ent.name);
-    if (ent.isDirectory()) {
-      out.push(...await walkHtml(full));
-    } else if (ent.isFile() && ent.name.endsWith(".html")) {
-      out.push(full);
-    }
-  }
-  return out;
-}
 
 async function main(): Promise<void> {
   // URL of the blog's privacy policy. If set, every served page gets a
@@ -273,7 +255,9 @@ async function main(): Promise<void> {
   else stages.push("(no manifest.webmanifest — skipping PWA <head> inject)");
   console.log(`Post-build HTML rewrite: ${stages.join(", ")}…`);
 
-  const files = await walkHtml(DIST);
+  // Recursive `**/*.html` under dist/, ENOENT → empty (warns below if the
+  // build hasn't run). The publisher-pick readdir elsewhere stays flat.
+  const files = collectHtmlFiles(DIST, { onMissing: "empty" });
   if (files.length === 0) {
     console.warn(
       `  No HTML files found under ${relative(ROOT, DIST)} — did you run \`bun build\` first?`,

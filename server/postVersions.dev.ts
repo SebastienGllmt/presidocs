@@ -10,8 +10,9 @@
 // still triggers — but the history view will be one entry behind
 // until the next build.
 
-import { readdir, readFile } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
+import { readFile } from "node:fs/promises";
+import { relative, sep } from "node:path";
+import { collectHtmlFiles } from "../shared/walkHtml.ts";
 import {
   createPostVersionIndex,
   sha256Hex,
@@ -26,45 +27,24 @@ export async function loadDevPostVersionIndex(
 ): Promise<PostVersionIndex> {
   const history = await loadHistoryFile(versionsJsonPath);
   const map: Record<string, PostVersionRecord> = {};
-  await walk(postsDir, postsDir, map, history);
+  // Recursive `**/*.html` under posts/, ENOENT → empty (no posts/ yet).
+  for (const full of collectHtmlFiles(postsDir, { onMissing: "empty" })) {
+    const bytes = await readFile(full);
+    const currentHash = await sha256Hex(bytes);
+    const relPath = relative(postsDir, full).split(sep).join("/");
+    const noExt = relPath.replace(/\.html$/, "");
+    const postPath = `/posts/${noExt}`;
+    // If the dev hash doesn't match the most-recent recorded history entry,
+    // prepend an in-memory "now" entry so the history view reflects the current
+    // state. Not persisted — `bun run build` is the one writing back to disk.
+    const recorded = history[postPath] ?? [];
+    const augmented: PostVersion[] =
+      recorded.length === 0 || recorded[0]!.hash !== currentHash
+        ? [{ hash: currentHash, builtAt: new Date().toISOString() }, ...recorded]
+        : recorded;
+    map[postPath] = { currentHash, history: augmented };
+  }
   return createPostVersionIndex(map);
-}
-
-async function walk(
-  rootDir: string,
-  currentDir: string,
-  out: Record<string, PostVersionRecord>,
-  history: Record<string, PostVersion[]>,
-): Promise<void> {
-  let entries;
-  try {
-    entries = await readdir(currentDir, { withFileTypes: true });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw err;
-  }
-  for (const ent of entries) {
-    const full = join(currentDir, ent.name);
-    if (ent.isDirectory()) {
-      await walk(rootDir, full, out, history);
-    } else if (ent.isFile() && ent.name.endsWith(".html")) {
-      const bytes = await readFile(full);
-      const currentHash = await sha256Hex(bytes);
-      const relPath = relative(rootDir, full).split(sep).join("/");
-      const noExt = relPath.replace(/\.html$/, "");
-      const postPath = `/posts/${noExt}`;
-      // If the dev hash doesn't match the most-recent recorded history
-      // entry, prepend an in-memory "now" entry so the history view
-      // reflects the current state. Not persisted — `bun run build`
-      // is the one writing back to disk.
-      const recorded = history[postPath] ?? [];
-      const augmented: PostVersion[] =
-        recorded.length === 0 || recorded[0]!.hash !== currentHash
-          ? [{ hash: currentHash, builtAt: new Date().toISOString() }, ...recorded]
-          : recorded;
-      out[postPath] = { currentHash, history: augmented };
-    }
-  }
 }
 
 async function loadHistoryFile(

@@ -19,22 +19,10 @@
 // on a post with nothing to say, and never trips generate.ts's
 // "no narration blocks" hard error.
 
-import { readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
+import { collectHtmlFiles } from "../shared/walkHtml.ts";
 import { extractNarration } from "./narration.ts";
-
-// Recursively collect `*.html` under `dir`. Mirrors post-meta.ts's walk: posts
-// may be nested in subdirectories, so a flat readdir would miss them.
-async function collectPostHtml(dir: string): Promise<string[]> {
-  const out: string[] = [];
-  for (const ent of await readdir(dir, { withFileTypes: true })) {
-    const full = join(dir, ent.name);
-    if (ent.isDirectory()) out.push(...(await collectPostHtml(full)));
-    else if (ent.isFile() && ent.name.endsWith(".html")) out.push(full);
-  }
-  return out;
-}
 
 export type BatchPartition = {
   narrated: string[];
@@ -45,7 +33,7 @@ export type BatchPartition = {
 // file once. Pure w.r.t. the filesystem read it does — exported so it's
 // unit-testable without spawning subprocesses.
 export async function partitionPosts(postsDir: string): Promise<BatchPartition> {
-  const htmlPaths = (await collectPostHtml(postsDir)).sort();
+  const htmlPaths = collectHtmlFiles(postsDir);
   const narrated: string[] = [];
   const skipped: { path: string; reason: string }[] = [];
   for (const p of htmlPaths) {
