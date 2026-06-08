@@ -41,7 +41,10 @@ test("snapToMark snaps forward to the next mark boundary (never clips mid-word)"
 
 test("chunkWords splits captions by word cap and char budget", () => {
   const text = "w1 w2 w3 w4 w5";
-  const words = [0, 3, 6, 9, 12].map((s, i) => ({ s, e: s + 2, t: i * 100, d: 100 }));
+  // `as never[]`: fixtures use plain-number ms (the manifest's branded
+  // `Milliseconds` is the parse-time type; runtime values are plain numbers) —
+  // same convention as `mk` / the snapToMark fixtures above.
+  const words = [0, 3, 6, 9, 12].map((s, i) => ({ s, e: s + 2, t: i * 100, d: 100 })) as never[];
   expect(chunkWords(words, text, 100, 2).map((g) => g.length)).toEqual([2, 2, 1]);
   expect(chunkWords(words, text, 5, 100).length).toBe(5); // each ~3-char token overflows a 5-char budget
 });
@@ -52,7 +55,7 @@ test("buildKaraokeAss emits an ASS doc with per-word karaoke (\\k) timing", () =
       { s: 0, e: 2, t: 0, d: 400 },
       { s: 3, e: 8, t: 400, d: 600 },
     ] },
-  ];
+  ] as never[];
   const ass = buildKaraokeAss(marks, 0, 2000);
   expect(ass).toContain("[Script Info]");
   expect(ass).toContain("[Events]");
@@ -63,7 +66,7 @@ test("buildKaraokeAss emits an ASS doc with per-word karaoke (\\k) timing", () =
 });
 
 test("buildKaraokeAss applies the time map (a narration hold shifts captions later)", () => {
-  const marks = [{ name: "m", time: 0, chapter: "c", text: "Hi", words: [{ s: 0, e: 2, t: 0, d: 400 }] }];
+  const marks = [{ name: "m", time: 0, chapter: "c", text: "Hi", words: [{ s: 0, e: 2, t: 0, d: 400 }] }] as never[];
   const ass = buildKaraokeAss(marks, 0, 2000, undefined, (a) => a + 1000);
   expect(ass).toContain("0:00:01.00"); // dialogue start rebased +1000ms by the map
 });
@@ -74,7 +77,7 @@ test("buildKaraokeAss drops words outside the [t0,t1] span", () => {
       { s: 0, e: 2, t: 500, d: 200 }, // inside [1000,2000)? no — before t0
       { s: 3, e: 6, t: 1500, d: 200 }, // inside
     ] },
-  ];
+  ] as never[];
   const ass = buildKaraokeAss(marks, 1000, 2000);
   // Only the second word ("out") survives; the dialogue exists and is rebased.
   expect(ass).toContain("out");

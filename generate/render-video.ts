@@ -40,6 +40,16 @@ import {
 import { resolveAuthorProfile } from "../shared/authorProfile.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 import { decodeHtmlEntities } from "../shared/htmlEntities.ts";
+// The manifest timeline shape is the shared one (single source of truth with
+// the producer + the live narrator). Aliased to this file's existing local
+// names. Time fields carry the `Milliseconds` brand; this file reads them as
+// plain numbers (a brand widens to `number`), so its arithmetic is unchanged.
+import type {
+  Manifest,
+  ManifestMark as Mark,
+  ManifestChapter as Chapter,
+  ManifestWord as Word,
+} from "../shared/manifestSchema.ts";
 
 const paths = resolveBlogPaths();
 
@@ -81,15 +91,10 @@ async function timed<T>(label: string, fn: () => Promise<T>): Promise<T> {
 }
 
 // --- timeline types (subset of the manifest we consume) ----------------------
-
-type Word = { s: number; e: number; t: number; d: number };
-// `figure` is the stage/control pointer (methodology.md → "Staging a figure from narration") — which figure is on the
-// stage during this segment, distinct from `name` (the highlight target). A
-// figure id stages it; `"none"`/`""` clears it; absent leaves the stage
-// unchanged (see `deriveFigureOccurrences`).
-type Mark = { name: string; time: number; chapter: string; text: string; words?: Word[]; figure?: string; step?: string };
-type Chapter = { id: string; title: string; startTime: number; endTime: number; parentId?: string };
-type Manifest = { slug: string; audio: string; duration: number; chapters: Chapter[]; marks: Mark[] };
+// `Manifest`/`Mark`/`Chapter`/`Word` are imported from shared/manifestSchema.ts
+// above (aliased). `figure`/`step` on a `Mark` are the stage/per-step pointers
+// (methodology.md → "Staging a figure from narration"); a figure id stages it,
+// `"none"`/`""` clears it, absent leaves the stage unchanged.
 
 // =============================================================================
 // ASS karaoke caption emitter (pure; unit-tested in CP4)

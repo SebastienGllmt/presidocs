@@ -37,55 +37,22 @@ import {
   DRAWER_BODY_READY_EVENT,
 } from "./narratorDom.ts";
 
-// Per-word timing entry inside a mark. `s`/`e` are character offsets into the
-// mark's `text` (the ORIGINAL/displayed text — for terms substituted via PLS,
-// the §8 collapse rule projects the timing of every spoken-word piece onto
-// the single displayed span). `t`/`d` are master-track absolute ms.
-// See proposals/17 §6.
-type ManifestWord = {
-  s: number;
-  e: number;
-  t: Milliseconds;
-  d: Milliseconds;
-};
-type ManifestMark = {
-  name: string;
-  time: Milliseconds;
-  chapter: string;
-  // The spoken text that follows this mark, up to the next mark. Used to
-  // populate the script drawer; segment elements get id="spoken-<name>"
-  // so they can be deep-linked and (eventually) commented on.
-  text?: string;
-  // Optional per-word timing for the drawer's karaoke-style highlight.
-  // Absent when the post was generated without forced alignment
-  // (`--align=NAME`); the drawer renders the segment text as one flat string
-  // in that case, identical to the pre-feature behavior.
-  words?: ManifestWord[];
-  // The stage/control pointer (methodology.md → "Staging a figure from narration"), orthogonal to `name` (the
-  // read-along highlight): which figure is on the stage during this segment.
-  // Absent = "leave the stage unchanged"; "none"/"" = an explicit clear.
-  // Resolved to an active figure at time t by `resolveActiveFigure`
-  // (shared/narratorTiming.ts), mirroring the video renderer so page and
-  // video agree. Consumed by the narration driver (methodology.md → "Live figure driving").
-  figure?: string;
-  // The per-step slideshow pointer (methodology.md → "Staging a figure from narration"): advance the staged figure's
-  // journey to a labeled step and hold. Resolved into the active step alongside
-  // the staged figure by `stagedFigureAt`; consumed by `advanceStagedFigure`'s
-  // stepped mode. "none"/"" clears stepped mode (back to continuous free-run).
-  step?: string;
-};
-// `parentId`: present only on level-2 (sub-)chapters; names the
-// level-1 chapter they group under. Absent → a top-level chapter. The manifest
-// stays a FLAT, leaf-only array — `parentId` is pure annotation that our own
-// chapter strip + keyboard map read to render the two-level grouping (Shikwasa
-// is still fed the leaves untouched).
-type ManifestChapter = { id: string; title: string; startTime: Milliseconds; endTime: Milliseconds; parentId?: string };
-type Manifest = {
-  audio: string;
-  duration: Milliseconds;
-  chapters: ManifestChapter[];
-  marks: ManifestMark[];
-};
+// The manifest shape (`ManifestWord`/`ManifestMark`/`ManifestChapter`/
+// `Manifest`) is declared once in `shared/manifestSchema.ts` and shared with the
+// producer (`generate.ts`) and the video renderer, so the page and video can't
+// drift on it. `s`/`e` are character offsets into the mark's displayed `text`;
+// `t`/`d`/`time`/`startTime`/`endTime`/`duration` carry the `Milliseconds`
+// brand. `figure`/`step` are the stage/per-step pointers (methodology.md →
+// "Staging a figure from narration" / "Live figure driving"); `words` is the
+// per-word karaoke timing (absent without forced alignment); `parentId` marks a
+// level-2 chapter (the array stays flat, leaf-only).
+import {
+  ManifestSchema,
+  type Manifest,
+  type ManifestMark,
+  type ManifestWord,
+  type ManifestChapter,
+} from "../shared/manifestSchema.ts";
 
 // SPOKEN_ID_PREFIX / spokenSegmentId are imported from ./narratorDom.ts —
 // re-export here so any in-file uses don't need to re-import.
@@ -253,7 +220,14 @@ class Narrator {
     try {
       const res = await fetch(this.manifestUrl);
       if (!res.ok) throw new Error(`Manifest ${res.status}`);
-      manifest = (await res.json()) as Manifest;
+      // Validate the shape instead of blind-casting: a stale/half-written
+      // manifest fails here (routing into the catch's "Narration unavailable"
+      // branch) rather than surfacing later as a downstream `undefined.marks`.
+      // The manifest is trusted engine-produced data, so this is clearer-failure
+      // polish, not security.
+      const parsed = ManifestSchema.safeParse(await res.json());
+      if (!parsed.success) throw new Error("Manifest shape invalid");
+      manifest = parsed.data;
     } catch (err) {
       console.warn("Narrator init failed:", err);
       this.playerContainer.textContent =

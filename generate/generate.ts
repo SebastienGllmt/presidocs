@@ -60,6 +60,16 @@ import { normalizeChapterParents } from "./chapterParents.ts";
 import { asMs, msToSeconds, type Milliseconds } from "../shared/time.ts";
 import { resolveAuthorVoice } from "../shared/voiceResolution.ts";
 import { manifestFileName, MANIFEST_HASHED_RE } from "../shared/manifestFile.ts";
+// The flattened manifest entry shapes are declared once in
+// shared/manifestSchema.ts (shared with the narrator + video renderer + feeds).
+// This file is the PRODUCER / ground truth — it owns serialization verbatim
+// (the conditional spreads below keep absent keys absent for the cache
+// invariant); these are type annotations only, the schema never serializes.
+import type {
+  ManifestChapter,
+  ManifestMark,
+  ManifestWord,
+} from "../shared/manifestSchema.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 import { parseCliArgs } from "../shared/cliArgs.ts";
 
@@ -806,9 +816,8 @@ const fullBuf = pipeline.concat(interleave(artifacts.map((a) => a.buffer), segme
 // with different shapes: text content in `chapters`, timing in
 // `manifestChapters`. Computed BEFORE the encode so the same chapter
 // times can be embedded as ID3 CHAP frames inside the MP3.
-const manifestChapters: { id: string; title: string; startTime: Milliseconds; endTime: Milliseconds; parentId?: string }[] = [];
-type ManifestWord = { s: number; e: number; t: Milliseconds; d: Milliseconds };
-const manifestMarks: { name: string; time: Milliseconds; chapter: string; text: string; words?: ManifestWord[]; figure?: string; step?: string }[] = [];
+const manifestChapters: ManifestChapter[] = [];
+const manifestMarks: ManifestMark[] = [];
 // carry each chapter's (normalized) parent pointer into the
 // manifest. Absent on flat posts, so their manifest stays byte-identical.
 const parentById = new Map(chapters.map((c) => [c.id, c.parentId]));

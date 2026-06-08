@@ -401,8 +401,11 @@ export function buildChaptersJson(
 // ---- disk gathering ---------------------------------------------------------
 
 type VersionEntry = { hash: string; builtAt: string };
-type ManifestChapter = { id: string; title: string; startTime: number; endTime: number; parentId?: string };
-type Manifest = { audio?: string; duration?: number; chapters?: ManifestChapter[]; audioDigest?: string };
+// The manifest shape is the shared one (single source of truth with the
+// producer + narrator + video renderer). Feeds reads a subset (audio, duration,
+// chapters, audioDigest) and keeps its own presence guards, so a partial/older
+// manifest still degrades to Atom-only via the surrounding try/catch.
+import type { Manifest, ManifestChapter } from "../shared/manifestSchema.ts";
 
 // Pull the site title + description out of the blog's own landing index.html,
 // so the engine never hardcodes a blog name. Exported so sibling generators
