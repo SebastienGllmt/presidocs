@@ -132,6 +132,39 @@ test("rejects a validly-signed token that has no exp claim", async () => {
   expect(await verifySessionToken(noExp)).toBeNull();
 });
 
+test("rejects a validly-signed but malformed payload (bad claim shape)", async () => {
+  // A token signed with OUR secret (authentic bytes) but whose claims don't
+  // match the Session shape: `provider` outside {google,microsoft} and a
+  // `userId` that fails the `<provider>:<sub>` primitive. jose accepts the
+  // signature; SessionClaims.safeParse must reject the shape → null.
+  const { SignJWT } = await import("jose");
+  const { verifySessionToken } = await loadSession({ SESSION_SECRET: SECRET });
+  const bad = await new SignJWT({
+    userId: "saml:nope", // not google:/microsoft:
+    email: "a@b.com",
+    emailVerified: true,
+    provider: "saml", // not in the enum
+  })
+    .setProtectedHeader({ alg: "HS256", typ: "JWT", kid: "v1" })
+    .setIssuedAt()
+    .setExpirationTime("400d")
+    .sign(new TextEncoder().encode(SECRET));
+  expect(await verifySessionToken(bad)).toBeNull();
+});
+
+test("accepts an additive unknown claim (lenient z.object, not .strict)", async () => {
+  // A future additive claim (e.g. a refresh marker) must NOT log the user
+  // out — bare z.object strips unknown keys rather than rejecting.
+  const { SignJWT } = await import("jose");
+  const { verifySessionToken } = await loadSession({ SESSION_SECRET: SECRET });
+  const tok = await new SignJWT({ ...sampleInput, futureClaim: "x" })
+    .setProtectedHeader({ alg: "HS256", typ: "JWT", kid: "v1" })
+    .setIssuedAt()
+    .setExpirationTime("400d")
+    .sign(new TextEncoder().encode(SECRET));
+  expect((await verifySessionToken(tok))?.userId).toBe("google:123");
+});
+
 test("throws a clear error when no usable secret is configured", async () => {
   const { createSessionToken } = await loadSession({ SESSION_SECRET: "" });
   await expect(createSessionToken(sampleInput)).rejects.toThrow(/required/);
