@@ -250,7 +250,6 @@
   gap: 8px;
 }
 .cmt-reply {
-  position: relative;
   padding: 6px 8px;
   background: #fafbfc;
   border: 1px solid var(--cmt-border);
@@ -258,8 +257,7 @@
 }
 .cmt-reply-meta {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   margin-bottom: 2px;
   font-size: 11px;
@@ -270,6 +268,8 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
+  /* Push the time + delete × to the right edge of the row. */
+  margin-right: auto;
 }
 .cmt-reply-author { font-weight: 600; color: var(--cmt-fg); }
 .cmt-reply-text {
@@ -279,13 +279,18 @@
   word-break: break-word;
 }
 .cmt-reply-delete {
-  position: absolute;
-  top: 2px;
-  right: 2px;
+  /* In-flow, last item of the meta row: align-items:center on the row
+     keeps it vertically centered on the time/author with no magic offset.
+     Hidden until the reply is hovered; it reserves its space either way so
+     the row doesn't reflow on hover. */
+  flex: none;
   background: transparent;
   border: 0;
   color: var(--cmt-fg-muted);
   padding: 2px 4px;
+  /* Negative block margin so the (taller) hit target doesn't inflate the
+     meta row's height beyond the text line. */
+  margin: -2px -2px -2px 0;
   border-radius: 4px;
   cursor: pointer;
   opacity: 0;

@@ -1733,15 +1733,9 @@ class CommentSystem {
     time.className = "cmt-reply-time";
     time.dateTime = new Date(reply.createdAt).toISOString();
     time.textContent = formatRelative(reply.createdAt);
-    meta.appendChild(authorWrap);
-    meta.appendChild(time);
-    li.appendChild(meta);
-
-    const text = document.createElement("p");
-    text.className = "cmt-reply-text";
-    text.textContent = reply.body;
-    li.appendChild(text);
-
+    // The delete × lives inside the meta row (last item), so the row's
+    // flex alignment keeps it on the same baseline as the author/time —
+    // no magic top offset to track the font's line metrics.
     const del = document.createElement("button");
     del.type = "button";
     del.className = "cmt-reply-delete";
@@ -1753,7 +1747,15 @@ class CommentSystem {
       e.stopPropagation();
       this.deleteReply(thread, reply.id);
     });
-    li.appendChild(del);
+    meta.appendChild(authorWrap);
+    meta.appendChild(time);
+    meta.appendChild(del);
+    li.appendChild(meta);
+
+    const text = document.createElement("p");
+    text.className = "cmt-reply-text";
+    text.textContent = reply.body;
+    li.appendChild(text);
 
     return li;
   }
