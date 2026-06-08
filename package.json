@@ -49,6 +49,7 @@
     "jose": "^6.2.3",
     "linkedom": "^0.18.12",
     "shikwasa": "^2.2.1",
+    "text-fragments-polyfill": "6.7.0",
     "turndown": "^7.2.4",
     "zod": "^4.4.3"
   }

@@ -65,6 +65,9 @@
 .cmt-action-bar {
   position: absolute;
   z-index: var(--cmt-z-action);
+  /* "Comment" + "Copy link" sit side by side in one bar. */
+  display: flex;
+  gap: 6px;
 }
 .cmt-action-bar[hidden] { display: none; }
 .cmt-action-btn {
@@ -81,6 +84,10 @@
   box-shadow: var(--cmt-shadow);
 }
 .cmt-action-btn:hover { background: #2d333b; }
+.cmt-action-btn[hidden] { display: none; }
+/* Copy-link copied feedback: the check-green the citation/heading affordances
+   use, on the icon only — the label swaps to "Copied!" in JS without resizing. */
+.cmt-action-btn.cmt-action-copied { color: #3fb950; }
 
 /* ============================================================================
    Right-margin column — Google-Docs-style. Each thread (and each draft) is

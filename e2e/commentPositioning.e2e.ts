@@ -100,10 +100,10 @@ async function seedThreadViaUI(page: Page, blockIndex: number, body: string): Pr
   }, blockIndex);
   expect(ok, `block ${blockIndex} should be a commentable text block`).toBe(true);
 
-  await page.locator(".cmt-action-bar:not([hidden]) .cmt-action-btn").waitFor({ state: "visible", timeout: 5000 });
+  await page.locator(".cmt-action-bar:not([hidden]) .cmt-action-comment").waitFor({ state: "visible", timeout: 5000 });
   // Handler is on mousedown (so the selection isn't lost to focus first).
   await page.evaluate(() =>
-    document.querySelector(".cmt-action-btn")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })),
+    document.querySelector(".cmt-action-comment")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })),
   );
 
   const draft = page.locator('.cmt-card[data-draft="true"]');
@@ -225,8 +225,8 @@ test("[chromium] an in-progress draft anchors to its selection (no scroll-to-top
     }, mid);
     expect(ok).toBe(true);
 
-    await page.locator(".cmt-action-bar:not([hidden]) .cmt-action-btn").waitFor({ state: "visible", timeout: 5000 });
-    await page.evaluate(() => document.querySelector(".cmt-action-btn")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
+    await page.locator(".cmt-action-bar:not([hidden]) .cmt-action-comment").waitFor({ state: "visible", timeout: 5000 });
+    await page.evaluate(() => document.querySelector(".cmt-action-comment")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
     await page.locator('.cmt-card[data-draft="true"] textarea').waitFor({ state: "visible", timeout: 5000 });
     await page.addStyleTag({ content: ".cmt-card { transition: none !important }" });
     await page.waitForTimeout(500);

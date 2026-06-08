@@ -17,6 +17,7 @@
         "jose": "^6.2.3",
         "linkedom": "^0.18.12",
         "shikwasa": "^2.2.1",
+        "text-fragments-polyfill": "6.7.0",
         "turndown": "^7.2.4",
         "zod": "^4.4.3",
       },
@@ -407,6 +408,8 @@
     "strnum": ["strnum@2.3.0", "", {}, "sha512-ums3KNd42PGyx5xaoVTO1mjU1bH3NpY4vsrVlnv9PNGqQj8wd7rJ6nEypLrJ7z5vxK5RP0yMLo6J/Gsm62DI5Q=="],
 
     "supports-color": ["supports-color@10.2.2", "", {}, "sha512-SS+jx45GF1QjgEXQx4NJZV9ImqmO2NPz5FNsIHrsDjh2YsHnawpan7SNQ1o8NuhrbHZy9AZhIoCUiCeaW/C80g=="],
+
+    "text-fragments-polyfill": ["text-fragments-polyfill@6.7.0", "", {}, "sha512-pwzxGO4p9y2FY5kPiS7sk/VsB10LKP0xprcBag1YOIMzaYw284AjE+/F0vEJEuoDjAwHyqwGpU01OubYsqEibQ=="],
 
     "tiny-inflate": ["tiny-inflate@1.0.3", "", {}, "sha512-pkY1fj1cKHb2seWDy0B16HeWyczlJA9/WW3u3c4z/NiWDsO3DOU5D7nhTLE9CF0yXv/QZFY7sEJmj24dK+Rrqw=="],
 

@@ -93,13 +93,13 @@ async function selectInBlock(page: Page, blockIndex: number): Promise<void> {
     return true;
   }, blockIndex);
   expect(ok, `block ${blockIndex} should be a commentable text block`).toBe(true);
-  await page.locator(".cmt-action-bar:not([hidden]) .cmt-action-btn").waitFor({ state: "visible", timeout: 5000 });
+  await page.locator(".cmt-action-bar:not([hidden]) .cmt-action-comment").waitFor({ state: "visible", timeout: 5000 });
 }
 
 /** Click the floating "Comment" pill (mousedown handler, so the selection survives). */
 async function openCommentForSelection(page: Page): Promise<void> {
   await page.evaluate(() =>
-    document.querySelector(".cmt-action-btn")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })),
+    document.querySelector(".cmt-action-comment")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })),
   );
 }
 

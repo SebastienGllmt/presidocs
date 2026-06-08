@@ -56,8 +56,8 @@ async function openDraft(page: Page, idx: number): Promise<void> {
     range.setStart(best!, 0); range.setEnd(best!, Math.min(28, (best!.textContent ?? "").length));
     const sel = window.getSelection()!; sel.removeAllRanges(); sel.addRange(range);
   }, idx);
-  await page.locator(".cmt-action-bar:not([hidden]) .cmt-action-btn").waitFor({ state: "visible", timeout: 5000 });
-  await page.evaluate(() => document.querySelector(".cmt-action-btn")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
+  await page.locator(".cmt-action-bar:not([hidden]) .cmt-action-comment").waitFor({ state: "visible", timeout: 5000 });
+  await page.evaluate(() => document.querySelector(".cmt-action-comment")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
   await page.locator('.cmt-card[data-draft="true"] textarea').last().waitFor({ state: "visible", timeout: 5000 });
 }
 

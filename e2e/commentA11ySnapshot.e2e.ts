@@ -103,9 +103,9 @@ async function seedThreadViaUI(page: Page, blockIndex: number, body: string): Pr
   }, blockIndex);
   expect(ok, `block ${blockIndex} should be a commentable text block`).toBe(true);
 
-  await page.locator(".cmt-action-bar:not([hidden]) .cmt-action-btn").waitFor({ state: "visible", timeout: 5000 });
+  await page.locator(".cmt-action-bar:not([hidden]) .cmt-action-comment").waitFor({ state: "visible", timeout: 5000 });
   await page.evaluate(() =>
-    document.querySelector(".cmt-action-btn")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })),
+    document.querySelector(".cmt-action-comment")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })),
   );
 
   const draft = page.locator('.cmt-card[data-draft="true"]');

@@ -1,25 +1,27 @@
 // The happy-dom import MUST come first — installCitationLink touches
-// `document`/`window`, and the pure emitter uses the global `URL` (available in
+// `document`/`window`, and the pure helpers use the global `URL` (available in
 // Bun without the DOM, but we share one harness with the install test).
+//
+// Note on coverage split: the actual fragment *generation* (word-boundary
+// expansion + uniqueness disambiguation) lives in `fragment-generation-utils`,
+// which needs a real browser layout + `Intl.Segmenter` + live Selection to run.
+// That correctness is covered in the real-browser tier (e2e/citationLink.e2e.ts);
+// here we test only the DOM-free surface around it — directive encoding, URL
+// composition, and the "degrade, never emit a broken link" decision.
 import "../happydom.ts";
 
-import { beforeEach, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 
+import type { TextFragment } from "text-fragments-polyfill/dist/fragment-generation-utils.js";
 import {
   buildCitationHref,
-  buildTextFragmentDirective,
+  chooseCitation,
+  directiveFromFragment,
   encodeTextFragmentTerm,
   installCitationLink,
-  normalizeText,
+  PASSAGE_LABEL,
+  SECTION_LABEL,
 } from "./citationLink.ts";
-
-beforeEach(() => {
-  document.body.innerHTML = "";
-});
-
-test("normalizeText collapses whitespace and trims", () => {
-  expect(normalizeText("  a   b\n\tc ")).toBe("a b c");
-});
 
 test("encodeTextFragmentTerm encodes structural chars incl. the hyphen", () => {
   // comma / ampersand come from encodeURIComponent; the hyphen is encoded by us
@@ -29,51 +31,70 @@ test("encodeTextFragmentTerm encodes structural chars incl. the hyphen", () => {
   expect(encodeTextFragmentTerm("two words")).toBe("two%20words");
 });
 
-test("short, unique selection → a bare text= directive", () => {
-  const d = buildTextFragmentDirective({
-    quote: "shared liquidity",
-    haystack: "intro shared liquidity outro",
-  });
-  expect(d).toBe("text=shared%20liquidity");
+test("directiveFromFragment: bare textStart", () => {
+  expect(directiveFromFragment({ textStart: "shared liquidity" })).toBe(
+    "text=shared%20liquidity",
+  );
 });
 
-test("empty / whitespace-only selection → null (no directive)", () => {
-  expect(buildTextFragmentDirective({ quote: "   \n  " })).toBeNull();
+test("directiveFromFragment: textStart,textEnd range", () => {
+  expect(
+    directiveFromFragment({ textStart: "one two three four", textEnd: "nine ten eleven twelve" }),
+  ).toBe("text=one%20two%20three%20four,nine%20ten%20eleven%20twelve");
 });
 
-test("long selection → a start,end range to keep the URL compact", () => {
-  // 12 words (> MAX_EXACT_WORDS) → first 4 + last 4 as a range, unique so no context.
-  const quote = "one two three four five six seven eight nine ten eleven twelve";
-  const d = buildTextFragmentDirective({ quote, haystack: `prefix ${quote} suffix` });
-  expect(d).toBe("text=one%20two%20three%20four,nine%20ten%20eleven%20twelve");
+test("directiveFromFragment: prefix + suffix context, in grammar order", () => {
+  const f: TextFragment = { prefix: "sign", textStart: "the offer", suffix: "now" };
+  expect(directiveFromFragment(f)).toBe("text=sign-,the%20offer,-now");
 });
 
-test("repeated quote → nearest prefix/suffix word is added as context", () => {
-  // "the offer" appears twice, so the bare quote is ambiguous; the emitter pins
-  // it with the adjacent words: prefix word "sign" before, suffix word "now" after.
-  const d = buildTextFragmentDirective({
-    quote: "the offer",
-    prefix: "you sign",
-    suffix: "now please",
-    haystack: "first the offer here and again the offer there",
-  });
-  expect(d).toBe("text=sign-,the%20offer,-now");
-});
-
-test("no context is added when the quote is unique even if prefix/suffix given", () => {
-  const d = buildTextFragmentDirective({
-    quote: "uniquely worded passage",
-    prefix: "some preceding text",
-    suffix: "some following text",
-    haystack: "lead in uniquely worded passage trailing off",
-  });
-  expect(d).toBe("text=uniquely%20worded%20passage");
+test("directiveFromFragment: prefix + range + suffix (all four terms)", () => {
+  const f: TextFragment = {
+    prefix: "So",
+    textStart: "an offer",
+    textEnd: "the file",
+    suffix: "again",
+  };
+  expect(directiveFromFragment(f)).toBe("text=So-,an%20offer,the%20file,-again");
 });
 
 test("buildCitationHref drops query + existing fragment, keeps origin+path", () => {
   expect(
-    buildCitationHref("https://blog.example.com/posts/offer-files?utm=x#some-heading", "text=foo"),
+    buildCitationHref(
+      "https://blog.example.com/posts/offer-files?utm=x#some-heading",
+      ":~:text=foo",
+    ),
   ).toBe("https://blog.example.com/posts/offer-files#:~:text=foo");
+});
+
+test("chooseCitation: a generated fragment → a precise passage link", () => {
+  const choice = chooseCitation({
+    fragment: { textStart: "the offer", suffix: "now" },
+    baseHref: "https://blog.example.com/posts/x#stale",
+    sectionId: "some-section",
+  });
+  expect(choice).toEqual({
+    href: "https://blog.example.com/posts/x#:~:text=the%20offer,-now",
+    label: PASSAGE_LABEL,
+  });
+});
+
+test("chooseCitation: no fragment (ambiguous/failed) → degrade to the section link", () => {
+  const choice = chooseCitation({
+    fragment: null,
+    baseHref: "https://blog.example.com/posts/x?q=1",
+    sectionId: "the-problem",
+  });
+  expect(choice).toEqual({
+    href: "https://blog.example.com/posts/x#the-problem",
+    label: SECTION_LABEL,
+  });
+});
+
+test("chooseCitation: no fragment and no section → null (button stays hidden)", () => {
+  expect(
+    chooseCitation({ fragment: null, baseHref: "https://blog.example.com/posts/x", sectionId: null }),
+  ).toBeNull();
 });
 
 test("installCitationLink mounts a hidden, keyboard-reachable button once", () => {
