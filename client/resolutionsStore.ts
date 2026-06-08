@@ -23,17 +23,19 @@ import {
   putResolution,
   type ResolutionEnvelope,
 } from "./resolutionsApi.ts";
+import {
+  CachedResolutions,
+  type CachedResolution,
+} from "../shared/commentSchemas.ts";
 
 function storageKey(postPath: string): string {
   return `blog-resolutions:${postPath}`;
 }
 
-type CachedShape = {
-  // ISO upload timestamp of the LIST entry, used to detect changes
-  // without re-GETing the body.
-  uploadedAt: string;
-  envelope: ResolutionEnvelope;
-};
+// The cached entry shape is the `z.infer` of the shared `CachedResolution`
+// schema (composing `ResolutionEnvelope`), so the type and the read-time
+// validator can't drift.
+type CachedShape = CachedResolution;
 
 export class ResolutionStore {
   private readonly resolutions = new Map<string, CachedShape>();
@@ -161,8 +163,14 @@ export class ResolutionStore {
     try {
       const raw = localStorage.getItem(storageKey(this.postPath));
       if (!raw) return;
-      const parsed = JSON.parse(raw) as Record<string, CachedShape>;
-      for (const [id, cached] of Object.entries(parsed)) {
+      // Validate the cache instead of blind-casting it: a malformed entry (a
+      // stale shape from an older engine version, or another same-origin script)
+      // drops the whole cache and re-fetches from the server, rather than
+      // flowing a wrong shape into the comments UI as a typed value. The catch
+      // below already maps any failure onto that same warn-and-return path.
+      const result = CachedResolutions.safeParse(JSON.parse(raw));
+      if (!result.success) return;
+      for (const [id, cached] of Object.entries(result.data)) {
         this.resolutions.set(id, cached);
       }
     } catch (err) {

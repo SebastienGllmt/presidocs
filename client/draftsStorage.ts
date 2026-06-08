@@ -38,6 +38,19 @@ export class DraftsStorage {
       if (!raw) return [];
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) return [];
+      // Deliberately a partial structural guard, NOT a full zod schema. A
+      // faithful `Thread` schema means mirroring the whole W3C Web Annotation
+      // target model (a `TextTarget | GraphicTarget` union with nested
+      // selector tuples) in zod and keeping it in sync with the canonical TS
+      // types in commentsStore.ts — a sizeable parallel schema that would
+      // *re-introduce* the drift zod is meant to kill. And the blast radius is
+      // tiny: a draft is local-only, never reaches the server or the CRDT, so a
+      // corrupt one only ever harms the user who corrupted their own
+      // localStorage, and it already degrades into this `[]`/skip path. (The
+      // server-synced resolutions cache — a shared-surface blast radius — IS
+      // fully validated; see `client/resolutionsStore.ts`.) Revisit only if the
+      // `Thread`/`Target` types are migrated to be zod-inferred, so a draft
+      // schema is reused rather than a throwaway parallel one.
       return parsed.filter((e): e is DraftEntry =>
         e && typeof e === "object"
         && typeof e.body === "string"

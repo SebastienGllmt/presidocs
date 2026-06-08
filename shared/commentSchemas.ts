@@ -99,6 +99,26 @@ export const ResolutionEnvelope = z.object({
 });
 export type ResolutionEnvelope = z.infer<typeof ResolutionEnvelope>;
 
+// The resolutions cache shape as persisted to localStorage by
+// `client/resolutionsStore.ts` (a `Record<threadId, CachedResolution>`).
+// localStorage is a real trust boundary here — it's per-origin (another script
+// on the origin can write the key) and the engine ships into multiple content
+// repos that update on their own cadence, so a stale entry written by an older
+// engine version is a realistic source of a wrong shape. Composing the existing
+// `ResolutionEnvelope` (rather than re-stating it) keeps the cached shape and
+// the wire shape provably one definition; the store `safeParse`s on read so a
+// malformed cache drops to the re-fetch path instead of flowing on as a typed
+// value.
+export const CachedResolution = z.object({
+  // ISO upload timestamp of the LIST entry, used to detect changes without
+  // re-GETing the body.
+  uploadedAt: z.string(),
+  envelope: ResolutionEnvelope,
+});
+export type CachedResolution = z.infer<typeof CachedResolution>;
+
+export const CachedResolutions = z.record(z.string(), CachedResolution);
+
 export const PostVersionEntry = z.object({
   hash: z.string(),
   builtAt: z.string(), // ISO 8601
