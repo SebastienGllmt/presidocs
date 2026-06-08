@@ -15,6 +15,9 @@
 // channel A and blog B to channel B, exactly as each blog carries its own
 // SITE_URL. There is no system-wide shared channel.
 
+import { z } from "zod";
+import { csvList, trimmedOrNull } from "./envSchemas.ts";
+
 export type WebhookFormat = "plain" | "cloudevents";
 
 export type NotifyConfig = {
@@ -46,28 +49,45 @@ export type NotifyConfig = {
   paceMs: number;
 };
 
-function list(v: string | undefined): string[] {
-  return (v ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
+// One schema for the whole notify env surface. The CSV lists share the
+// `csvList` helper (also used by the Worker's `isBlockedUser`); `WEBHOOK_FORMAT`
+// is the "enum-as-boolean" the type already wants, expressed declaratively; and
+// `WEBHOOK_PACE_MS` is parsed-and-clamped in one place (a single failure path,
+// vs. the old `parseInt`→`NaN`→fall-through). The pace transform keeps
+// `parseInt` semantics (lenient on trailing chars) rather than `z.coerce`
+// (strict `Number()`), so the migration is behavior-preserving.
+const NotifyEnv = z.object({
+  DISCORD_WEBHOOK_URL: csvList,
+  SLACK_WEBHOOK_URL: csvList,
+  WEBHOOK_URL: csvList,
+  WEBHOOK_FORMAT: z
+    .string()
+    .default("")
+    .transform((v): WebhookFormat =>
+      v.trim().toLowerCase() === "cloudevents" ? "cloudevents" : "plain",
+    ),
+  WEBHOOK_SIGNING_SECRET: trimmedOrNull,
+  // Default just over Slack's 1-message/second incoming-webhook limit.
+  WEBHOOK_PACE_MS: z
+    .string()
+    .default("")
+    .transform((v) => {
+      const n = Number.parseInt(v.trim(), 10);
+      return Number.isFinite(n) && n >= 0 ? n : 1100;
+    }),
+});
 
 export function resolveNotifyConfig(
   env: Record<string, string | undefined> = process.env,
 ): NotifyConfig {
-  const pace = Number.parseInt((env.WEBHOOK_PACE_MS ?? "").trim(), 10);
+  const e = NotifyEnv.parse(env);
   return {
-    discord: list(env.DISCORD_WEBHOOK_URL),
-    slack: list(env.SLACK_WEBHOOK_URL),
-    generic: list(env.WEBHOOK_URL),
-    format:
-      (env.WEBHOOK_FORMAT ?? "").trim().toLowerCase() === "cloudevents"
-        ? "cloudevents"
-        : "plain",
-    signingSecret: (env.WEBHOOK_SIGNING_SECRET ?? "").trim() || null,
-    // Default just over Slack's 1-message/second incoming-webhook limit.
-    paceMs: Number.isFinite(pace) && pace >= 0 ? pace : 1100,
+    discord: e.DISCORD_WEBHOOK_URL,
+    slack: e.SLACK_WEBHOOK_URL,
+    generic: e.WEBHOOK_URL,
+    format: e.WEBHOOK_FORMAT,
+    signingSecret: e.WEBHOOK_SIGNING_SECRET,
+    paceMs: e.WEBHOOK_PACE_MS,
   };
 }
 

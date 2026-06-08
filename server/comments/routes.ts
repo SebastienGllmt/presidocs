@@ -27,6 +27,7 @@ import {
   type ProblemSlug,
 } from "../../shared/problemDetails.ts";
 import { CommentsQuery, zodBadRequest } from "../requestSchemas.ts";
+import { csvList } from "../../shared/envSchemas.ts";
 import type {
   ChangeListEntry,
   CommentChangeStore,
@@ -69,13 +70,10 @@ function notFound(): Response {
 
 // Author moderation list: comma-separated `<provider>:<sub>` userIds
 // whose PUTs are silently dropped. See methodology.md → Hardening.
+// Shares the `csvList` env transform with notifyConfig so the comma-split-and-
+// trim convention lives in one place (an empty/unset var → `[]` → never blocks).
 function isBlockedUser(userId: string): boolean {
-  const raw = process.env.BLOCKED_USERS;
-  if (!raw) return false;
-  for (const entry of raw.split(",")) {
-    if (entry.trim() === userId) return true;
-  }
-  return false;
+  return csvList.parse(process.env.BLOCKED_USERS).includes(userId);
 }
 
 // Main entry — dispatches by method + query params.

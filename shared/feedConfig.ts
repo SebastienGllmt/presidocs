@@ -18,6 +18,9 @@
 // so an author who wants to list there sets the var explicitly; otherwise the
 // feed omits it and still works in every podcast app that auto-discovers it.
 
+import { z } from "zod";
+import { envFlag, trimmedOr, trimmedOrNull } from "./envSchemas.ts";
+
 export type FeedConfig = {
   /** Canonical origin, no trailing slash. Null → feeds are skipped. */
   baseUrl: string | null;
@@ -77,8 +80,31 @@ function isLoopbackOrigin(url: string): boolean {
   }
 }
 
+// One schema for the feed env surface, built from the shared idiom helpers.
+// `SITE_URL` is normalized (trim + strip trailing slashes) here; the https
+// deployment policy stays a post-parse semantic guard in `resolveFeedConfig`
+// (it throws with a specific message — zod doesn't simplify a guard, it just
+// relocates the value). The two booleans pin their exact token rules via
+// `envFlag` (`PODCAST_EXPLICIT` true only for "true"; `PODCAST_LOCKED` false
+// only for "no", default true).
+const FeedEnv = z.object({
+  SITE_URL: z
+    .string()
+    .default("")
+    .transform((v) => v.trim().replace(/\/+$/, "")),
+  FEED_LANGUAGE: trimmedOr("en-US"),
+  PODCAST_CATEGORY: trimmedOr("Technology"),
+  PODCAST_EXPLICIT: envFlag({ truthy: ["true"] }),
+  PODCAST_OWNER_EMAIL: trimmedOrNull,
+  WEBSUB_HUB: trimmedOrNull,
+  PODCAST_LOCKED: envFlag({ falsy: ["no"] }),
+  PODCAST_LICENSE: trimmedOrNull,
+  PODCAST_LICENSE_URL: trimmedOrNull,
+});
+
 export function resolveFeedConfig(env: Record<string, string | undefined> = process.env): FeedConfig {
-  const raw = (env.SITE_URL ?? "").trim().replace(/\/+$/, "");
+  const e = FeedEnv.parse(env);
+  const raw = e.SITE_URL;
   // Deployment policy (not a local-spec MUST): a published feed must use https.
   // `baseUrl` prefixes every <enclosure>/<podcast:source> URL, and a plain-http
   // origin yields http: feed URLs that podcast directories (Apple, Spotify)
@@ -96,14 +122,13 @@ export function resolveFeedConfig(env: Record<string, string | undefined> = proc
   }
   return {
     baseUrl: raw || null,
-    language: (env.FEED_LANGUAGE ?? "").trim() || "en-US",
-    category: (env.PODCAST_CATEGORY ?? "").trim() || "Technology",
-    explicit: (env.PODCAST_EXPLICIT ?? "").trim().toLowerCase() === "true",
-    ownerEmail: (env.PODCAST_OWNER_EMAIL ?? "").trim() || null,
-    hubUrl: (env.WEBSUB_HUB ?? "").trim() || null,
-    // Default locked; only an explicit "no" (case-insensitive) opts out.
-    locked: (env.PODCAST_LOCKED ?? "").trim().toLowerCase() !== "no",
-    license: (env.PODCAST_LICENSE ?? "").trim() || null,
-    licenseUrl: (env.PODCAST_LICENSE_URL ?? "").trim() || null,
+    language: e.FEED_LANGUAGE,
+    category: e.PODCAST_CATEGORY,
+    explicit: e.PODCAST_EXPLICIT,
+    ownerEmail: e.PODCAST_OWNER_EMAIL,
+    hubUrl: e.WEBSUB_HUB,
+    locked: e.PODCAST_LOCKED,
+    license: e.PODCAST_LICENSE,
+    licenseUrl: e.PODCAST_LICENSE_URL,
   };
 }
