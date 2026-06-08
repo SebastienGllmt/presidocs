@@ -6,14 +6,17 @@
 // trust the cached value for security decisions (the server re-checks
 // the cookie on every protected request) — it's purely a UI hint.
 
-export type Identity = {
-  userId: string;                       // `<provider>:<sub>`
-  email: string;
-  emailVerified: boolean;
-  name: string | null;
-  picture: string | null;
-  provider: "google" | "microsoft";
-};
+// The identity shape is the `z.infer` of the shared `IdentityResponse`
+// schema (`<provider>:<sub>` userId + public profile subset). Deriving it
+// from the schema keeps this client view and the server's `/auth/me` body
+// from drifting — the same single-source-of-truth pattern every other
+// client fetch wrapper already follows.
+import { z } from "zod";
+import { IdentityResponse, type Identity } from "../shared/authSchemas.ts";
+export type { Identity };
+
+// `/auth/me` returns either the identity object or the JSON literal `null`.
+const IdentityOrNull = z.union([IdentityResponse, z.null()]);
 
 let _identity: Identity | null | undefined = undefined;
 
@@ -26,9 +29,12 @@ export async function loadIdentity(): Promise<Identity | null> {
       return null;
     }
     // /auth/me returns the literal `null` (not an error) when not logged in.
-    const body = (await res.json()) as Identity | null;
-    _identity = body;
-    return body;
+    // Validate the body instead of blind-casting it: a malformed response
+    // degrades to `null` (the login-button branch), exactly like a logged-out
+    // reader — the same degrade-don't-trust posture the other fetch wrappers use.
+    const result = IdentityOrNull.safeParse(await res.json());
+    _identity = result.success ? result.data : null;
+    return _identity;
   } catch {
     _identity = null;
     return null;

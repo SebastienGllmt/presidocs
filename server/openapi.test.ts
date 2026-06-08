@@ -13,6 +13,7 @@ test("document is OpenAPI 3.1.0 and registers every gated content endpoint", () 
 
   expect(doc.openapi).toBe("3.1.0");
   expect(Object.keys(doc.paths).sort()).toEqual([
+    "/auth/me",
     "/comments",
     "/post-version",
     "/resolutions",
@@ -23,6 +24,7 @@ test("document is OpenAPI 3.1.0 and registers every gated content endpoint", () 
   expect(doc.paths["/resolutions"]!.get).toBeDefined();
   expect(doc.paths["/resolutions"]!.put).toBeDefined();
   expect(doc.paths["/post-version"]!.get).toBeDefined();
+  expect(doc.paths["/auth/me"]!.get).toBeDefined();
 });
 
 test("query parameters are derived from the zod schemas", () => {
@@ -45,6 +47,7 @@ test("response component schemas are present", () => {
     "ResolutionsListResponse",
     "PostVersionResponse",
     "ProblemDetails",
+    "IdentityResponse",
   ]) {
     expect(doc.components.schemas[name]).toBeDefined();
   }

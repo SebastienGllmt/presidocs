@@ -7,8 +7,10 @@
 //
 // Uses Zod 4's native `.meta({ id })` for component names, so it needs no
 // `extendZodWithOpenApi(z)` global mutation (which would otherwise reach the
-// branded schemas in shared/time.ts). Auth routes (/auth/*) are intentionally
-// not documented yet — their query parsing isn't schematized.
+// branded schemas in shared/time.ts). The *redirect* auth routes
+// (`/auth/<provider>`, `/callback`) stay undocumented — their query parsing is
+// semantic (`safeReturnTo` / RFC 6749 guards), not shape. `GET /auth/me`, whose
+// response is a stable JSON shape, IS documented (below).
 
 import { StatusCodes } from "http-status-codes";
 import { z } from "zod";
@@ -21,6 +23,7 @@ import {
   ResolutionEnvelope,
   ResolutionListEntry,
 } from "../shared/commentSchemas.ts";
+import { IdentityResponse } from "../shared/authSchemas.ts";
 
 // Response component schemas come from the one shared module
 // (shared/commentSchemas.ts), so the OpenAPI document and the runtime client
@@ -39,6 +42,12 @@ const ResolutionEnvelopeBody = ResolutionEnvelope.meta({
 });
 const PostVersionResponse = PostVersionResponseShape.meta({
   id: "PostVersionResponse",
+});
+// The public identity projection `GET /auth/me` returns (shared/authSchemas.ts,
+// derived from the session claim shape). The logged-out arm is the JSON
+// literal `null`, so the response is a union of this and `z.null()`.
+const IdentityResponseComponent = IdentityResponse.meta({
+  id: "IdentityResponse",
 });
 
 // RFC 9457 problem body (shared/problemDetails.ts). Core members documented;
@@ -163,6 +172,25 @@ registry.registerPath({
   },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/auth/me",
+  summary: "The logged-in reader's public identity, or null.",
+  description:
+    "Returns the public projection of the session (userId, email, emailVerified, name, picture, provider), or the JSON literal `null` when not logged in. `private, no-store` (echoes the user's identity). Authorization is computed elsewhere — this is a UI hint, re-checked server-side on every protected request.",
+  responses: {
+    [StatusCodes.OK]: {
+      description:
+        "The identity object, or `null` if the request carries no valid session cookie.",
+      content: {
+        "application/json": {
+          schema: z.union([IdentityResponseComponent, z.null()]),
+        },
+      },
+    },
+  },
+});
+
 const generate = () =>
   new OpenApiGeneratorV31(registry.definitions).generateDocument({
     openapi: "3.1.0",
@@ -170,7 +198,7 @@ const generate = () =>
       title: "presidocs comments & resolutions API",
       version: "1.0.0",
       description:
-        "Gated HTTP API for the comment / resolution / post-version layer. Auth endpoints (/auth/*) are not yet schema-documented.",
+        "Gated HTTP API for the comment / resolution / post-version layer, plus `GET /auth/me`. The redirect auth endpoints (`/auth/<provider>`, `/callback`) are not schema-documented — their guards are semantic (`safeReturnTo` / RFC 6749), not shape.",
     },
   });
 

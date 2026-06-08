@@ -45,6 +45,7 @@ import {
   type CookieOpts,
 } from "./cookies.ts";
 import { problem } from "../../shared/problemDetails.ts";
+import type { Identity } from "../../shared/authSchemas.ts";
 
 // RFC 6749 §4.1.2.1 enumerates the legal `error` query values for the
 // authorization-endpoint redirect. Reflecting the raw query value back
@@ -295,17 +296,19 @@ export async function whoami(req: Request): Promise<Response> {
       headers: { "Content-Type": "application/json", ...noStore },
     });
   }
-  return Response.json(
-    {
-      userId: session.userId,
-      email: session.email,
-      emailVerified: session.emailVerified,
-      name: session.name ?? null,
-      picture: session.picture ?? null,
-      provider: session.provider,
-    },
-    { headers: noStore },
-  );
+  // Typed against the inferred `Identity` (the shared `IdentityResponse`
+  // schema), so a dropped or mistyped field is a compile error here rather
+  // than a silent client breakage — `client/identity.ts` validates against
+  // the same schema on receipt.
+  const body: Identity = {
+    userId: session.userId,
+    email: session.email,
+    emailVerified: session.emailVerified,
+    name: session.name ?? null,
+    picture: session.picture ?? null,
+    provider: session.provider,
+  };
+  return Response.json(body, { headers: noStore });
 }
 
 // The Set-Cookie strings that clear the auth pair. Pure (no Headers/Response) so

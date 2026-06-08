@@ -16,41 +16,12 @@
 // `verifySessionToken`, so nothing else changes.
 
 import { SignJWT, jwtVerify, errors as joseErrors } from "jose";
-import "../../shared/zodJitless.ts"; // configure jitless before any parse (CSP / Workers no-eval)
-import { z } from "zod";
-import { UserId } from "../../shared/commentSchemas.ts";
+// `SessionClaims` (the JWT claim-shape validator) and the `Session` type it
+// derives live in `shared/authSchemas.ts` so the public `IdentityResponse`
+// projection served by `GET /auth/me` can be derived from the same source.
+import { SessionClaims, type Session } from "../../shared/authSchemas.ts";
 
-// The session-cookie claim shape. `jose` verifies the bytes are *authentic*
-// (HMAC, the algorithm allowlist, `exp`); this schema validates the JSON
-// inside is the *shape* the app trusts. Reuses the `UserId` primitive
-// (`<provider>:<sub>`) rather than re-stating the regex, so the security-
-// critical identity field is pinned identically here and at the comment
-// store boundary.
-//
-// Deliberately a bare `z.object` (strips unknown keys, NOT `.strict()`): an
-// *additive* future claim — a sliding-window refresh marker, a later
-// `iss`/`aud` — must not log everyone out on a deploy skew. `iat`/`exp` are
-// `jose`-injected and already enforced by the verifier (`requiredClaims`,
-// `clockTolerance`), so they're plain `z.number()` here — we don't
-// re-validate temporal bounds.
-//
-// Validating shape is NOT authorization: a passing parse means "well-formed
-// session", never "allowed" — per-method authz stays in the handlers (the
-// same rule the comment schemas carry).
-const SessionClaims = z.object({
-  userId: UserId, // `<provider>:<sub>` — globally unique across providers.
-  email: z.string(),
-  emailVerified: z.boolean(),
-  name: z.string().optional(),
-  picture: z.string().optional(),
-  provider: z.enum(["google", "microsoft"]),
-  iat: z.number(), // seconds since epoch (JWT standard — RFC 7519 §4.1.6)
-  exp: z.number(), // seconds since epoch (JWT standard — RFC 7519 §4.1.4)
-});
-
-// Single source of truth: the type is derived from the validator, so the two
-// can't drift (the pattern the rest of the codebase already follows).
-export type Session = z.infer<typeof SessionClaims>;
+export type { Session };
 
 // 400 days is the practical max — Chrome (since v104), Firefox, and
 // Safari all clamp any cookie Max-Age beyond this down to 400 days, in
