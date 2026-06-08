@@ -204,6 +204,57 @@ test("parseProblem rejects non-object JSON (e.g. a bare number)", async () => {
   expect(await parseProblem(res)).toBeNull();
 });
 
+// --- shape validation via the .loose() ProblemDetailsSchema ---
+
+test("parseProblem preserves §3.2 extension members (.loose() round-trip)", async () => {
+  // The load-bearing guarantee: validating the core members must NOT strip
+  // unknown extensions — incl. the Cloudflare edge's snake_case ext + the
+  // `cloudflare_error` discriminator the project reasons about.
+  const body = JSON.stringify({
+    type: "https://example.com/x",
+    title: "Edge error",
+    status: 502,
+    detail: "upstream failed",
+    param: "post", // request/* extension
+    maxBytes: 8192, // size-cap extension
+    cloudflare_error: true, // CF discriminator
+    ray_id: "abc123", // CF snake_case extension
+  });
+  const res = new Response(body, {
+    status: 502,
+    headers: { "Content-Type": "application/problem+json" },
+  });
+  const parsed = await parseProblem(res);
+  expect(parsed).not.toBeNull();
+  expect(parsed?.status).toBe(502);
+  // Every extension survived byte-for-byte.
+  expect(parsed?.param).toBe("post");
+  expect(parsed?.maxBytes).toBe(8192);
+  expect(parsed?.cloudflare_error).toBe(true);
+  expect(parsed?.ray_id).toBe("abc123");
+});
+
+test("parseProblem rejects an array body (typeof [] === 'object' was the old hole)", async () => {
+  const res = new Response("[]", {
+    status: 400,
+    headers: { "Content-Type": "application/problem+json" },
+  });
+  expect(await parseProblem(res)).toBeNull();
+});
+
+test("parseProblem rejects a body missing/mis-typing the required status (§3.1.2)", async () => {
+  const noStatus = new Response(
+    JSON.stringify({ type: "about:blank", title: "x" }),
+    { status: 400, headers: { "Content-Type": "application/problem+json" } },
+  );
+  expect(await parseProblem(noStatus)).toBeNull();
+  const stringStatus = new Response(
+    JSON.stringify({ type: "about:blank", title: "x", status: "weird" }),
+    { status: 400, headers: { "Content-Type": "application/problem+json" } },
+  );
+  expect(await parseProblem(stringStatus)).toBeNull();
+});
+
 test("resolveProblemBase: explicit PROBLEM_BASE_URL wins over SITE_URL", () => {
   const r = resolveProblemBase({
     PROBLEM_BASE_URL: "https://docs.example.org/probs",

@@ -5,6 +5,8 @@
 // RFC mirror at specs/ProblemDetails-spec.html.
 
 import { getReasonPhrase } from "http-status-codes";
+import "./zodJitless.ts"; // configure jitless before any parse (CSP — this module is client-imported)
+import { z } from "zod";
 
 export type ProblemSlug =
   | "auth/unauthenticated"
@@ -119,6 +121,25 @@ export type ProblemDetails = {
   [k: string]: unknown;
 };
 
+// Validator for `parseProblem` (the client-side reader). It pins the three
+// REQUIRED core members (§3.1: `type`/`title`/`status`) plus the optional
+// `detail`/`instance`, and is **`.loose()`** so RFC 9457 §3.2 EXTENSION members
+// survive the parse byte-for-byte. This is load-bearing: a default `z.object`
+// would STRIP unknown keys, silently dropping every extension a caller might
+// want (`param`, `maxBytes`/`actualBytes`, and the Cloudflare edge's snake_case
+// extensions + its `cloudflare_error` discriminator). `status` is
+// `z.number().int()` — a non-numeric `status` is rejected (returns `null`)
+// rather than coerced, so callers' `${status}` math can't read a string.
+const ProblemDetailsSchema = z
+  .object({
+    type: z.string(),
+    title: z.string(),
+    status: z.number().int(),
+    detail: z.string().optional(),
+    instance: z.string().optional(),
+  })
+  .loose();
+
 // `about:blank` is the spec's sentinel for "no problem type beyond the
 // status code" (§4.2.1). The title for about:blank SHOULD be the HTTP
 // reason phrase — sourced from `http-status-codes` (`getReasonPhrase`) so we
@@ -187,9 +208,13 @@ export async function parseProblem(
   try {
     const text = await readBoundedText(res);
     if (text === null) return null;
-    const parsed = JSON.parse(text);
-    if (!parsed || typeof parsed !== "object") return null;
-    return parsed as ProblemDetails;
+    // Validate the shape instead of asserting it: a `[]` (an array — `typeof
+    // [] === "object"`), a scalar, or a body missing/mis-typing `status` now
+    // returns `null` (the caller's `${status} ${statusText}` fallback) instead
+    // of being handed back as a `ProblemDetails` whose `.status`/`.title` were
+    // never checked. `.loose()` keeps every §3.2 extension intact.
+    const result = ProblemDetailsSchema.safeParse(JSON.parse(text));
+    return result.success ? result.data : null;
   } catch {
     return null;
   }

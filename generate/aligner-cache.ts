@@ -29,25 +29,31 @@ import {
   type LexEntry,
 } from "./pronunciation.ts";
 import { findTokenOffsetsInSubstituted, type ForcedAligner } from "./aligner.ts";
-import { asMs, type Milliseconds } from "../shared/time.ts";
+import { asMs } from "../shared/time.ts";
+import { z } from "zod";
+import {
+  ManifestWordSchema,
+  type ManifestWord,
+} from "../shared/manifestSchema.ts";
 
 // One word in the segment's text, with timing relative to the segment's own
-// WAV start. Matches the proposals/17 §6 manifest shape exactly so the
-// serializer doesn't have to translate field names — it just shifts `t` into
-// master-track time.
-export interface CachedWord {
-  s: number;        // start char offset in the ORIGINAL segment text
-  e: number;        // end char offset (exclusive)
-  t: Milliseconds;  // start time relative to segment WAV
-  d: Milliseconds;  // duration
-}
+// WAV start. This is exactly the manifest's `ManifestWord` quartet
+// (`{ s, e, t, d }`, char offsets into the ORIGINAL text + segment-relative ms)
+// — shared as ONE definition (`shared/manifestSchema.ts`) so the cache element
+// and the manifest element can't drift; the serializer in generate.ts only
+// shifts `t` into master-track time.
+export type CachedWord = ManifestWord;
 
-// Persisted shape. The version field is a forward-compatibility hatch — bump
-// it if we ever change what the offsets mean (e.g. graphemes vs. clusters).
-interface WordsFile {
-  version: 1;
-  words: CachedWord[];
-}
+// Persisted shape, declared as a schema so the read path validates each word's
+// `{ s, e, t, d }` offsets (not just the version + that `words` is an array).
+// The `version` literal is a forward-compatibility hatch — bump it (and
+// WORDS_FILE_VERSION) if we ever change what the offsets mean (e.g. graphemes
+// vs. clusters).
+const WordsFileSchema = z.object({
+  version: z.literal(1),
+  words: z.array(ManifestWordSchema),
+});
+type WordsFile = z.infer<typeof WordsFileSchema>;
 
 const WORDS_FILE_VERSION: 1 = 1;
 const WORDS_FILENAME_SUFFIX = ".words.json";
@@ -157,12 +163,13 @@ export function wrapWithAlignmentCache(config: AlignmentCacheConfig): CachedAlig
         if (!stale) {
           try {
             const raw = await readFile(path, "utf8");
-            const parsed = JSON.parse(raw) as WordsFile;
-            if (parsed.version === WORDS_FILE_VERSION && Array.isArray(parsed.words)) {
+            const parsed = WordsFileSchema.safeParse(JSON.parse(raw));
+            if (parsed.success) {
               stats.hits++;
-              return parsed.words;
+              return parsed.data.words;
             }
-            // Wrong version → fall through to a fresh align (overwrites on success).
+            // Wrong version / malformed words → fall through to a fresh align
+            // (overwrites on success).
           } catch {
             // Corrupt file → fall through; the fresh align overwrites it.
           }
