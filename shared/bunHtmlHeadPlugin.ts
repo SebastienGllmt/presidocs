@@ -4,8 +4,10 @@
 //
 //   1. the canonical cascade-layer order, as the first <head> CSS
 //      (injectLayerOrderStyle — layer-system pages only);
-//   2. the site footer (injectSiteFooterFromEnv — env-gated, idempotent); and
-//   3. (dev only) the landing feature-chips nav (injectChips option).
+//   2. the site footer (injectSiteFooterFromEnv — env-gated, idempotent);
+//   3. the landing "Ask this blog" AI-search block + its client <script>
+//      (injectAiSearch — landing only, dev AND prod, so the script bundles); and
+//   4. (dev only) the landing feature-chips nav (injectChips option).
 //
 // All are idempotent and no-op when not applicable, so it's safe over every
 // HTML entry-point (posts, landing, privacy).
@@ -32,6 +34,8 @@ import { buildAuthorMap } from "./authorProfile.ts";
 import { buildPublicPostVersionsMap } from "./publicPostVersions.ts";
 import { injectPostChrome } from "./articleChromeReserve.ts";
 import { chipsHtmlFromSource, injectFeatureChips } from "../generate/help-page.ts";
+import { injectAiSearch } from "./injectAiSearch.ts";
+import { resolveFeedConfig } from "./feedConfig.ts";
 
 // The above-the-fold Red Hat faces worth preloading: body prose (Text 400),
 // the medium weight (Text 500 — Lighthouse's `cls-culprits-insight` named its
@@ -80,10 +84,13 @@ export function htmlHeadPlugin(
   opts: { injectChips?: boolean; preloadFonts?: boolean } = {},
 ): BunPlugin {
   const paths = resolveBlogPaths();
-  // The landing whose chips we inject (dev only). Resolved once; null disables.
-  const landingPath = opts.injectChips
-    ? resolve(join(paths.contentRoot, "index.html"))
-    : null;
+  // The landing page (the blog's root index). The AI-search block is injected
+  // here in BOTH dev and prod (so its <script> is bundled either way); the
+  // feature chips ride the same file but only when `injectChips` (dev).
+  const landingPath = resolve(join(paths.contentRoot, "index.html"));
+  // Absolute site origin for the AI-search prompt's blog/llms.txt link. May be
+  // null (no SITE_URL) — the client then falls back to location.origin.
+  const siteUrl = resolveFeedConfig().baseUrl;
 
   // Map a built HTML file back to its public post path (`/posts/<slug>`), or
   // null for non-posts (landing, privacy, the dev sound-test page). Posts live
@@ -118,8 +125,15 @@ export function htmlHeadPlugin(
         let html = await Bun.file(args.path).text();
         html = injectLayerOrderStyle(injectSiteFooterFromEnv(html));
         if (opts.preloadFonts) html = injectFontPreloads(html);
-        if (landingPath && resolve(args.path) === landingPath) {
-          html = injectFeatureChips(html, await chipsHtmlFromSource());
+        if (resolve(args.path) === landingPath) {
+          // AI search first, then chips — so the landing order is
+          // [Ask this blog, feature chips, post list] (both insert before
+          // <ul class="posts">). Chips are dev-only here; prod adds them
+          // post-build in generate/help-page.ts.
+          html = injectAiSearch(html, { siteUrl });
+          if (opts.injectChips) {
+            html = injectFeatureChips(html, await chipsHtmlFromSource());
+          }
         }
         // Reserve the client-injected article chrome + hide the narration dock,
         // so it never reflows the page on mount. Runs in dev and prod (this
