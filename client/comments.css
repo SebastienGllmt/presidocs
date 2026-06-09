@@ -346,6 +346,22 @@
   white-space: nowrap;
 }
 .cmt-thread-id:hover { background: #eef0f3; color: var(--cmt-fg); }
+/* Author-only origin provenance tag ("prod" / "local" on every reply once
+   a post's view mixes origins — see methodology → origin stamps). Per
+   REPLY: sits in the reply meta row after the timestamp (origin is a
+   per-blob fact; one thread can mix origins). Amber tint for prod-born
+   (the foreign, seeded content), plain gray for local-born, so the two
+   scan apart at a glance. Plain span — display only, nothing to click. */
+.cmt-origin-tag {
+  padding: 1px 4px;
+  border: 1px solid var(--cmt-border);
+  border-radius: 4px;
+  color: var(--cmt-fg-muted);
+  font: 500 10px/1.2 var(--font-mono);
+  white-space: nowrap;
+}
+.cmt-origin-tag--prod { background: #fdf6ec; }
+.cmt-origin-tag--local { background: #f6f8fa; }
 /* "Draft" status tag — occupies the same row's left edge a saved thread's
    id chip would (`margin-right:auto`), since a draft has no id. Blue accent
    to match the draft card frame; makes the unposted state unmistakable. */

@@ -21,10 +21,22 @@
 // See methodology.md → Comments → Storage layer for the full
 // rationale and the layout-evolution table.
 
+// Declared birth store of a change blob, carried as optional provenance
+// metadata (R2 customMetadata / a `.src` sidecar in the fs adapter). One
+// uniform rule across adapters: expose it iff the stored object carries
+// it. Only bridges that copy blobs ACROSS stores declare it (the seeding
+// CLI stamps `production` on prod blobs it copies into the dev store);
+// browser writes never do — so a store whose blobs were all born in it
+// simply has no metadata to expose. `production` is authoritative
+// (comment blobs have no upward path, so a blob observed in prod was
+// born there); writes upgrade one-way toward it and never downgrade.
+export type ChangeOrigin = "production" | "localhost";
+
 export type ChangeListEntry = {
   hash: string;
   size: number;
   uploaded: Date;
+  origin?: ChangeOrigin;
 };
 
 export type PutChangeResult =
@@ -44,12 +56,15 @@ export interface CommentChangeStore {
   ): Promise<Uint8Array | null>;
 
   // Writes a change. Content-addressed: re-writing the same hash
-  // (same bytes) is a no-op success.
+  // (same bytes) is a no-op success — except that a declared
+  // `production` origin still upgrades missing/weaker provenance
+  // metadata on an already-present blob (one-way, see ChangeOrigin).
   putChange(
     post: string,
     userId: string,
     changeHash: string,
     bytes: Uint8Array,
+    origin?: ChangeOrigin,
   ): Promise<PutChangeResult>;
 
   // Lists all change hashes under one (post, user). Returns the

@@ -515,6 +515,16 @@ export class CommentStore {
     | Array<{ hash: string; bytes: Uint8Array }>
     | null = null;
 
+  // Reply ids by birth store, both derived positively (see deriveOrigins):
+  // `production` from replaying the production-tagged blobs, `local` as
+  // the complement within the full replay — so an id in NEITHER set means
+  // "derivation didn't cover it" (failed, or the reply isn't on the server
+  // yet), never silently "local". In-memory only — re-derived from the
+  // server listing on every boot, never persisted: provenance is a fact
+  // of the server's data, not client state to maintain.
+  private readonly productionReplies = new Set<string>();
+  private readonly localReplies = new Set<string>();
+
   private constructor(
     private readonly automerge: Automerge,
     private readonly storageKey: string,
@@ -763,6 +773,47 @@ export class CommentStore {
     this.cachedSnapshot = null;
   }
 
+  // ---------- Origin provenance (which live store a reply was born in) ----------
+  //
+  // The server's LIST entries may carry per-BLOB origin metadata (written
+  // by the seeding CLI when it copies production blobs into the dev store
+  // — see server/comments/store.ts → ChangeOrigin). Origin is per-blob, so
+  // per-REPLY — a single thread can mix origins (a prod-born thread
+  // carrying the author's localhost scaffolding replies) — which is why
+  // there is no thread-level origin here. Attribution is derived fresh on
+  // every boot via `deriveOrigins` (the sync layer and the author
+  // aggregator feed the results in), never persisted: it's a fact of the
+  // server's data. ONE uniform rule, no environment branches: a store
+  // whose blobs carry no metadata (prod today) never satisfies
+  // `hasSeededOrigins`, so no tags ever render there.
+
+  /**
+   * Where the reply was born, or null when derivation didn't cover it
+   * (not on the server yet, or the derivation pass failed) — null is
+   * "unknown", deliberately distinct from "local".
+   */
+  replyOrigin(replyId: string): "production" | "local" | null {
+    if (this.productionReplies.has(replyId)) return "production";
+    if (this.localReplies.has(replyId)) return "local";
+    return null;
+  }
+
+  /**
+   * True when this view contains at least one production-born reply —
+   * the render gate for origin tags. Tags carry information only where
+   * origins MIX; on a single-origin store (prod, or a never-seeded dev
+   * post) every tag would say the same thing, so none are shown. Data-
+   * derived, not an environment check.
+   */
+  hasSeededOrigins(): boolean {
+    return this.productionReplies.size > 0;
+  }
+
+  addReplyOrigins(production: string[], local: string[]): void {
+    for (const id of production) this.productionReplies.add(id);
+    for (const id of local) this.localReplies.add(id);
+  }
+
   // Returns every change in our doc, paired with its hash. The sync
   // layer uses this to decide what to upload (set-diff against the
   // hashes it knows are already on the server). Hashes are derived
@@ -801,4 +852,50 @@ export class CommentStore {
       console.warn("Failed to persist Automerge doc:", err);
     }
   }
+}
+
+// Reply ids present after replaying `blobs` against the shared seed in a
+// throwaway doc. The subset-replay primitive behind deriveOrigins — same
+// idea as the offline loader (authoring/loadUnresolvedThreads.ts).
+export async function replayReplyIds(blobs: Uint8Array[]): Promise<string[]> {
+  if (blobs.length === 0) return [];
+  const automerge = await loadAutomerge();
+  let doc = automerge.load<CommentDoc>(getSeedBytes(automerge));
+  [doc] = automerge.applyChanges(doc, blobs);
+  const js = automerge.toJS(doc) as CommentDoc;
+  return Object.keys(js.replies);
+}
+
+// Derive both origin classes for ONE user's folder and record them:
+// production = replies present when replaying only the production-tagged
+// blobs (dep-closed: a production-born change can never depend on a
+// localhost-born one — comment blobs have no upward path); local = the
+// complement within the FULL replay (the full replay is dep-complete, so
+// a local scaffolding reply whose change depends on seeded prod changes
+// still attributes correctly — replaying the untagged subset alone would
+// drop it to missing deps and mislabel by absence). Both feeders run this
+// per boot (commentsSync for the own doc, the aggregator per foreign
+// user); the GETs are immutable-cached, so the re-fetch is effectively
+// free.
+export async function deriveOrigins(
+  entries: Array<{ hash: string; origin?: string }>,
+  store: CommentStore,
+  get: (hash: string) => Promise<Uint8Array | null>,
+): Promise<void> {
+  const fetched = await Promise.all(
+    entries.map(async (e) => ({ entry: e, bytes: await get(e.hash) })),
+  );
+  const ok = fetched.filter(
+    (f): f is { entry: (typeof entries)[number]; bytes: Uint8Array } =>
+      f.bytes !== null,
+  );
+  const prodIds = await replayReplyIds(
+    ok.filter((f) => f.entry.origin === "production").map((f) => f.bytes),
+  );
+  const allIds = await replayReplyIds(ok.map((f) => f.bytes));
+  const prod = new Set(prodIds);
+  store.addReplyOrigins(
+    prodIds,
+    allIds.filter((id) => !prod.has(id)),
+  );
 }

@@ -18,6 +18,7 @@ import { StatusCodes } from "http-status-codes";
 import { problem } from "../shared/problemDetails.ts";
 import {
   ChangeHash,
+  ChangeOrigin,
   PostPath,
   ThreadId,
   UserId,
@@ -33,11 +34,16 @@ export const PostParam = PostPath;
 
 // GET /comments?post[&user[&change]] — presence of user/change selects the
 // shape (list users / list changes / get-or-put one change), so both are
-// optional and the handler dispatches on `=== undefined`.
+// optional and the handler dispatches on `=== undefined`. `origin` is
+// PUT-only provenance the writer may declare (today: the seeding CLI
+// stamping blobs it copies into the dev store); it rides into the store's
+// metadata and back out in LIST entries. Writer-declared and validated for
+// shape only — it's debugging provenance, never an authorization input.
 export const CommentsQuery = z.object({
   post: PostParam,
   user: UserId.optional(),
   change: ChangeHash.optional(),
+  origin: ChangeOrigin.optional(),
 });
 
 // GET/PUT /resolutions?post[&thread]

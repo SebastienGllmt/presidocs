@@ -137,3 +137,29 @@ test("graphic target survives the round-trip into the collection", () => {
     value: "diagram",
   });
 });
+
+test("x-blog:origin rides on annotation and bodies when origins are passed", () => {
+  const anno = threadToAnnotation(TEXT_THREAD, opts, {
+    thread: "production",
+    replies: { r1: "localhost" },
+  })!;
+  expect(anno["x-blog:origin"]).toBe("production");
+  expect(anno.body[0]!["x-blog:origin"]).toBe("localhost");
+
+  const viaCollection = snapshotToAnnotationCollection(
+    [TEXT_THREAD],
+    opts,
+    new Map([["t1", { thread: "production" as const, replies: {} }]]),
+  );
+  expect(viaCollection.items[0]!["x-blog:origin"]).toBe("production");
+  // A reply id absent from the origins map gets no extension.
+  expect("x-blog:origin" in viaCollection.items[0]!.body[0]!).toBe(false);
+});
+
+test("x-blog:origin is omitted entirely when origins are not passed (browser caller)", () => {
+  const anno = threadToAnnotation(TEXT_THREAD, opts)!;
+  expect("x-blog:origin" in anno).toBe(false);
+  expect("x-blog:origin" in anno.body[0]!).toBe(false);
+  const coll = snapshotToAnnotationCollection([TEXT_THREAD], opts);
+  expect("x-blog:origin" in coll.items[0]!).toBe(false);
+});

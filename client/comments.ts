@@ -1749,6 +1749,29 @@ class CommentSystem {
     });
     meta.appendChild(authorWrap);
     meta.appendChild(time);
+    // Origin provenance tag (debugging aid, author-only like the thread-id
+    // chip). Per REPLY, not per thread — origin is a per-blob fact and one
+    // thread can mix origins (a prod-born thread carrying the author's
+    // localhost scaffolding replies). Gated on `hasSeededOrigins`: tags
+    // render only where origins MIX, and then EVERY derived reply gets one
+    // ("prod" or "local") so a missing label is never ambiguous shorthand
+    // for local — it means derivation didn't cover the reply. One rule, no
+    // environment branch: a single-origin store (prod) never opens the
+    // gate, because its blobs carry no metadata.
+    if (this.isAuthorMode() && this.store?.hasSeededOrigins()) {
+      const origin = this.store.replyOrigin(reply.id);
+      if (origin) {
+        const originTag = document.createElement("span");
+        originTag.className = `cmt-origin-tag cmt-origin-tag--${origin === "production" ? "prod" : "local"}`;
+        // Short display label; the title carries the full story.
+        originTag.textContent = origin === "production" ? "prod" : "local";
+        originTag.title =
+          origin === "production"
+            ? "This reply was born in the production comment store (seeded here for local authoring)"
+            : "This reply was born in this dev server's local store";
+        meta.appendChild(originTag);
+      }
+    }
     meta.appendChild(del);
     li.appendChild(meta);
 

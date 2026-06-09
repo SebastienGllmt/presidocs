@@ -80,7 +80,9 @@ registry.registerPath({
   summary: "List users, list a user's change hashes, or fetch one change.",
   description:
     "Shape is selected by query params: `post` only → array of userIds (post author only); `post`+`user` → that user's change list; `post`+`user`+`change` → the raw change bytes (application/octet-stream).",
-  request: { query: CommentsQuery },
+  // `origin` is omitted from the GET doc: the runtime schema is shared with
+  // PUT (one uniform handler), but the param only means anything on a write.
+  request: { query: CommentsQuery.omit({ origin: true }) },
   responses: {
     [StatusCodes.OK]: {
       description:
@@ -104,7 +106,7 @@ registry.registerPath({
   path: "/comments",
   summary: "Upload one Automerge change (own user only).",
   description:
-    "Body is the raw change bytes (application/octet-stream, ≤ 8 KB). Idempotent — a re-PUT of identical bytes succeeds.",
+    "Body is the raw change bytes (application/octet-stream, ≤ 8 KB). Idempotent — a re-PUT of identical bytes succeeds. The optional `origin` declares birth-store provenance (used by the local seeding CLI; rides into store metadata and back out in LIST entries).",
   request: { query: CommentsQuery },
   responses: {
     [StatusCodes.OK]: { description: "Stored (or already present)." },

@@ -92,6 +92,10 @@ async function main() {
   const collection = snapshotToAnnotationCollection(
     entries.map((e) => e.thread),
     { slug: args.slug, baseIri: args.base ?? postPath },
+    // Per-thread/per-reply birth store (`x-blog:origin`) — lets a consumer
+    // (notably the process-comments skill) tell reader feedback
+    // (production) from the author's localhost scaffolding replies.
+    new Map(entries.map((e) => [e.thread.id, e.origins])),
   );
 
   const json = JSON.stringify(collection, null, 2);

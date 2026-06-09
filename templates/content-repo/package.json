@@ -19,7 +19,8 @@
     "export-annotations": "bun engine/authoring/exportAnnotations.ts",
     "list-unresolved": "bun engine/authoring/listUnresolved.ts",
     "pull-comments": "bun engine/authoring/r2Sync.ts pull",
-    "push-resolutions": "bun engine/authoring/r2Sync.ts push"
+    "push-resolutions": "bun engine/authoring/r2Sync.ts push",
+    "seed-comments": "bun engine/authoring/r2Sync.ts seed"
   },
   "dependencies": {
     "presidocs": "link:presidocs",

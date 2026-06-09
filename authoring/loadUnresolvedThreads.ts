@@ -24,6 +24,10 @@ import type {
   Target,
   Thread,
 } from "../client/commentsStore.ts";
+import type {
+  CommentOrigin,
+  ThreadOrigins,
+} from "../shared/annotationExport.ts";
 
 // ---------- Types mirrored from client/commentsStore.ts ----------
 //
@@ -72,6 +76,15 @@ export type UnresolvedThread = {
   thread: Thread;
   /** Which reader's blob this thread came from. */
   ownerUserId: string;
+  /**
+   * Which live store the thread (and each of its replies) was born in,
+   * derived from the per-blob `.src` provenance stamps the pulls write
+   * (see authoring/r2Sync.ts → stampOrigin). A thread and its replies can
+   * differ — e.g. a production-born thread carrying a localhost-born
+   * author reply left as context for the LLM. `unknown` = pre-provenance
+   * blobs not yet re-pulled.
+   */
+  origins: ThreadOrigins;
 };
 
 export type LoadOptions = {
@@ -82,9 +95,10 @@ export type LoadOptions = {
    */
   postPath: string;
   /**
-   * Directory passed to the fsAdapter when the dev server set it up
-   * — same string `index.ts` uses
-   * (`generated/.comments-dev`).
+   * Root of the on-disk authoring store (`generated/.comments-dev`)
+   * — the fsAdapter layout shared by the offline tools. The dev
+   * server itself writes to Miniflare R2 instead (createDevServer.ts);
+   * `pull-comments` mirrors into this directory.
    */
   commentsDir: string;
 };
@@ -122,6 +136,25 @@ export async function loadUnresolvedThreads(
   // atob+charCode loop that was copy-pasted from client/commentsStore.ts.
   const seedBytes = Uint8Array.fromBase64(SEED_BYTES_B64);
 
+  function replay(changes: Uint8Array[]): Automerge.Doc<CommentDoc> {
+    let doc = Automerge.load<CommentDoc>(seedBytes);
+    if (changes.length > 0) {
+      [doc] = Automerge.applyChanges(doc, changes);
+    }
+    return doc;
+  }
+
+  function memberIds(doc: Automerge.Doc<CommentDoc>): {
+    threads: Set<string>;
+    replies: Set<string>;
+  } {
+    const js = Automerge.toJS(doc) as CommentDoc;
+    return {
+      threads: new Set(Object.keys(js.threads)),
+      replies: new Set(Object.keys(js.replies)),
+    };
+  }
+
   // Per-user merged docs. We keep them separate so we know which
   // user "owns" each thread (for the CLI summary + future R2 follow-
   // up needs). Merging them into one doc would lose that.
@@ -129,24 +162,72 @@ export async function loadUnresolvedThreads(
   type PerUserDoc = { userId: string; doc: Automerge.Doc<CommentDoc> };
   const perUser: PerUserDoc[] = [];
 
+  // Thread/reply → origin, attributed by SUBSET REPLAY rather than by
+  // decoding CRDT internals: blobs are Automerge changes (one blob can
+  // carry ops for several threads/replies), so per-item origin is derived
+  // by replaying each user's production-stamped blobs alone, then
+  // production+unknown, then all — an item first appearing when the
+  // localhost blobs are added was born on localhost. The subsets are
+  // dep-closed where it matters: a production-born change can never
+  // depend on a localhost-born one (no upward path puts localhost
+  // changes in front of a prod writer), so the production replay never
+  // drops items to missing deps. `production` wins on (defensive,
+  // shouldn't-happen) cross-user collisions.
+  const threadOriginById = new Map<string, CommentOrigin>();
+  const replyOriginById = new Map<string, CommentOrigin>();
+  function recordOrigin(
+    into: Map<string, CommentOrigin>,
+    id: string,
+    origin: CommentOrigin,
+  ): void {
+    const prev = into.get(id);
+    if (prev === undefined || origin === "production") into.set(id, origin);
+  }
+
   for (const userId of userIds) {
-    let doc = Automerge.load<CommentDoc>(seedBytes);
     const entries = await store.listChanges(opts.postPath, userId);
 
-    const changeBytes: Uint8Array[] = [];
+    const byOrigin: Record<CommentOrigin, Uint8Array[]> = {
+      production: [],
+      localhost: [],
+      unknown: [],
+    };
     for (const entry of entries) {
       const bytes = await store.getChange(opts.postPath, userId, entry.hash);
       // A missing entry mid-listing means LIST and GET disagreed
       // (concurrent delete from another process, or a flaky fs).
       // Skip — applyChanges would have silently dropped any orphaned
       // descendants anyway, so we lose nothing by ignoring.
-      if (bytes) changeBytes.push(bytes);
+      if (!bytes) continue;
+      // The fsAdapter reads the `.src` provenance sidecars the pulls write;
+      // an unstamped blob (pre-provenance data) is "unknown".
+      byOrigin[entry.origin ?? "unknown"].push(bytes);
     }
 
-    if (changeBytes.length > 0) {
-      [doc] = Automerge.applyChanges(doc, changeBytes);
+    const full = replay([
+      ...byOrigin.production,
+      ...byOrigin.unknown,
+      ...byOrigin.localhost,
+    ]);
+    perUser.push({ userId, doc: full });
+
+    const inProd = memberIds(replay(byOrigin.production));
+    const inProdUnknown = memberIds(
+      replay([...byOrigin.production, ...byOrigin.unknown]),
+    );
+    const inAll = memberIds(full);
+    const originOf = (id: string, kind: "threads" | "replies"): CommentOrigin =>
+      inProd[kind].has(id)
+        ? "production"
+        : inProdUnknown[kind].has(id)
+          ? "unknown"
+          : "localhost";
+    for (const id of inAll.threads) {
+      recordOrigin(threadOriginById, id, originOf(id, "threads"));
     }
-    perUser.push({ userId, doc });
+    for (const id of inAll.replies) {
+      recordOrigin(replyOriginById, id, originOf(id, "replies"));
+    }
   }
 
   // Author-side resolutions: opaque JSON envelopes, one file per
@@ -237,6 +318,12 @@ export async function loadUnresolvedThreads(
         replies,
         createdAt: t.createdAt,
         ...(t.resolvedAt !== undefined && { resolvedAt: t.resolvedAt }),
+      },
+      origins: {
+        thread: threadOriginById.get(id) ?? "unknown",
+        replies: Object.fromEntries(
+          replies.map((r) => [r.id, replyOriginById.get(r.id) ?? "unknown"]),
+        ),
       },
     };
     all.push(entry);

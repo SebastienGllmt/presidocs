@@ -13,6 +13,7 @@ import {
   threadIdFromResolutionKey,
   userPrefix,
   type ChangeListEntry,
+  type ChangeOrigin,
   type CommentChangeStore,
   type PutChangeResult,
   type ResolutionListEntry,
@@ -24,6 +25,28 @@ function safeResolve(rootDir: string, key: string): string {
     throw new Error(`unsafe key: ${key}`);
   }
   return join(rootDir, safe);
+}
+
+// Origin provenance lives in a `<blob>.src` sidecar — the same format the
+// authoring pulls write (authoring/r2Sync.ts → stampOrigin), so the
+// offline tools and this adapter read one convention. Listings filter on
+// `.bin`/`.json`, so sidecars never surface as entries themselves.
+async function readOriginSidecar(path: string): Promise<ChangeOrigin | undefined> {
+  try {
+    const text = (await readFile(`${path}.src`, "utf8")).trim();
+    return text === "production" || text === "localhost" ? text : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// One-way toward `production` (see ChangeOrigin in store.ts): a declared
+// `localhost` never overwrites an existing stamp.
+async function writeOriginSidecar(path: string, origin: ChangeOrigin): Promise<void> {
+  if (origin === "localhost" && (await readOriginSidecar(path)) !== undefined) {
+    return;
+  }
+  await writeFile(`${path}.src`, origin);
 }
 
 export function fsAdapter(rootDir: string): CommentChangeStore {
@@ -39,17 +62,20 @@ export function fsAdapter(rootDir: string): CommentChangeStore {
       }
     },
 
-    async putChange(post, userId, changeHash, bytes): Promise<PutChangeResult> {
+    async putChange(post, userId, changeHash, bytes, origin): Promise<PutChangeResult> {
       const path = safeResolve(rootDir, changeKey(post, userId, changeHash));
       try {
         await stat(path);
-        // Already present — content-addressed key + idempotent.
+        // Already present — content-addressed key + idempotent. A declared
+        // origin still upgrades the provenance sidecar (one-way).
+        if (origin) await writeOriginSidecar(path, origin);
         return { kind: "already_present" };
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
       }
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, bytes);
+      if (origin) await writeOriginSidecar(path, origin);
       return { kind: "ok" };
     },
 
@@ -66,8 +92,15 @@ export function fsAdapter(rootDir: string): CommentChangeStore {
       for (const ent of entries) {
         if (!ent.isFile() || !ent.name.endsWith(".bin")) continue;
         const hash = ent.name.slice(0, -".bin".length);
-        const s = await stat(join(dir, ent.name));
-        out.push({ hash, size: s.size, uploaded: s.mtime });
+        const path = join(dir, ent.name);
+        const s = await stat(path);
+        const origin = await readOriginSidecar(path);
+        out.push({
+          hash,
+          size: s.size,
+          uploaded: s.mtime,
+          ...(origin !== undefined && { origin }),
+        });
       }
       return out;
     },

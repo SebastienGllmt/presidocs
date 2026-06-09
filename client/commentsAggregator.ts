@@ -7,7 +7,7 @@
 // load. A polling refresh would slot in here without touching the
 // store or the per-user sync loop; deferred to v2.
 
-import type { CommentStore } from "./commentsStore.ts";
+import { deriveOrigins, type CommentStore } from "./commentsStore.ts";
 import { getChange, listChanges, listUsers } from "./commentsApi.ts";
 
 // Per-author cache of which change hashes we've already pulled for
@@ -65,6 +65,16 @@ async function pullUser(
   );
   const applyBytes = fetched.filter((b): b is Uint8Array => b !== null);
   store.applyOtherChanges(userId, applyBytes);
+
+  // Origin provenance: derive which of this user's replies are
+  // production-born from the LIST's origin tags (seeded blobs in the dev
+  // store; untagged everywhere else → no-op). Debugging aid only — a
+  // failure must never break the aggregate.
+  try {
+    await deriveOrigins(remote, store, (h) => getChange(postPath, userId, h));
+  } catch (err) {
+    console.warn(`aggregate origin derivation failed for ${userId}:`, err);
+  }
 
   // Mark everything we now know exists on the server for this user.
   for (const h of remoteHashes) known.add(h);

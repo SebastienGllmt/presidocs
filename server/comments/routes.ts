@@ -87,7 +87,7 @@ export async function handleCommentsRequest(
   const url = new URL(req.url);
   const parsed = CommentsQuery.safeParse(Object.fromEntries(url.searchParams));
   if (!parsed.success) return zodBadRequest(parsed.error);
-  const { post, user, change } = parsed.data;
+  const { post, user, change, origin } = parsed.data;
 
   // No `user` → list users (author only).
   if (user === undefined) {
@@ -119,7 +119,7 @@ export async function handleCommentsRequest(
     case "GET":
       return await handleGetChange(post, user, change, session, deps);
     case "PUT":
-      return await handlePutChange(req, post, user, change, session, deps);
+      return await handlePutChange(req, post, user, change, origin, session, deps);
     default:
       return methodNotAllowed();
   }
@@ -157,6 +157,7 @@ async function handlePutChange(
   post: string,
   user: string,
   changeHash: string,
+  origin: "production" | "localhost" | undefined,
   session: Session,
   deps: CommentsDeps,
 ): Promise<Response> {
@@ -200,6 +201,6 @@ async function handlePutChange(
     return badRequest("request/empty-body", "request body is required");
   }
 
-  await deps.store.putChange(post, user, changeHash, new Uint8Array(body));
+  await deps.store.putChange(post, user, changeHash, new Uint8Array(body), origin);
   return new Response(null, { status: StatusCodes.OK });
 }

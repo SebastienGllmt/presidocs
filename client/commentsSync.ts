@@ -22,7 +22,11 @@
 // firing N concurrent fetches for a burst of N mutations — but the
 // flag is a politeness measure, not a correctness one.
 
-import { SEED_CHANGE_HASH, type CommentStore } from "./commentsStore.ts";
+import {
+  SEED_CHANGE_HASH,
+  deriveOrigins,
+  type CommentStore,
+} from "./commentsStore.ts";
 import {
   ApiError,
   MAX_RETRY_AFTER_MS,
@@ -119,6 +123,20 @@ export class CommentSync {
     );
     const applyBytes = fetched.filter((b): b is Uint8Array => b !== null);
     this.store.applyOwnChanges(applyBytes);
+
+    // Origin provenance: derive which of our replies are production-born
+    // from the LIST's origin tags (seeded blobs in the dev store; entries
+    // are untagged everywhere else and this no-ops). Includes blobs already
+    // in the local doc — the GETs are immutable-cached, so re-fetching the
+    // tagged subset is effectively free. Debugging aid only: a failure
+    // must never break sync.
+    try {
+      await deriveOrigins(remote, this.store, (h) =>
+        getChange(this.postPath, this.userId, h),
+      );
+    } catch (err) {
+      console.warn(`comment origin derivation failed: ${formatErr(err)}`);
+    }
 
     // Record everything we now know exists on the server. The local
     // hashes we already had count too — they might be there from a

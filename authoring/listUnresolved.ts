@@ -32,7 +32,9 @@ async function main() {
     `${result.totalCount} total / ${result.resolvedCount} resolved / ${result.unresolved.length} unresolved\n`,
   );
   for (const t of result.unresolved) {
-    console.log(`Thread ${t.thread.id} (by ${t.ownerUserId}):`);
+    console.log(
+      `Thread ${t.thread.id} (by ${t.ownerUserId}, origin: ${t.origins.thread}):`,
+    );
     const target = t.thread.target;
     if (isTextTarget(target)) {
       const { quote } = textTargetParts(target);
@@ -41,7 +43,7 @@ async function main() {
       console.log(`  anchor: graphic figure id=${graphicTargetId(target)} in ${contextOf(target)}`);
     }
     for (const r of t.thread.replies) {
-      console.log(`  - ${r.authorName}: ${r.body}`);
+      console.log(`  - ${r.authorName} [${t.origins.replies[r.id]}]: ${r.body}`);
     }
     console.log();
   }

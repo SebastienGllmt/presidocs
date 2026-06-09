@@ -61,10 +61,20 @@ export const ThreadId = z.string().min(1);
 // never breaks an older client — important for an engine deployed across
 // content repos that update on their own cadence.
 
+// Declared birth store of a comment change blob. Carried as optional
+// provenance metadata end-to-end (PUT query param → store metadata → LIST
+// entry): one uniform rule — a store exposes it iff the stored object
+// carries it, a consumer renders it iff present. Today only the seeding
+// CLI declares it (origin=production on blobs it copies into the dev
+// store); browser writes never do, so prod entries simply never have it.
+export const ChangeOrigin = z.enum(["production", "localhost"]);
+export type ChangeOrigin = z.infer<typeof ChangeOrigin>;
+
 export const ChangeListEntry = z.object({
   hash: ChangeHash,
   size: z.number().int(),
   uploaded: z.string(),
+  origin: ChangeOrigin.optional(),
 });
 export type ChangeListEntry = z.infer<typeof ChangeListEntry>;
 

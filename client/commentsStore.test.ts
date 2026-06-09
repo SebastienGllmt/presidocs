@@ -678,3 +678,60 @@ test("concurrent resolve doesn't double-stamp; deletedAt also stays put", async 
   expect(ta.resolvedAt).toBeDefined();
   expect(ra.deletedAt).toBeDefined();
 });
+
+// ---- Origin provenance (per-reply, both classes derived positively) ----
+
+test("deriveOrigins: prod and local replies both attributed, incl. a local reply depending on prod changes", async () => {
+  freshStorage();
+  // One user's history: change 1 (tagged production) creates a thread +
+  // first reply; later untagged changes add a scaffolding reply to the
+  // SAME thread (its change depends on the prod changes — the dep trap
+  // that forces local = fullReplay − prodReplay) plus a second thread.
+  const src = await makeStore("/posts/p", "google:reader-1");
+  src.addThread("tProd", ANCHOR_TEXT, 100);
+  src.addReply("tProd", reply("rProd", "from prod", 110));
+  const prodHashes = new Set(src.getAllLocalChanges().map((c) => c.hash));
+  src.addReply("tProd", reply("rLocal", "context for the LLM", 120));
+  src.addThread("tLocal", ANCHOR_TEXT, 130);
+  src.addReply("tLocal", reply("rLocal2", "born here", 140));
+  const all = src.getAllLocalChanges();
+  const byHash = new Map(all.map((c) => [c.hash, c.bytes]));
+  const entries = all.map((c) => ({
+    hash: c.hash,
+    ...(prodHashes.has(c.hash) && { origin: "production" }),
+  }));
+
+  const { deriveOrigins } = await import("./commentsStore.ts");
+  const main = await makeStore("/posts/p", TEST_USER_ID);
+  await deriveOrigins(entries, main, (h) => Promise.resolve(byHash.get(h) ?? null));
+
+  expect(main.hasSeededOrigins()).toBe(true);
+  expect(main.replyOrigin("rProd")).toBe("production");
+  expect(main.replyOrigin("rLocal")).toBe("local");
+  expect(main.replyOrigin("rLocal2")).toBe("local");
+  // Underived ids are unknown — never silently "local".
+  expect(main.replyOrigin("rNever")).toBeNull();
+});
+
+test("deriveOrigins on an untagged folder records local but never opens the render gate", async () => {
+  freshStorage();
+  const src = await makeStore("/posts/p", "google:reader-2");
+  src.addThread("t1", ANCHOR_TEXT, 100);
+  src.addReply("t1", reply("r1", "ordinary", 110));
+  const all = src.getAllLocalChanges();
+  const byHash = new Map(all.map((c) => [c.hash, c.bytes]));
+
+  const { deriveOrigins } = await import("./commentsStore.ts");
+  const main = await makeStore("/posts/p", TEST_USER_ID);
+  await deriveOrigins(
+    all.map((c) => ({ hash: c.hash })),
+    main,
+    (h) => Promise.resolve(byHash.get(h) ?? null),
+  );
+
+  // The class is derived (data, not absence)…
+  expect(main.replyOrigin("r1")).toBe("local");
+  // …but a single-origin view carries no information, so no tags render
+  // (this is what keeps prod tag-free without an environment branch).
+  expect(main.hasSeededOrigins()).toBe(false);
+});
