@@ -31,6 +31,7 @@
 import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
 import TurndownService from "turndown";
+import { strikethrough, tables, taskListItems } from "@joplin/turndown-plugin-gfm";
 import { stringify } from "yaml";
 
 export type MarkdownExtract = {
@@ -137,8 +138,16 @@ function makeTurndown(): TurndownService {
     hr: "---",
     linkStyle: "inlined",
   });
+  // GFM extensions beyond CommonMark (via @joplin/turndown-plugin-gfm): pipe
+  // tables, `~~strikethrough~~`, and task-list items. Without these Turndown has
+  // no `<table>` rule, so a table is flattened into a structureless run-on line
+  // (its cell text concatenated) — see proposal 23 / methodology "Copy as
+  // Markdown". Scoped to exactly these three rules; no autolinks etc.
+  td.use([tables, strikethrough, taskListItems]);
   // Any stray inline SVG that survived (figures are pre-collapsed, but a
-  // decorative icon SVG elsewhere shouldn't dump its path data into the text).
+  // decorative icon SVG elsewhere — including inside a table cell — shouldn't
+  // dump its path data into the text). Registered after the GFM rules; an `svg`
+  // node only matches this removal, so cell SVGs still drop.
   td.remove(["svg" as keyof HTMLElementTagNameMap]);
   return td;
 }

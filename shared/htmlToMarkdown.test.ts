@@ -15,8 +15,13 @@ function parseFrontMatter(doc: string): Record<string, unknown> {
 // A representative post exercising the transform's full surface: the title-h1
 // we render ourselves, prose with inline marks, both list kinds, a figure with
 // a <figcaption>, a figure with only an aria-label, a blockquote, a code block,
-// an aria-hidden decorative node, the author byline, and the narration dock
-// sibling. The golden below is the exact emitted document.
+// a GFM table (header + rows, a cell with inline <em> + an entity, a cell with a
+// `|` to exercise escaping, and a stray inline <svg> that must NOT leak), a
+// <del> strikethrough, an aria-hidden decorative node, the author byline, and
+// the narration dock sibling. The golden below is the exact emitted document.
+// (Task-list items are GFM too but are covered separately: Readability strips
+// the <input type=checkbox>, so they only survive the article-root fallback
+// path — see the dedicated test below.)
 const FIXTURE = `<!DOCTYPE html><html lang="en"><head><title>Fixture Post: a subtitle</title></head>
 <body>
 <article data-narration-src="/generated/fixture/manifest.json" role="main">
@@ -35,6 +40,15 @@ const FIXTURE = `<!DOCTYPE html><html lang="en"><head><title>Fixture Post: a sub
   <figure id="fig2"><svg role="img" aria-label="Only an aria-label here."></svg></figure>
   <pre><code>const x = 1;
 const y = 2;</code></pre>
+  <h2>Data table</h2>
+  <table>
+    <thead><tr><th>Category</th><th>Examples</th><th>Share</th></tr></thead>
+    <tbody>
+      <tr><td>Memecoin</td><td>Pepe &amp; <em>Spacebucks</em></td><td>27%</td></tr>
+      <tr><td>Has a | pipe</td><td><svg role="img" aria-label="leaked"></svg>icon text</td><td>3%</td></tr>
+    </tbody>
+  </table>
+  <p>An edit: <del>struck out</del> stays.</p>
   <p aria-hidden="true">decorative noise that should vanish</p>
   <div class="byline">By Someone</div>
 </article>
@@ -73,6 +87,15 @@ A paragraph with a [link](https://example.com/x), some **bold**, and \`inline()\
 const x = 1;
 const y = 2;
 \`\`\`
+
+## Data table
+
+| Category | Examples | Share |
+| --- | --- | --- |
+| Memecoin | Pepe & _Spacebucks_ | 27% |
+| Has a \\| pipe | icon text | 3%  |
+
+An edit: ~~struck out~~ stays.
 `;
 
 test("full document matches the golden vector", () => {
@@ -115,6 +138,44 @@ test("a figure with neither caption nor aria-label degrades to a placeholder", (
   const html =
     '<article data-narration-src="/x"><h1 id="title">T</h1><p>body text that is long enough to keep.</p><figure><canvas></canvas></figure></article>';
   expect(htmlToMarkdown(html).markdown).toContain("Figure (omitted).");
+});
+
+test("tables become GFM pipe tables (header + separator row), not flattened text", () => {
+  const { markdown } = htmlToMarkdown(FIXTURE);
+  // Header row, the alignment/separator row, and a body row — the three lines a
+  // GFM table needs. Without the GFM rule Turndown would emit the cell text as a
+  // structureless run-on line with no pipes.
+  expect(markdown).toContain("| Category | Examples | Share |");
+  expect(markdown).toContain("| --- | --- | --- |");
+  expect(markdown).toContain("| Memecoin | Pepe & _Spacebucks_ | 27% |");
+  // A literal `|` inside a cell is escaped so it can't break the table grammar.
+  expect(markdown).toContain("Has a \\| pipe");
+  // A stray inline <svg> inside a cell is still dropped (svg-removal wins inside
+  // the table rule's cell recursion); its content survives.
+  expect(markdown).toContain("| icon text |");
+  expect(markdown).not.toContain("leaked");
+});
+
+test("<del>/<s> become ~~strikethrough~~", () => {
+  const { markdown } = htmlToMarkdown(FIXTURE);
+  expect(markdown).toContain("An edit: ~~struck out~~ stays.");
+});
+
+test("checkbox list items become GFM task-list items (article-root fallback path)", () => {
+  // Readability strips <input>, so task lists only survive the fallback path —
+  // a short post that fails Readability's readerability check. (A long post's
+  // checkboxes are dropped by Readability before Turndown sees them; that's the
+  // documented caveat, which is why the main golden has no task list.)
+  const html =
+    '<article data-narration-src="/x"><h1 id="title">T</h1>' +
+    '<ul><li><input type="checkbox" checked> shipped</li>' +
+    '<li><input type="checkbox"> pending</li></ul></article>';
+  const { markdown, usedReadability } = htmlToMarkdown(html);
+  expect(usedReadability).toBe(false);
+  expect(markdown).toContain("[x]");
+  expect(markdown).toContain("[ ]");
+  expect(markdown).toContain("shipped");
+  expect(markdown).toContain("pending");
 });
 
 test("a too-short post falls back to the article root rather than emitting nothing", () => {
