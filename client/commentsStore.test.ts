@@ -713,25 +713,29 @@ test("deriveOrigins: prod and local replies both attributed, incl. a local reply
   expect(main.replyOrigin("rNever")).toBeNull();
 });
 
-test("deriveOrigins on an untagged folder records local but never opens the render gate", async () => {
+test("deriveOrigins skips an untagged folder entirely — no fetches, no records, gate stays shut", async () => {
   freshStorage();
   const src = await makeStore("/posts/p", "google:reader-2");
   src.addThread("t1", ANCHOR_TEXT, 100);
   src.addReply("t1", reply("r1", "ordinary", 110));
   const all = src.getAllLocalChanges();
-  const byHash = new Map(all.map((c) => [c.hash, c.bytes]));
 
   const { deriveOrigins } = await import("./commentsStore.ts");
   const main = await makeStore("/posts/p", TEST_USER_ID);
+  let fetches = 0;
   await deriveOrigins(
     all.map((c) => ({ hash: c.hash })),
     main,
-    (h) => Promise.resolve(byHash.get(h) ?? null),
+    () => {
+      fetches++;
+      return Promise.resolve(null);
+    },
   );
 
-  // The class is derived (data, not absence)…
-  expect(main.replyOrigin("r1")).toBe("local");
-  // …but a single-origin view carries no information, so no tags render
-  // (this is what keeps prod tag-free without an environment branch).
+  // No tagged entries → nothing the render gate could ever show, so the
+  // pass costs nothing (critical on prod: own blobs are never browser-
+  // cached, so any fetch here would be a real network hit per boot).
+  expect(fetches).toBe(0);
+  expect(main.replyOrigin("r1")).toBeNull();
   expect(main.hasSeededOrigins()).toBe(false);
 });

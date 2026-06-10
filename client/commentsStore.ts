@@ -882,6 +882,14 @@ export async function deriveOrigins(
   store: CommentStore,
   get: (hash: string) => Promise<Uint8Array | null>,
 ): Promise<void> {
+  // A folder with no tagged blobs derives nothing the render gate could
+  // ever show — and skipping it keeps this pass FREE where it matters:
+  // on prod, the own-doc hydrate fetches nothing extra (own blobs are
+  // never browser-cached — they originated locally and were only ever
+  // PUT), preserving the sync layer's "GET only what's missing" cost
+  // model. Mixed folders (the seeded dev store) pay a handful of
+  // immutable-cached GETs.
+  if (!entries.some((e) => e.origin === "production")) return;
   const fetched = await Promise.all(
     entries.map(async (e) => ({ entry: e, bytes: await get(e.hash) })),
   );
