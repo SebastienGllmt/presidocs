@@ -31,6 +31,7 @@
 import { cp, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
+import { isPrivateBlog } from "../shared/blogPrivacy.ts";
 import { buildAuthorMap } from "../shared/authorProfile.ts";
 import { buildPublicPostVersionsMap } from "../shared/publicPostVersions.ts";
 import { MANIFEST_HASHED_RE } from "../shared/manifestFile.ts";
@@ -184,11 +185,14 @@ async function copyAuthorAssets(): Promise<number> {
 
   const assetsDir = join(DIST, "assets");
   await mkdir(assetsDir, { recursive: true });
-  await writeFile(
-    join(assetsDir, "authors.json"),
-    JSON.stringify(map),
-    "utf8",
-  );
+  // The author MAP enumerates every post path → profile, so a private blog
+  // must not serve it (one capability link would hand over every slug). The
+  // byline reads its single post's profile from inline data injected into the
+  // post's own HTML instead (strip-served-html → injectBylineData). Avatars
+  // below are keyed by author HANDLE, not post path, so they're kept.
+  if (!isPrivateBlog()) {
+    await writeFile(join(assetsDir, "authors.json"), JSON.stringify(map), "utf8");
+  }
 
   const avatarEntries = Object.entries(avatars);
   if (avatarEntries.length > 0) {
@@ -207,6 +211,9 @@ async function copyAuthorAssets(): Promise<number> {
 // human-readable freshness signal, distinct from the gated /post-version
 // endpoint. Dev produces the identical file from the same `posts/versions.json`.
 async function copyPublicPostVersions(): Promise<number> {
+  // Enumerates every post path → lastUpdated. Suppressed on a private blog
+  // (the byline gets its date from inline per-post data); see copyAuthorAssets.
+  if (isPrivateBlog()) return 0;
   const map = await buildPublicPostVersionsMap(paths.versionsJson);
   const assetsDir = join(DIST, "assets");
   await mkdir(assetsDir, { recursive: true });

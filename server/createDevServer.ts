@@ -37,6 +37,7 @@ import { buildAuthorMap } from "../shared/authorProfile.ts";
 import { buildPublicPostVersionsMap } from "../shared/publicPostVersions.ts";
 import { htmlToMarkdown, renderMarkdownDocument, type FrontMatter } from "../shared/htmlToMarkdown.ts";
 import type { BlogPaths } from "../shared/blogPaths.ts";
+import { isPrivateBlog } from "../shared/blogPrivacy.ts";
 import { findFullAudioName, findManifestName } from "../shared/manifestFile.ts";
 import {
   audioEtag,
@@ -405,7 +406,15 @@ export async function createDevServer(opts: DevServerOptions) {
     // or edited profile shows up on reload without a restart. The map carries
     // NO email — only public name/links/avatar-URL. Prod serves the identical
     // file written into dist/assets by copy-static.ts.
+    // Both maps enumerate every post path, so on a PRIVATE blog they 404 here
+    // exactly as they're suppressed in the prod build (copy-static.ts) — the
+    // dev server must not be the one place a capability link hands over the
+    // whole post set. (The byline reads inline per-post data on a built private
+    // post; under bare `bun run dev` — which serves un-rewritten source HTML,
+    // so no inline data — the byline's author/date line is simply absent, a
+    // localhost-only cosmetic. dev:edge shows it correctly.)
     "/assets/authors.json": pub(async () => {
+      if (isPrivateBlog()) return new Response("not found", { status: StatusCodes.NOT_FOUND });
       const { map } = await buildAuthorMap(paths.postsDir, paths.contentRoot);
       return new Response(JSON.stringify(map), {
         headers: {
@@ -418,8 +427,10 @@ export async function createDevServer(opts: DevServerOptions) {
     // fresh per request from posts/versions.json — the same source the prod
     // build reads — so a new commit's builtAt picks up on reload without a
     // restart. Public counterpart to the gated /post-version endpoint; carries
-    // no hash, only the most recent ISO timestamp.
+    // no hash, only the most recent ISO timestamp. 404 on a private blog (see
+    // /assets/authors.json above).
     "/assets/post-versions.json": pub(async () => {
+      if (isPrivateBlog()) return new Response("not found", { status: StatusCodes.NOT_FOUND });
       const map = await buildPublicPostVersionsMap(paths.versionsJson);
       return new Response(JSON.stringify(map), {
         headers: {

@@ -14,10 +14,11 @@
 // resolveBlogDir(): the private fixture is never the default target.
 
 import { test, expect, beforeAll, afterAll } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   ensurePrivateFixtureBlog,
+  startBlogServer,
   startWranglerServer,
   type BlogServer,
 } from "./harness.ts";
@@ -55,10 +56,32 @@ test("the post serves normally at its capability URL — privacy is not breakage
 });
 
 test("the enumeration artifacts do not exist", async () => {
-  for (const path of ["/sitemap.xml", "/llms.txt", "/feed.xml", "/podcast.xml"]) {
+  // Includes the two per-post MAPS the byline used to fetch: each lists every
+  // slug, so one capability link would otherwise hand over the whole post set
+  // (the byline reads inline per-post data instead — next test).
+  const forbidden = [
+    "/sitemap.xml",
+    "/llms.txt",
+    "/feed.xml",
+    "/podcast.xml",
+    "/assets/post-versions.json",
+    "/assets/authors.json",
+  ];
+  for (const path of forbidden) {
     const res = await fetch(`${server.baseURL}${path}`);
     expect(res.status, `${path} must not exist on a private blog`).toBe(404);
   }
+});
+
+test("the byline works from inline per-post data (no global-map fetch)", async () => {
+  const res = await fetch(`${server.baseURL}/posts/${POST_SLUG}`);
+  const html = await res.text();
+  // The post carries its own byline data inline — capability-protected, names
+  // only this post.
+  expect(html).toContain('id="presidocs-byline-data"');
+  // And it does NOT reference the (suppressed, enumerating) global maps.
+  expect(html).not.toContain("/assets/post-versions.json");
+  expect(html).not.toContain("/assets/authors.json");
 });
 
 test("robots.txt exists, default-allow, no Sitemap pointer, AI crawlers denied", async () => {
@@ -103,5 +126,30 @@ test("the built dist carries the audit's guarantees on disk too", () => {
   for (const name of ["sitemap.xml", "llms.txt", "feed.xml", "podcast.xml"]) {
     expect(readdirSync(dist), `dist/${name} must not be built`).not.toContain(name);
   }
+  // The nested per-post maps (the leak the adversarial pass caught) — assert
+  // on disk too, not just over HTTP.
+  for (const name of ["post-versions.json", "authors.json"]) {
+    expect(existsSync(join(dist, "assets", name)), `dist/assets/${name} must not be built`).toBe(false);
+  }
   expect(readFileSync(join(dist, "index.html"), "utf8")).toContain('content="noindex"');
 });
+
+// The DEV server (bun run dev) builds the byline maps fresh per request rather
+// than serving dist/ — so the build-time suppression doesn't cover it. The
+// dev server must 404 them too (parity with prod) or `bun run dev` on a
+// private blog would re-expose every slug. This boots the private fixture's
+// dev server (which loads its BLOG_PRIVATE=1 .env) and checks directly.
+test("the dev server also 404s the enumerating byline maps on a private blog", async () => {
+  const dev = await startBlogServer(BLOG_DIR);
+  try {
+    for (const path of ["/assets/authors.json", "/assets/post-versions.json"]) {
+      const res = await fetch(`${dev.baseURL}${path}`);
+      expect(res.status, `dev server: ${path} must 404 on a private blog`).toBe(404);
+    }
+    // Sanity: a real route still works, so the 404s are the gate, not a dead server.
+    const post = await fetch(`${dev.baseURL}/posts/${POST_SLUG}`);
+    expect(post.status).toBe(200);
+  } finally {
+    await dev.stop();
+  }
+}, 60_000);

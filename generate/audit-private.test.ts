@@ -57,6 +57,13 @@ test("robots-sitemap: a Sitemap: pointer fires; the sitemap-less private form pa
 });
 
 test("the ledger constants name the real artifacts/channels", () => {
-  expect(FORBIDDEN_DIST_FILES).toEqual(["sitemap.xml", "llms.txt", "feed.xml", "podcast.xml"]);
+  expect(FORBIDDEN_DIST_FILES).toEqual([
+    "sitemap.xml",
+    "llms.txt",
+    "feed.xml",
+    "podcast.xml",
+    "assets/post-versions.json",
+    "assets/authors.json",
+  ]);
   expect(FORBIDDEN_ANNOUNCE_VARS).toEqual(["DISCORD_WEBHOOK_URL", "SLACK_WEBHOOK_URL", "WEBHOOK_URL", "WEBSUB_HUB"]);
 });

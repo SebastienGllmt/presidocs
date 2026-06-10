@@ -372,6 +372,32 @@ async function boot(): Promise<void> {
   // Idempotent — never render two bylines.
   if (article.querySelector(".byline")) return;
 
+  // Private blogs inline THIS post's byline data into its own (capability-
+  // protected) HTML — see generate/strip-served-html.ts:injectBylineData — so
+  // the byline never fetches the global /assets/{authors,post-versions}.json
+  // maps, which enumerate every post path and are suppressed on a private
+  // blog. Prefer the inline element when present (strictly less data, one
+  // fewer round-trip). Public posts have no such element and fall through to
+  // the fetch below, unchanged.
+  const inline = document.getElementById("presidocs-byline-data");
+  if (inline) {
+    try {
+      const d = JSON.parse(inline.textContent ?? "") as PublicAuthorProfile & {
+        lastUpdated: string | null;
+      };
+      if (d.name) {
+        mountBylineInto(
+          article,
+          { name: d.name, links: d.links, avatar: d.avatar },
+          d.lastUpdated ? { lastUpdated: d.lastUpdated } : null,
+        );
+      }
+    } catch {
+      /* malformed inline data — render nothing rather than a wrong byline */
+    }
+    return;
+  }
+
   // Both maps key by post path. Fetched in parallel — the byline never blocks
   // on the date (it renders without one if the file is missing).
   const [authorsRes, versionsRes] = await Promise.allSettled([

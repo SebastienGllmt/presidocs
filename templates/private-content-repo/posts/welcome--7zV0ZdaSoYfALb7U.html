@@ -21,7 +21,13 @@
 <script type="module" src="../engine/client/copyMarkdown.ts"></script>
 </head>
 <body>
-  <article role="main">
+  <!-- data-narration-src is the article-root marker the byline + comments
+       layers key on (present on every post; the manifest 404s harmlessly
+       until `bun run generate` makes audio). -->
+  <article role="main"
+           data-narration-src="/generated/welcome--7zV0ZdaSoYfALb7U/manifest.json"
+           data-narration-title="Welcome to your private blog"
+           data-narration-artist="sebastiengllmt@gmail.com">
     <h1 id="title">Welcome to your private blog</h1>
     <p id="lede">
       This post's URL ends in an unguessable token — that token is the whole

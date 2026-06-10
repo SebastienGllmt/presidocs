@@ -68,6 +68,34 @@ function injectFeedLinks(html: string, hasPodcast: boolean): string {
     .transform(html);
 }
 
+// Private blogs: inline the CURRENT post's byline data (author profile +
+// last-updated) into its own HTML, so the byline never fetches the global
+// /assets/{authors,post-versions}.json maps — which enumerate every post path
+// and are therefore suppressed on a private blog (generate/copy-static.ts).
+// The post HTML is capability-protected, so its own byline data can't leak
+// other posts. `client/byline.ts` prefers this element over the fetch.
+function injectBylineData(
+  html: string,
+  profile: PublicAuthorProfile,
+  lastUpdated: string | null,
+): string {
+  const data = JSON.stringify({
+    name: profile.name,
+    links: profile.links,
+    avatar: profile.avatar,
+    lastUpdated,
+  }).replace(/</g, "\\u003c");
+  return new HTMLRewriter()
+    .on("head", {
+      element(el) {
+        el.append(`<script type="application/json" id="presidocs-byline-data">${data}</script>`, {
+          html: true,
+        });
+      },
+    })
+    .transform(html);
+}
+
 // Private blogs: a `<meta name="robots" content="noindex">` in every page's
 // <head> — the belt for the X-Robots-Tag header's suspenders (covers any path
 // where the HTML is mirrored/cached without its response headers). Idempotent
@@ -370,6 +398,11 @@ async function main(): Promise<void> {
           cardUrl,
         };
         after = injectStructuredData(after, ctx);
+        // Private: inline this post's byline data so the byline needs no
+        // global (enumerating) map fetch.
+        if (privateBlog && profile) {
+          after = injectBylineData(after, profile, history[0]!.builtAt);
+        }
       } else if (file === landingPath && !privateBlog) {
         // (private: the landing is the one guessable URL in the deploy — it
         // gets no WebSite/Blog graph describing the blog to crawlers; see

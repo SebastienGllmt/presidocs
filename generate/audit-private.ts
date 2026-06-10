@@ -52,8 +52,21 @@ import { collectHtmlFiles } from "../shared/walkHtml.ts";
 
 export type PrivacyViolation = { rule: string; detail: string };
 
-/** dist/ files whose entire purpose is post enumeration. */
-export const FORBIDDEN_DIST_FILES = ["sitemap.xml", "llms.txt", "feed.xml", "podcast.xml"] as const;
+/**
+ * dist/ paths (relative to dist/) that ENUMERATE posts — every one hands a
+ * holder of a single capability link the full post list, defeating the
+ * model. sitemap/llms/feeds advertise to crawlers; the two /assets maps are
+ * the byline's data sources (the byline reads inline per-post data instead on
+ * a private blog — see copy-static.ts / strip-served-html.ts:injectBylineData).
+ */
+export const FORBIDDEN_DIST_FILES = [
+  "sitemap.xml",
+  "llms.txt",
+  "feed.xml",
+  "podcast.xml",
+  "assets/post-versions.json",
+  "assets/authors.json",
+] as const;
 
 /** Env vars that announce posts to third parties on deploy. */
 export const FORBIDDEN_ANNOUNCE_VARS = [

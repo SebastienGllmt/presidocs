@@ -84,7 +84,13 @@ function main(): void {
 <script type="module" src="../engine/client/copyMarkdown.ts"></script>
 </head>
 <body>
-  <article role="main">
+  <!-- data-narration-src is the article-root marker the byline + comments
+       layers key on (present on EVERY post, even narration-free ones — the
+       manifest just 404s harmlessly until \`bun run generate\` makes audio). -->
+  <article role="main"
+           data-narration-src="/generated/${filename}/manifest.json"
+           data-narration-title="${title}"
+           data-narration-artist="${authorEmail}">
     <h1 id="title">${title}</h1>
     <p id="lede">
       One-paragraph summary of the post — this becomes the meta description

@@ -359,8 +359,8 @@ export interface BlogServer {
  * layout / a11y / popover tier that the fast dev server serves identically to
  * prod.
  */
-export async function startBlogServer(): Promise<BlogServer> {
-  const blogDir = resolveBlogDir();
+export async function startBlogServer(blogDirOverride?: string): Promise<BlogServer> {
+  const blogDir = blogDirOverride ?? resolveBlogDir();
   const port = await freePort();
   const baseURL = `http://localhost:${port}`;
 
