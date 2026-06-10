@@ -16,6 +16,10 @@ copy or symlink "farm" to go stale. This repo holds only content:
 - `bunfig.toml` — registers the engine's HTML-head plugin for the dev server
   (createDevServer asserts it at startup) and mirrors the engine's
   supply-chain install policy.
+- `manifest.webmanifest` / `icons/` — the PWA install surface (content-owned:
+  your blog's name and launcher icons; the engine's service worker precaches
+  the manifest, so these must exist for offline reading to install). The
+  starter icons are placeholders — replace them with your own.
 - `engine` — a symlink pointing **directly at the sibling engine repo**
   (`../presidocs`), so posts can reference engine assets as
   `../engine/client/narratorLoader.ts` and Bun's bundler resolves + bundles them into
@@ -58,4 +62,7 @@ setup products the Setup section above describes — the `engine` symlink,
 `node_modules`, and a generated `.env`/`.dev.vars` secret — all gitignored
 here, so a `bun run test:e2e` in the engine leaves this template's tree
 clean. If those files appear after running the engine's tests, that's the
-fixture bootstrap, not something to commit.
+fixture bootstrap, not something to commit. (One exception: the heavy
+wrangler tiers run a real `bun run build`, which — as on any content repo —
+appends to `posts/versions.json` when a post's content changed; fold that
+into the post's commit or discard it.)

@@ -1,0 +1,66 @@
+# Engine CI (proposal 22 §3): the whole suite runs against the self-contained
+# e2e fixture (templates/content-repo — the resolveBlogDir() default), so no
+# private content repo is involved. Posture: Chromium-only (the runner's
+# preinstalled Chrome via the harness's system-Chrome resolution; Firefox/
+# WebKit tiers skip gracefully and stay manual-quarterly per release-check).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Typecheck + unit suite + the real-browser dev-server tiers (`test:e2e`).
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Cache bun install cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      # frozenLockfile is deliberately CI-only — see bunfig.toml's [install]
+      # note (a global frozen install only adds local friction).
+      - run: bun install --frozen-lockfile
+      # Materialize the fixture (engine symlink, bun link + install, generated
+      # secrets + fixture SITE_URL) before anything resolves resolveBlogDir().
+      - run: bun run e2e:fixture
+      - run: bun x tsc --noEmit
+      - run: bun test
+      - run: bun run test:e2e
+
+  # The heavy build + `wrangler dev` (workerd/Miniflare, local mode — no
+  # Cloudflare credentials) tiers: SW/PWA lifecycle, prod-CSP violations,
+  # broken links/fragments. Split out so a browser-tier failure and a
+  # build/worker-tier failure are distinguishable at a glance.
+  worker-tiers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Cache bun install cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      - run: bun install --frozen-lockfile
+      - run: bun run e2e:fixture
+      - run: bun run test:e2e:sw
+      # The later tiers reuse the build the SW tier just made.
+      - run: bun run test:e2e:csp
+        env:
+          PRESIDOCS_E2E_SKIP_BUILD: "1"
+      - run: bun run test:e2e:links
+        env:
+          PRESIDOCS_E2E_SKIP_BUILD: "1"
