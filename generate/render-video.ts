@@ -445,7 +445,7 @@ function bgPlate(ctx: PostCtx, chapter: Chapter, parentTitle: string | null): un
         flexDirection: "column",
         backgroundColor: C.bg,
         padding: "70px 64px",
-        fontFamily: "DejaVu Sans",
+        fontFamily: "Red Hat Text",
       },
       children: [
         {
@@ -497,7 +497,7 @@ function introPlate(ctx: PostCtx, chapter: Chapter): unknown {
         justifyContent: "center",
         backgroundColor: C.slideBg,
         padding: "0 90px",
-        fontFamily: "DejaVu Sans",
+        fontFamily: "Red Hat Text",
       },
       children: [
         { type: "div", props: { style: { width: 120, height: 12, backgroundColor: C.accent, marginBottom: 40 } } },
@@ -559,7 +559,7 @@ function slidePlate(_ctx: PostCtx, chapter: Chapter, parentTitle: string | null)
         justifyContent: "center",
         backgroundColor: C.slideBg,
         padding: "0 90px",
-        fontFamily: "DejaVu Sans",
+        fontFamily: "Red Hat Text",
       },
       children,
     },

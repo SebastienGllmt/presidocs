@@ -10,8 +10,9 @@
 // Pipeline: satori lays the card out from a plain element tree (no JSX/React —
 // the engine is React-free) into an SVG with text already converted to vector
 // paths, then @resvg/resvg-wasm rasterizes that SVG to PNG. Deterministic, no
-// native binary, no headless browser. Fonts (Inter) are vendored under
-// generate/assets/fonts/ and embedded by satori at build time.
+// native binary, no headless browser. Fonts (Red Hat Text, the blog's own
+// face) are vendored under generate/assets/fonts/ and embedded by satori at
+// build time.
 //
 // Runs after `bun build` (needs dist/) and before strip-served-html.ts (which
 // references the card URL when injecting og:image). Skipped, like the other
@@ -40,17 +41,18 @@ let fontsCache: { name: string; data: ArrayBuffer; weight: 400 | 700; style: "no
 async function loadFonts() {
   if (fontsCache) return fontsCache;
   // satori's font parser rejects variable fonts (it chokes on the `fvar`
-  // table), so we vendor two STATIC weights. DejaVu Sans is freely
-  // redistributable and ships the regular + bold instances we need; see
-  // generate/assets/fonts/LICENSE.
+  // table) and woff2, so we vendor two STATIC TTF weights of Red Hat Text —
+  // the same family the blog self-hosts for readers (client/fonts/, OFL) —
+  // so the share cards carry the blog's type identity instead of a fallback
+  // face; see generate/assets/fonts/LICENSE.
   const dir = join(paths.engineRoot, "generate", "assets", "fonts");
   const [regular, bold] = await Promise.all([
-    Bun.file(join(dir, "DejaVuSans.ttf")).arrayBuffer(),
-    Bun.file(join(dir, "DejaVuSans-Bold.ttf")).arrayBuffer(),
+    Bun.file(join(dir, "RedHatText-Regular.ttf")).arrayBuffer(),
+    Bun.file(join(dir, "RedHatText-Bold.ttf")).arrayBuffer(),
   ]);
   fontsCache = [
-    { name: "DejaVu Sans", data: regular, weight: 400, style: "normal" },
-    { name: "DejaVu Sans", data: bold, weight: 700, style: "normal" },
+    { name: "Red Hat Text", data: regular, weight: 400, style: "normal" },
+    { name: "Red Hat Text", data: bold, weight: 700, style: "normal" },
   ];
   return fontsCache;
 }
@@ -118,7 +120,7 @@ function cardElement(input: ShareCardInput) {
         backgroundColor: "#fafbfc",
         // a thick brand accent down the left edge
         borderLeft: "16px solid #1f6feb",
-        fontFamily: "DejaVu Sans",
+        fontFamily: "Red Hat Text",
       },
       children: [
         // top: blog name

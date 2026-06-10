@@ -1,14 +1,8 @@
-DejaVuSans.ttf and DejaVuSans-Bold.ttf are from the DejaVu Fonts project
-(https://dejavu-fonts.github.io/), used here to render the build-time social
-share cards (generate/share-card.ts) via satori.
+RedHatText-Regular.ttf and RedHatText-Bold.ttf are static instances from the
+Red Hat font project (https://github.com/RedHatOfficial/RedHatFont), used here
+to render the build-time social share cards (generate/share-card.ts) via
+satori — the same family the blog self-hosts for readers (client/fonts/), so
+the cards carry the blog's type identity.
 
-The DejaVu fonts are released under a free license (derived from the Bitstream
-Vera Fonts license) that permits redistribution and bundling. Full text:
-https://dejavu-fonts.github.io/License.html
-
-They are vendored (committed) rather than read from the system so the build is
-reproducible on any machine / CI. satori requires STATIC font instances — it
-cannot parse variable fonts — which is why two static weights are shipped
-rather than a single variable file. To swap in a different typeface, drop in
-its static Regular/Bold .ttf files and update loadFonts() + the fontFamily in
-generate/share-card.ts.
+Licensed under the SIL Open Font License 1.1 — full text in OFL.txt beside
+this file.
