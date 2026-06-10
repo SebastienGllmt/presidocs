@@ -34,9 +34,13 @@ test("about:blank uses the library reason phrase, even for codes no hand-table h
 });
 
 test("about:blank for a genuinely unassigned status falls back to `HTTP <n>`", async () => {
-  const res = problem(799, "about:blank");
+  // 599 is constructible (Bun ≥1.3.14 enforces the Fetch spec's 200–599
+  // Response range, so the old 799 probe now throws before problem() can
+  // answer) yet absent from the IANA registry / http-status-codes — exactly
+  // the "no reason phrase exists" case this covers.
+  const res = problem(599, "about:blank");
   const body = await res.json();
-  expect(body.title).toBe("HTTP 799");
+  expect(body.title).toBe("HTTP 599");
 });
 
 test("detail is included when provided, omitted when not", async () => {
