@@ -20,6 +20,9 @@ engine, `bun install`, `ln -sfn ../presidocs engine`, copy `.env.example` →
   fresh 96-bit token. Never hand-invent tokens; the audit rejects filenames
   without one. **Renaming a file rotates its key** (leak recovery: rename,
   rebuild, redeploy — the old link 404s).
+- **Re-mint the starter post before using it for anything real**: its token
+  is committed in the public engine repo, so it's a known value, not a
+  secret. Delete it or rename it with a fresh token.
 - `index.html` — the one guessable URL. It explains how the blog works and
   must never link into `/posts/` (the audit enforces this).
 - `deploy` runs no announce steps (no publish webhooks, no WebSub) and the
