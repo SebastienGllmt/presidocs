@@ -28,7 +28,7 @@ import { decodeHtmlEntities } from "./htmlEntities.ts";
 // `@type` and property name from an unchecked string into a `tsc`-checked one,
 // so a `"BlogPosing"`/`acceptedAnswers` typo fails the build instead of silently
 // shipping invalid JSON-LD that only Google's Rich Results Test would catch.
-import type { WithContext, BlogPosting, Person, ImageObject, WebSite, Blog, Graph } from "schema-dts";
+import type { WithContext, BlogPosting, BreadcrumbList, Person, ImageObject, WebSite, Blog, Graph } from "schema-dts";
 
 // The generated share card is a fixed 1200x630 PNG (generate/share-card.ts).
 // We know its dimensions here, so og:image:width/height and the JSON-LD
@@ -319,6 +319,26 @@ export function injectStructuredData(
   // Escape `<` so the JSON can never break out of the <script> element.
   const ldJson = JSON.stringify(ld).replace(/</g, "\\u003c");
 
+  // BreadcrumbList: the site is two levels deep (no /posts index page), so the
+  // trail is just landing → this post. Thin, but it names the parent surface
+  // for search/LLM consumers either way (proposal 16 item 7). Its own script
+  // block (not folded into the BlogPosting): Google parses multiple ld+json
+  // scripts, and the breadcrumb is a page property, not an article property.
+  // The landing crumb is named by the publisher (the blog's name) when known —
+  // a literal "Home" would be English-only on a `lang`-declared page.
+  const breadcrumb: WithContext<BreadcrumbList> = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "@id": `${url}#breadcrumb`,
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: publisher || "Home", item: `${siteUrl}/` },
+      // Last crumb = the current page: per Google's breadcrumb guidance the
+      // `item` URL is omitted (the page's canonical already names it).
+      { "@type": "ListItem", position: 2, name: title || url },
+    ],
+  };
+  const breadcrumbJson = JSON.stringify(breadcrumb).replace(/</g, "\\u003c");
+
   // ---- Open Graph + Twitter Card meta tags ----
   const tags: string[] = [];
   const meta = (prop: string, content: string, kind: "property" | "name" = "property") =>
@@ -379,7 +399,10 @@ export function injectStructuredData(
   const creator = xCreator(ctx.author?.links.x);
   if (creator) meta("twitter:creator", creator, "name");
 
-  const block = `<script type="application/ld+json">${ldJson}</script>` + tags.join("");
+  const block =
+    `<script type="application/ld+json">${ldJson}</script>` +
+    `<script type="application/ld+json">${breadcrumbJson}</script>` +
+    tags.join("");
 
   return new HTMLRewriter()
     .on("head", {

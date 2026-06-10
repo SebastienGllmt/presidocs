@@ -41,9 +41,11 @@ import { findFullAudioName, findManifestName } from "../shared/manifestFile.ts";
 import {
   audioEtag,
   episodeDownloadName,
+  HASHED_AUDIO_RE,
   ifNoneMatchSatisfied,
   rangeHonored,
   stableAudioHeaders,
+  stableEpisodePath,
 } from "../shared/stableAudio.ts";
 import { isSha256Hex, reprDigestSha256 } from "../shared/audioDigest.ts";
 
@@ -274,6 +276,12 @@ export async function createDevServer(opts: DevServerOptions) {
       // RFC 9530 representation digest on the stable URL (range-independent).
       if (isEpisode && episodeDigest) {
         baseHeaders["Repr-Digest"] = reprDigestSha256(episodeDigest);
+      }
+      // The hashed audio representation names its stable URL as canonical
+      // (RFC 8288 + RFC 6596) — mirrors the prod Worker (createWorker.ts);
+      // path-relative URI, resolved against the request URI per RFC 8288.
+      if (HASHED_AUDIO_RE.test(safe)) {
+        baseHeaders["Link"] = `<${stableEpisodePath(`/generated/${safe}`)}>; rel="canonical"`;
       }
       // Conditional GET on the stable URL → 304 (echoing the cache headers).
       if (

@@ -9,7 +9,7 @@
 // snapshot and restore those env vars around each test.
 
 import { test, expect, beforeEach, afterEach } from "bun:test";
-import { securityHeaders, withSecurityHeaders } from "./securityHeaders.ts";
+import { securityHeaders, withNoindexOffCanonicalHost, withSecurityHeaders } from "./securityHeaders.ts";
 
 const ENV_KEYS = ["NODE_ENV", "CSP_REPORT_ONLY"] as const;
 let savedEnv: Record<string, string | undefined>;
@@ -175,4 +175,21 @@ test("withSecurityHeaders works on a response with immutable headers (302 redire
   expect(res.status).toBe(302);
   expect(res.headers.get("Location")).toBe("https://accounts.google.com/x");
   expect(res.headers.get("Content-Security-Policy")).toBeTruthy();
+});
+
+test("withNoindexOffCanonicalHost: noindex only off the canonical host, only when a host is known", () => {
+  const req = (url: string) => new Request(url);
+  const fresh = () => withSecurityHeaders(new Response("x"));
+  // Preview/staging host ≠ canonical → noindex.
+  const preview = withNoindexOffCanonicalHost(req("https://preview.example.dev/"), fresh(), "blog.example.com");
+  expect(preview.headers.get("X-Robots-Tag")).toBe("noindex");
+  // The canonical host itself → untouched.
+  const canonical = withNoindexOffCanonicalHost(req("https://blog.example.com/posts/x"), fresh(), "blog.example.com");
+  expect(canonical.headers.get("X-Robots-Tag")).toBeNull();
+  // No baked canonical host (SITE_URL-less build) → untouched anywhere.
+  const ungated = withNoindexOffCanonicalHost(req("https://anywhere.dev/"), fresh(), null);
+  expect(ungated.headers.get("X-Robots-Tag")).toBeNull();
+  // Host compare includes the port (localhost:3000 ≠ localhost:4000 hosting matters).
+  const port = withNoindexOffCanonicalHost(req("http://localhost:3000/"), fresh(), "localhost:3000");
+  expect(port.headers.get("X-Robots-Tag")).toBeNull();
 });

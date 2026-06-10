@@ -36,7 +36,7 @@ import {
 import { handlePostVersionRequest } from "./postVersionsRoute.ts";
 import { buildOpenApiDocument } from "./openapi.ts";
 import { handleAnalyticsRequest } from "./analyticsRoute.ts";
-import { withSecurityHeaders } from "../shared/securityHeaders.ts";
+import { withNoindexOffCanonicalHost, withSecurityHeaders } from "../shared/securityHeaders.ts";
 import {
   contentRangeHeader,
   isResolvableRangeHeader,
@@ -47,9 +47,11 @@ import { problem } from "../shared/problemDetails.ts";
 import {
   audioEtag,
   episodeDownloadName,
+  HASHED_AUDIO_RE,
   ifNoneMatchSatisfied,
   rangeHonored,
   stableAudioHeaders,
+  stableEpisodePath,
   stableEpisodeSlug,
 } from "../shared/stableAudio.ts";
 import { isSha256Hex, reprDigestSha256 } from "../shared/audioDigest.ts";
@@ -68,6 +70,12 @@ export type WorkerContent = {
   // Optional so existing content repos that don't supply it keep building —
   // those just don't serve the stable URL.
   episodeAudio?: Record<string, { audio: string; digest?: string }>;
+  // Canonical host (SITE_HOST from .generated/postMeta.ts, baked from
+  // SITE_URL at build). When supplied, responses served from any OTHER host
+  // (a preview/staging deploy) carry `X-Robots-Tag: noindex` — see
+  // shared/securityHeaders.ts:withNoindexOffCanonicalHost. Optional/null →
+  // no noindex anywhere (a SITE_URL-less build has no canonical to defend).
+  siteHost?: string | null;
 };
 
 // Add HTTP Range support to a Static Assets response.
@@ -327,16 +335,21 @@ export function createWorkerHandler(content: WorkerContent) {
       env: Env,
       _ctx: ExecutionContext,
     ): Promise<Response> {
+      // Every egress wraps in noindex-off-canonical-host (a data-keyed no-op
+      // on the canonical host / without a baked SITE_HOST).
+      const noindex = (res: Response): Response =>
+        withNoindexOffCanonicalHost(req, res, content.siteHost);
+
       const apiResponse = handleApi(req, env);
       if (apiResponse !== null) {
-        return withSecurityHeaders(await apiResponse, { private: true });
+        return noindex(withSecurityHeaders(await apiResponse, { private: true }));
       }
 
       // --- Stable shareable episode URL (resolves to the hashed asset). ---
       const stableSlug = stableEpisodeSlug(new URL(req.url).pathname);
       if (stableSlug !== null) {
         const episode = await serveStableEpisode(req, env, stableSlug);
-        if (episode !== null) return withSecurityHeaders(episode);
+        if (episode !== null) return noindex(withSecurityHeaders(episode));
         // Unknown slug / missing asset → fall through to the static 404.
       }
 
@@ -363,13 +376,15 @@ export function createWorkerHandler(content: WorkerContent) {
       if (overrideCt && assetResponse.status === 200) {
         const headers = new Headers(assetResponse.headers);
         headers.set("Content-Type", overrideCt);
-        return withCors(
-          withSecurityHeaders(
-            new Response(assetResponse.body, {
-              status: assetResponse.status,
-              statusText: assetResponse.statusText,
-              headers,
-            }),
+        return noindex(
+          withCors(
+            withSecurityHeaders(
+              new Response(assetResponse.body, {
+                status: assetResponse.status,
+                statusText: assetResponse.statusText,
+                headers,
+              }),
+            ),
           ),
         );
       }
@@ -387,7 +402,15 @@ export function createWorkerHandler(content: WorkerContent) {
       // Response so the policy survives every branch of applyRangeSupport (incl. a
       // 206). See methodology → Serving generated audio.
       let served = assetResponse;
-      if (assetResponse.status === 200 && isContentHashedAsset(path.split("/").pop() ?? "")) {
+      const basename = path.split("/").pop() ?? "";
+      // `/fonts/` ships stable (un-hashed) names but the faces change so
+      // rarely that the trade is accepted: returning readers skip the
+      // per-face conditional GET, and a (rare) font change waits out the
+      // cache or rides a renamed file (proposal 52 §4 — the header-scoped
+      // variant; content-hashing the names was rejected there).
+      const immutable =
+        isContentHashedAsset(basename) || (path.startsWith("/fonts/") && basename.length > 0);
+      if (assetResponse.status === 200 && immutable) {
         const headers = new Headers(assetResponse.headers);
         headers.set("Cache-Control", "public, max-age=31536000, immutable");
         served = new Response(assetResponse.body, {
@@ -396,7 +419,15 @@ export function createWorkerHandler(content: WorkerContent) {
           headers,
         });
       }
-      return withCors(withSecurityHeaders(await applyRangeSupport(req, served)));
+      const res = withCors(withSecurityHeaders(await applyRangeSupport(req, served)));
+      // The hashed audio representation names its stable URL as canonical
+      // (RFC 8288 + RFC 6596) — the HTTP-layer face of the
+      // resource-vs-representation split (proposal 51 §3). Path-relative URI:
+      // RFC 8288 resolves it against the request URI.
+      if (res.status < 400 && HASHED_AUDIO_RE.test(path)) {
+        res.headers.set("Link", `<${stableEpisodePath(path)}>; rel="canonical"`);
+      }
+      return noindex(res);
     },
   };
 }

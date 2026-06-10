@@ -387,3 +387,20 @@ test("a per-post og:image override wins over the generated card", () => {
   // post's share card) — correct, not a leak.
   expect(ld.author.image).toBe("https://blog.example.com/assets/authors/sebastiengllmt.png");
 });
+
+test("emits a two-level BreadcrumbList as its own JSON-LD block", () => {
+  const out = injectStructuredData(HTML, CTX);
+  const scripts = [...parseHTML(out).document.querySelectorAll('script[type="application/ld+json"]')];
+  expect(scripts.length).toBe(2);
+  const crumb = JSON.parse((scripts[1]!.textContent ?? "").replace(/\\u003c/g, "<"));
+  expect(crumb["@type"]).toBe("BreadcrumbList");
+  expect(crumb["@id"]).toBe("https://blog.example.com/posts/offer-files#breadcrumb");
+  expect(crumb.itemListElement).toEqual([
+    // First crumb: the landing page, named by the publisher (not an
+    // English-only "Home" literal on a lang-declared page).
+    { "@type": "ListItem", position: 1, name: "presidocs", item: "https://blog.example.com/" },
+    // Last crumb: the current page — name only, no `item` (its canonical
+    // already names the URL, per Google's breadcrumb guidance).
+    { "@type": "ListItem", position: 2, name: "Offer Files: shared liquidity without a chain" },
+  ]);
+});

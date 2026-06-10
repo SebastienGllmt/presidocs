@@ -142,6 +142,36 @@ export function securityHeaders(
   return headers;
 }
 
+/**
+ * `X-Robots-Tag: noindex` for responses served off the canonical host —
+ * belt-and-suspenders that keeps a preview/staging deploy (which returns the
+ * same 200s as production) out of search indexes (proposal 16 item 6). The
+ * post pages' `<link rel="canonical">` already covers the duplicate-content
+ * case; this additionally covers the landing page, feeds, and every non-HTML
+ * asset, which carry no canonical of their own. One data-keyed rule: emitted
+ * iff a canonical host is known (built from SITE_URL) AND the request host
+ * differs — so a SITE_URL-less build (the e2e fixture, a fresh repo) and
+ * every on-host production response are untouched.
+ *
+ * Mutates the passed Response's headers (call it on the fresh Response
+ * `withSecurityHeaders` returns, never on a binding's immutable one).
+ */
+export function withNoindexOffCanonicalHost(
+  req: Request,
+  res: Response,
+  siteHost: string | null | undefined,
+): Response {
+  if (!siteHost) return res;
+  let host: string;
+  try {
+    host = new URL(req.url).host;
+  } catch {
+    return res;
+  }
+  if (host !== siteHost) res.headers.set("X-Robots-Tag", "noindex");
+  return res;
+}
+
 // Return a copy of `res` with the security headers set. We rebuild the
 // Response because a Response returned from a fetch/handler may carry
 // immutable headers.
