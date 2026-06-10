@@ -27,6 +27,7 @@ import { readdir, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
+import { isPrivateBlog } from "../shared/blogPrivacy.ts";
 import { resolveFeedConfig, type FeedConfig } from "../shared/feedConfig.ts";
 import { buildAuthorMap, type PublicAuthorProfile } from "../shared/authorProfile.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
@@ -509,6 +510,15 @@ export function extractPostMeta(html: string): { title: string; summary: string 
 }
 
 async function main(): Promise<void> {
+  // A private blog emits no feeds at all: both feeds exist to ENUMERATE posts
+  // to subscribers/directories (methodology → Private blogs). Skipping here
+  // also kills the downstream consumers for free — the autodiscovery <link>s
+  // (strip-served-html gates on what this step emitted), the publish-webhook
+  // diff (reads dist/feed.xml), and the WebSub ping (no topics).
+  if (isPrivateBlog()) {
+    console.log("Feeds: private blog — feed.xml/podcast.xml suppressed.");
+    return;
+  }
   const cfg: FeedConfig = resolveFeedConfig();
   if (!cfg.baseUrl) {
     console.log("Feeds: no SITE_URL — skipping feed generation.");

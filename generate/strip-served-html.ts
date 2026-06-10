@@ -33,6 +33,7 @@ import { buildAuthorMap, type PublicAuthorProfile } from "../shared/authorProfil
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { collectHtmlFiles } from "../shared/walkHtml.ts";
 import { findManifestName } from "../shared/manifestFile.ts";
+import { isPrivateBlog } from "../shared/blogPrivacy.ts";
 
 const paths = resolveBlogPaths();
 const ROOT = paths.contentRoot;
@@ -64,6 +65,21 @@ function injectFeedLinks(html: string, hasPodcast: boolean): string {
       : "");
   return new HTMLRewriter()
     .on("head", { element(el) { el.append(links, { html: true }); } })
+    .transform(html);
+}
+
+// Private blogs: a `<meta name="robots" content="noindex">` in every page's
+// <head> — the belt for the X-Robots-Tag header's suspenders (covers any path
+// where the HTML is mirrored/cached without its response headers). Idempotent
+// on an existing robots meta (an author-supplied one wins).
+function injectNoindexMeta(html: string): string {
+  if (/<meta[^>]+name=["']robots["']/i.test(html)) return html;
+  return new HTMLRewriter()
+    .on("head", {
+      element(el) {
+        el.append(`<meta name="robots" content="noindex" />`, { html: true });
+      },
+    })
     .transform(html);
 }
 
@@ -238,6 +254,7 @@ async function main(): Promise<void> {
   // Whether the podcast autodiscovery link should exist at all (see
   // injectFeedLinks) — computed once, not per page.
   const hasPodcast = await blogHasEpisodeAudio();
+  const privateBlog = isPrivateBlog();
 
   // Per-blog PWA <head> values, read once from the blog's manifest.webmanifest.
   // If absent, the PWA inject is skipped entirely (no broken /manifest link in
@@ -353,7 +370,10 @@ async function main(): Promise<void> {
           cardUrl,
         };
         after = injectStructuredData(after, ctx);
-      } else if (file === landingPath) {
+      } else if (file === landingPath && !privateBlog) {
+        // (private: the landing is the one guessable URL in the deploy — it
+        // gets no WebSite/Blog graph describing the blog to crawlers; see
+        // methodology → Private blogs.)
         // The landing-page share card (generate/share-card.ts:_site.png). Gated
         // on the file actually existing so a deploy without share cards (no
         // SITE_URL when share-card.ts ran, or no site description) degrades
@@ -371,8 +391,13 @@ async function main(): Promise<void> {
         after = injectSiteStructuredData(after, siteCtx);
       }
       // Feed autodiscovery on every page (landing included), not just posts.
-      after = injectFeedLinks(after, hasPodcast);
+      // Private blogs emit no feeds (generate/feeds.ts), so advertising them
+      // would be a dead link on every page.
+      if (!privateBlog) after = injectFeedLinks(after, hasPodcast);
     }
+    // Private blogs: noindex meta on EVERY page, independent of SITE_URL —
+    // the privacy posture must hold even on a misconfigured build.
+    if (privateBlog) after = injectNoindexMeta(after);
 
     if (privacyHref || helpHref) {
       after = injectSiteFooter(after, { privacyHref, helpHref });

@@ -35,6 +35,7 @@ import { buildPublicPostVersionsMap } from "./publicPostVersions.ts";
 import { injectPostChrome } from "./articleChromeReserve.ts";
 import { chipsHtmlFromSource, injectFeatureChips } from "../generate/help-page.ts";
 import { injectAiSearch } from "./injectAiSearch.ts";
+import { isPrivateBlog } from "./blogPrivacy.ts";
 import { resolveFeedConfig } from "./feedConfig.ts";
 
 // The above-the-fold Red Hat faces worth preloading: body prose (Text 400),
@@ -130,7 +131,11 @@ export function htmlHeadPlugin(
           // [Ask this blog, feature chips, post list] (both insert before
           // <ul class="posts">). Chips are dev-only here; prod adds them
           // post-build in generate/help-page.ts.
-          html = injectAiSearch(html, { siteUrl });
+          // Private blogs get no Ask-this-blog: its prompt hands an external
+          // LLM the blog URL + the llms.txt post index — it both requires a
+          // leak artifact (suppressed in site-discovery) and teaches a
+          // third-party model the content (methodology → Private blogs).
+          if (!isPrivateBlog()) html = injectAiSearch(html, { siteUrl });
           if (opts.injectChips) {
             html = injectFeatureChips(html, await chipsHtmlFromSource());
           }

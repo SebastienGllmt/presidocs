@@ -41,6 +41,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parseHTML } from "linkedom";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
+import { isPrivateBlog } from "../shared/blogPrivacy.ts";
 import { resolveFeedConfig } from "../shared/feedConfig.ts";
 import { buildAuthorMap } from "../shared/authorProfile.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
@@ -423,6 +424,10 @@ export function buildHelpHtml(ctx: HelpContext, questions: HelpQuestion[]): stri
     `<head>\n` +
     `<meta charset="UTF-8" />\n` +
     `<meta name="viewport" content="width=device-width, initial-scale=1" />\n` +
+    // Private blogs noindex every page; /help is generated AFTER the
+    // strip-served-html rewrite (whose injector covers the other pages), so
+    // it carries its own meta — audit-private.ts catches this going stale.
+    (isPrivateBlog() ? `<meta name="robots" content="noindex" />\n` : "") +
     `<title>How this blog works — ${escHtml(title)}</title>\n` +
     `<meta name="description" content="${escAttr(metaDesc)}" />\n` +
     ctx.cssLinks +

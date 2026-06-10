@@ -193,3 +193,14 @@ test("withNoindexOffCanonicalHost: noindex only off the canonical host, only whe
   const port = withNoindexOffCanonicalHost(req("http://localhost:3000/"), fresh(), "localhost:3000");
   expect(port.headers.get("X-Robots-Tag")).toBeNull();
 });
+
+test("withNoindexOffCanonicalHost: a private blog noindexes everywhere, canonical host included", () => {
+  const fresh = () => withSecurityHeaders(new Response("x"));
+  const onHost = withNoindexOffCanonicalHost(
+    new Request("https://blog.example.com/posts/x--Vq3xW8tR4hZcNdP5"), fresh(), "blog.example.com", true,
+  );
+  expect(onHost.headers.get("X-Robots-Tag")).toBe("noindex");
+  // Even with no baked canonical host: private wins on its own.
+  const noHost = withNoindexOffCanonicalHost(new Request("http://localhost:3000/"), fresh(), null, true);
+  expect(noHost.headers.get("X-Robots-Tag")).toBe("noindex");
+});

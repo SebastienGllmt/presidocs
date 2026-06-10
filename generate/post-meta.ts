@@ -16,6 +16,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, sep } from "node:path";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
+import { isPrivateBlog } from "../shared/blogPrivacy.ts";
 import { collectHtmlFiles } from "../shared/walkHtml.ts";
 
 const paths = resolveBlogPaths();
@@ -77,6 +78,12 @@ ${entriesSrc}
 // Host of the canonical SITE_URL at build time, or null when SITE_URL was
 // unset. The Worker noindexes responses served from any other host.
 export const SITE_HOST: string | null = ${JSON.stringify(siteHost)};
+
+// Whether this build is a private (capability-URL) blog — BLOG_PRIVATE at
+// build time. The Worker noindexes EVERY response when true (methodology →
+// Private blogs); baked so privacy can't drift between a build and its
+// deploy config.
+export const SITE_PRIVATE: boolean = ${isPrivateBlog()};
 `;
 
   await mkdir(dirname(OUT_PATH), { recursive: true });

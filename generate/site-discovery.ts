@@ -28,6 +28,7 @@ import { readdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
+import { isPrivateBlog } from "../shared/blogPrivacy.ts";
 import { resolveFeedConfig } from "../shared/feedConfig.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 import { escapeXml, extractPostMeta, readSiteMeta } from "./feeds.ts";
@@ -37,8 +38,12 @@ const paths = resolveBlogPaths();
 // ---- pure builders (exported for tests) ------------------------------------
 
 export type RobotsOptions = {
-  /** Absolute URL of the sitemap, e.g. `https://blog.example.com/sitemap.xml`. */
-  sitemapUrl: string;
+  /**
+   * Absolute URL of the sitemap, e.g. `https://blog.example.com/sitemap.xml` —
+   * or null to omit the `Sitemap:` line entirely (a private blog emits
+   * robots.txt with no sitemap to point at; see methodology → Private blogs).
+   */
+  sitemapUrl: string | null;
   /**
    * Allow AI crawlers (default, true) or block the named training/answer bots
    * (false). The stance is deliberate and the file calls it out so a future
@@ -83,8 +88,10 @@ export function buildRobotsTxt(opts: RobotsOptions): string {
       lines.push("");
     }
   }
-  lines.push(`Sitemap: ${opts.sitemapUrl}`);
-  lines.push("");
+  if (opts.sitemapUrl !== null) {
+    lines.push(`Sitemap: ${opts.sitemapUrl}`);
+    lines.push("");
+  }
   return lines.join("\n");
 }
 
@@ -233,8 +240,18 @@ async function main(): Promise<void> {
     ...posts.map((p) => ({ loc: `${baseUrl}${p.postPath}`, lastmod: p.updated })),
   ];
 
-  const sitemapUrl = `${baseUrl}/sitemap.xml`;
-  const aiStance = (process.env.ROBOTS_AI_CRAWLERS ?? "allow").trim().toLowerCase();
+  // Private blogs (methodology → Private blogs): robots.txt is still emitted
+  // — default-ALLOW with no Sitemap line, because the index-exclusion work is
+  // done by the noindex header/meta, and a blanket `Disallow: /` would
+  // BACKFIRE: a crawler forbidden from fetching a leaked link never sees the
+  // noindex, so the URL can be indexed URL-only. The AI-crawler stance
+  // defaults to deny for a private blog (training/answer bots are exactly who
+  // it wants gone); an explicit ROBOTS_AI_CRAWLERS still wins either way.
+  const privateBlog = isPrivateBlog();
+  const sitemapUrl = privateBlog ? null : `${baseUrl}/sitemap.xml`;
+  const aiStance = (process.env.ROBOTS_AI_CRAWLERS ?? (privateBlog ? "deny" : "allow"))
+    .trim()
+    .toLowerCase();
   // Anything other than the explicit deny keeps the default-allow posture.
   const allowAi = aiStance !== "deny";
 
@@ -243,6 +260,12 @@ async function main(): Promise<void> {
     buildRobotsTxt({ sitemapUrl, allowAi }),
     "utf8",
   );
+  if (privateBlog) {
+    // sitemap.xml and llms.txt exist to ENUMERATE posts — the exact thing a
+    // capability-URL blog must never do. Nothing else to emit.
+    console.log(`Site discovery: dist/robots.txt (AI ${allowAi ? "allow" : "deny"}, no sitemap) — private blog; sitemap.xml/llms.txt suppressed.`);
+    return;
+  }
   await writeFile(join(distDir, "sitemap.xml"), buildSitemapXml(sitemapEntries), "utf8");
 
   // llms.txt — points at /podcast.xml only when feeds.ts actually emitted it

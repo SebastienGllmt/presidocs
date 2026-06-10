@@ -76,6 +76,10 @@ export type WorkerContent = {
   // shared/securityHeaders.ts:withNoindexOffCanonicalHost. Optional/null →
   // no noindex anywhere (a SITE_URL-less build has no canonical to defend).
   siteHost?: string | null;
+  // Private (capability-URL) blog (SITE_PRIVATE from .generated/postMeta.ts,
+  // baked from BLOG_PRIVATE at build): EVERY response carries
+  // `X-Robots-Tag: noindex`, canonical host included. Optional → public.
+  sitePrivate?: boolean;
 };
 
 // Add HTTP Range support to a Static Assets response.
@@ -338,7 +342,7 @@ export function createWorkerHandler(content: WorkerContent) {
       // Every egress wraps in noindex-off-canonical-host (a data-keyed no-op
       // on the canonical host / without a baked SITE_HOST).
       const noindex = (res: Response): Response =>
-        withNoindexOffCanonicalHost(req, res, content.siteHost);
+        withNoindexOffCanonicalHost(req, res, content.siteHost, content.sitePrivate ?? false);
 
       const apiResponse = handleApi(req, env);
       if (apiResponse !== null) {

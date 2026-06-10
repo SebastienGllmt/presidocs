@@ -160,7 +160,16 @@ export function withNoindexOffCanonicalHost(
   req: Request,
   res: Response,
   siteHost: string | null | undefined,
+  privateBlog = false,
 ): Response {
+  // A private (capability-URL) blog noindexes EVERY response, the canonical
+  // host included — links exist only in the hands of people they were given
+  // to, and a leaked one must not seed an index (methodology → Private
+  // blogs). One rule, two data inputs: noindex iff private OR off-host.
+  if (privateBlog) {
+    res.headers.set("X-Robots-Tag", "noindex");
+    return res;
+  }
   if (!siteHost) return res;
   let host: string;
   try {
