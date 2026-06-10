@@ -13,7 +13,7 @@
 // "Engagement analytics"). No build-time inject is needed.
 
 import { readdir, readFile, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { stripServedHtml } from "../shared/stripServedHtml.ts";
 import { injectSiteFooter } from "../shared/injectFooter.ts";
@@ -50,16 +50,33 @@ function distFileToPostPath(file: string): string {
 
 // Feed autodiscovery links, added to every page's <head> when feeds are built
 // (i.e. SITE_URL is set, the same gate generate/feeds.ts uses). Relative hrefs
-// resolve against the page origin; the podcast link is harmless if a given
-// deploy has no audio (the file just 404s).
-function injectFeedLinks(html: string): string {
+// resolve against the page origin. The podcast link is gated on the blog
+// actually having an audio episode — the same ≥1-audio-post signal feeds.ts
+// keys podcast.xml emission on (read upstream from generated/, since this
+// step runs BEFORE feeds.ts in the build) — so an audio-less blog never
+// advertises a feed that 404s (the broken-links gate enforces this).
+function injectFeedLinks(html: string, hasPodcast: boolean): string {
   if (html.includes('type="application/atom+xml"')) return html;
   const links =
     `<link rel="alternate" type="application/atom+xml" title="Atom feed" href="/feed.xml" />` +
-    `<link rel="alternate" type="application/rss+xml" title="Podcast feed" href="/podcast.xml" />`;
+    (hasPodcast
+      ? `<link rel="alternate" type="application/rss+xml" title="Podcast feed" href="/podcast.xml" />`
+      : "");
   return new HTMLRewriter()
     .on("head", { element(el) { el.append(links, { html: true }); } })
     .transform(html);
+}
+
+// The ≥1-audio-post signal: any generated/<slug>/ with a narration manifest
+// (the artifact feeds.ts derives episodes from). False when generated/ is
+// absent entirely (a narration-free blog — e.g. the engine's e2e fixture).
+async function blogHasEpisodeAudio(): Promise<boolean> {
+  if (!existsSync(paths.generatedDir)) return false;
+  for (const entry of readdirSync(paths.generatedDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if ((await findManifestName(join(paths.generatedDir, entry.name))) !== null) return true;
+  }
+  return false;
 }
 
 // Advertise the post's Markdown twin (`/posts/<slug>.md`, emitted by
@@ -218,6 +235,9 @@ async function main(): Promise<void> {
   // still works, it just doesn't get rich cards in this deploy. Prod always
   // knows its hostname.
   const siteUrl = (process.env.SITE_URL ?? "").trim().replace(/\/+$/, "");
+  // Whether the podcast autodiscovery link should exist at all (see
+  // injectFeedLinks) — computed once, not per page.
+  const hasPodcast = await blogHasEpisodeAudio();
 
   // Per-blog PWA <head> values, read once from the blog's manifest.webmanifest.
   // If absent, the PWA inject is skipped entirely (no broken /manifest link in
@@ -351,7 +371,7 @@ async function main(): Promise<void> {
         after = injectSiteStructuredData(after, siteCtx);
       }
       // Feed autodiscovery on every page (landing included), not just posts.
-      after = injectFeedLinks(after);
+      after = injectFeedLinks(after, hasPodcast);
     }
 
     if (privacyHref || helpHref) {
