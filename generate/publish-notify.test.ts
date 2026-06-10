@@ -7,8 +7,11 @@ import {
   cloudEventPayload,
   decideSnapshot,
   deliverJobs,
+  buildSmokeJob,
   discordPayload,
+  runSmoke,
   shareCardUrlFor,
+  SMOKE_ENTRY,
   EVENT_TYPE,
   feedEntryIds,
   genericPayload,
@@ -627,4 +630,31 @@ test("runNotify — a missing snapshot announces nothing (under-notify, no throw
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- --smoke (live-channel acceptance check; transport mocked here) ---------
+
+test("buildSmokeJob — infers the channel from the webhook host", () => {
+  expect(buildSmokeJob("https://discord.com/api/webhooks/1/x").label).toBe("discord");
+  expect(buildSmokeJob("https://discordapp.com/api/webhooks/1/x").label).toBe("discord");
+  expect(buildSmokeJob("https://hooks.slack.com/services/T/B/x").label).toBe("slack");
+  expect(buildSmokeJob("https://example.com/hook").label).toBe("generic");
+});
+
+test("buildSmokeJob — fixed fixture body; --image threads into the rich shapes", () => {
+  const discord = JSON.parse(buildSmokeJob("https://discord.com/api/webhooks/1/x", "https://b.example/card.png").body);
+  expect(discord.embeds[0].title).toBe(SMOKE_ENTRY.title);
+  expect(discord.embeds[0].image.url).toBe("https://b.example/card.png");
+  const slack = JSON.parse(buildSmokeJob("https://hooks.slack.com/services/T/B/x").body);
+  expect(slack.blocks).toHaveLength(1); // no --image → no image block
+  expect(slack.text).toContain(SMOKE_ENTRY.title);
+});
+
+test("runSmoke — true on 2xx, false (loud) on rejection or network failure", async () => {
+  const accept = (async () => new Response("ok", { status: 200 })) as unknown as typeof fetch;
+  expect(await runSmoke("https://example.com/hook", null, accept)).toBe(true);
+  const reject = (async () => new Response('{"error":"invalid_blocks"}', { status: 400 })) as unknown as typeof fetch;
+  expect(await runSmoke("https://hooks.slack.com/services/T/B/x", null, reject)).toBe(false);
+  const boom = (async () => { throw new Error("ECONNREFUSED"); }) as unknown as typeof fetch;
+  expect(await runSmoke("https://example.com/hook", null, boom)).toBe(false);
 });

@@ -357,6 +357,82 @@ export async function deliverJobs(
 }
 
 // ---------------------------------------------------------------------------
+// Live-channel smoke (--smoke) — manual acceptance validation, NEVER in CI
+// ---------------------------------------------------------------------------
+
+// The localhost suite proves payload SHAPE (a Bun.serve recorder accepts any
+// JSON); it cannot prove that real Discord/Slack ACCEPT our bodies (embed
+// limits, Block Kit schema validity). Combined with the fail-silent deploy
+// posture, a malformed payload would be dropped without a trace. `--smoke
+// <url>` closes that gap by hand: POST one fixed fixture message to a
+// throwaway real channel and report the HTTP status + response body LOUDLY
+// (exit 1 on rejection — this is a diagnostic, not a deploy step, so the
+// fail-silent rule deliberately does not apply). One manual run per builder
+// change is enough to catch a rejected shape. Proposal 33 §2.
+
+/** The fixed, obviously-a-test entry the smoke POSTs. */
+export const SMOKE_ENTRY: FeedEntry = {
+  id: "tag:example.com,2026:/posts/webhook-smoke-test",
+  title: "presidocs webhook smoke test — please ignore",
+  url: "https://example.com/posts/webhook-smoke-test",
+  summary: "A fixed test message from `publish-notify.ts --smoke`. If you can read this, the channel accepts the current payload shape.",
+  published: "2026-01-01T00:00:00.000Z",
+};
+
+/**
+ * Build the one smoke Job for `url`, inferring the channel from the host the
+ * same way an operator would route it (Discord/Slack webhook URLs are
+ * host-distinctive; anything else gets the generic JSON body — plain shape,
+ * no CloudEvents/signing, since the smoke validates the CHAT payloads).
+ * `imageUrl` (the optional `--image <url>` flag) exercises the share-card
+ * embed-image / image-block path with an asset the operator knows is
+ * fetchable — Slack validates `image_url` fetchability at POST time, so a
+ * baked-in dead URL would false-fail the smoke; omitted → text-only shapes.
+ */
+export function buildSmokeJob(url: string, imageUrl: string | null = null): Job {
+  let host = "";
+  try {
+    host = new URL(url).host;
+  } catch {
+    /* not a URL — let the fetch fail loudly below */
+  }
+  const cfg = resolveNotifyConfig(
+    host === "discord.com" || host === "discordapp.com"
+      ? { DISCORD_WEBHOOK_URL: url }
+      : host === "hooks.slack.com"
+        ? { SLACK_WEBHOOK_URL: url }
+        : { WEBHOOK_URL: url },
+  );
+  const jobs = buildJobs(SMOKE_ENTRY, cfg, "https://example.com/feed.xml", imageUrl);
+  return jobs[0]!;
+}
+
+/** POST the smoke job and report; true iff the channel accepted it (2xx). */
+export async function runSmoke(
+  url: string,
+  imageUrl: string | null = null,
+  fetchImpl: typeof fetch = fetch,
+): Promise<boolean> {
+  const job = buildSmokeJob(url, imageUrl);
+  console.log(`smoke: POSTing the ${job.label} fixture to ${url}${imageUrl ? ` (image: ${imageUrl})` : ""}`);
+  try {
+    const res = await fetchImpl(job.url, { method: "POST", headers: job.headers, body: job.body });
+    const body = (await res.text()).slice(0, 500);
+    if (res.ok) {
+      console.log(`smoke: ACCEPTED ${res.status}${body ? ` — ${body}` : ""}`);
+      return true;
+    }
+    // The rejection body is the whole point — Discord/Slack name the offending
+    // field there ("invalid_blocks", embed limit errors).
+    console.error(`smoke: REJECTED ${res.status} ${res.statusText}${body ? ` — ${body}` : ""}`);
+    return false;
+  } catch (err) {
+    console.error(`smoke: POST failed:`, err);
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Phases (--snapshot / --notify)
 // ---------------------------------------------------------------------------
 
@@ -487,7 +563,19 @@ async function main(): Promise<void> {
   const mode = process.argv[2];
   if (mode === "--snapshot") return runSnapshot();
   if (mode === "--notify") return runNotify();
-  console.warn("publish-notify: pass --snapshot (pre-deploy) or --notify (post-deploy).");
+  if (mode === "--smoke") {
+    const url = process.argv[3];
+    if (!url) {
+      console.error("publish-notify --smoke: pass the throwaway channel's webhook URL.");
+      process.exit(1);
+    }
+    const imageIdx = process.argv.indexOf("--image");
+    const imageUrl = imageIdx > 0 ? (process.argv[imageIdx + 1] ?? null) : null;
+    // Diagnostic, not a deploy step: a rejection must be LOUD (exit 1), the
+    // inverse of the deploy path's fail-silent posture.
+    process.exit((await runSmoke(url, imageUrl)) ? 0 : 1);
+  }
+  console.warn("publish-notify: pass --snapshot (pre-deploy), --notify (post-deploy), or --smoke <url> [--image <url>] (manual acceptance check).");
 }
 
 if (import.meta.main) {
