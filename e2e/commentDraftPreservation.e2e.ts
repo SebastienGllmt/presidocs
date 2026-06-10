@@ -22,7 +22,12 @@
 
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import { chromium, type Page } from "playwright";
-import { mintSessionCookie, resolveBlogDir, startBlogServer, type BlogServer } from "./harness.ts";
+import { firstPostSlug, mintSessionCookie, resolveBlogDir, startBlogServer, type BlogServer } from "./harness.ts";
+
+// The deployable post the suite drives — content-agnostic (harness.firstPostSlug),
+// so the same tests run against any content repo, including the engine's own
+// e2e fixture (templates/content-repo).
+const POST_PATH = `/posts/${firstPostSlug(resolveBlogDir())}`;
 
 const CHROME = process.env.PRESIDOCS_E2E_CHROME || "/usr/bin/google-chrome";
 
@@ -121,7 +126,7 @@ test("[chromium] a half-typed reply survives opening a new comment", async () =>
     const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
     await ctx.addCookies([{ name: cookie.name, value: cookie.value, domain: "localhost", path: "/", httpOnly: true, sameSite: "Lax" }]);
     const page = await ctx.newPage();
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
 
     const blocks = await normalParagraphIndices(page);
     expect(blocks.length, "post should have several normal paragraphs").toBeGreaterThan(2);
@@ -175,7 +180,7 @@ test("[chromium] an in-progress draft survives opening another new comment", asy
     const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
     await ctx.addCookies([{ name: cookie.name, value: cookie.value, domain: "localhost", path: "/", httpOnly: true, sameSite: "Lax" }]);
     const page = await ctx.newPage();
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
 
     const blocks = await normalParagraphIndices(page);
     expect(blocks.length, "post should have several normal paragraphs").toBeGreaterThan(2);
@@ -221,7 +226,7 @@ test("[chromium] Esc discards an empty new comment but keeps one with text", asy
     const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
     await ctx.addCookies([{ name: cookie.name, value: cookie.value, domain: "localhost", path: "/", httpOnly: true, sameSite: "Lax" }]);
     const page = await ctx.newPage();
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
 
     const blocks = await normalParagraphIndices(page);
     expect(blocks.length, "post should have several normal paragraphs").toBeGreaterThan(2);
@@ -277,7 +282,7 @@ test("[chromium] a live reply survives a re-render — text, caret, focus, no vi
     const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
     await ctx.addCookies([{ name: cookie.name, value: cookie.value, domain: "localhost", path: "/", httpOnly: true, sameSite: "Lax" }]);
     const page = await ctx.newPage();
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
 
     const blocks = await normalParagraphIndices(page);
     await seedThreadViaUI(page, blocks[0]!, "the original comment");
@@ -332,7 +337,7 @@ test("[chromium] a no-delta background poll does not rebuild the live composer",
     const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
     await ctx.addCookies([{ name: cookie.name, value: cookie.value, domain: "localhost", path: "/", httpOnly: true, sameSite: "Lax" }]);
     const page = await ctx.newPage();
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
 
     const blocks = await normalParagraphIndices(page);
     await seedThreadViaUI(page, blocks[0]!, "the original comment");
@@ -384,7 +389,7 @@ test("[chromium] Esc during IME composition doesn't discard a draft; a normal Es
     const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
     await ctx.addCookies([{ name: cookie.name, value: cookie.value, domain: "localhost", path: "/", httpOnly: true, sameSite: "Lax" }]);
     const page = await ctx.newPage();
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
 
     const blocks = await normalParagraphIndices(page);
     await selectInBlock(page, blocks[0]!);
@@ -426,7 +431,7 @@ test("[chromium] an in-progress draft body survives a full page reload", async (
     const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
     await ctx.addCookies([{ name: cookie.name, value: cookie.value, domain: "localhost", path: "/", httpOnly: true, sameSite: "Lax" }]);
     const page = await ctx.newPage();
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
 
     const blocks = await normalParagraphIndices(page);
     await selectInBlock(page, blocks[0]!);

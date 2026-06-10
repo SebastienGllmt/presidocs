@@ -19,5 +19,8 @@
 
 #figure figcaption {
   font-size: 0.85rem;
-  opacity: 0.7;
+  /* De-emphasise with an opaque muted token, never `opacity` — a dimmed
+     label composites toward the backdrop and silently fails the contrast
+     gate (DESIGN.md §1, the "opacity trap"). */
+  color: var(--fig-muted, #555c63);
 }

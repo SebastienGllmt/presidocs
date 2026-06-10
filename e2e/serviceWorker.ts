@@ -26,7 +26,12 @@
 
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import type { Browser, BrowserContext, Page } from "playwright";
-import { launchChrome, resolveBlogDir, startWranglerServer, type BlogServer } from "./harness.ts";
+import { firstPostSlug, launchChrome, resolveBlogDir, startWranglerServer, type BlogServer } from "./harness.ts";
+
+// The deployable post the suite drives — content-agnostic (harness.firstPostSlug),
+// so the same tests run against any content repo, including the engine's own
+// e2e fixture (templates/content-repo).
+const POST_PATH = `/posts/${firstPostSlug(resolveBlogDir())}`;
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { WebAppManifest } from "web-app-manifest";
@@ -100,14 +105,14 @@ test("a previously-visited post still loads offline — network-first nav falls 
 
     // Visit the post ONLINE first → the SW's network-first handler caches the
     // response into `runtime-<VERSION>`.
-    await page.goto(`${server.baseURL}/posts/offer-files`, { waitUntil: "load", timeout: 30_000 });
+    await page.goto(`${server.baseURL}${POST_PATH}`, { waitUntil: "load", timeout: 30_000 });
     const onlineTitle = await page.title();
     expect(onlineTitle.length, "the post loads online with a title").toBeGreaterThan(0);
 
     // Cut the network, then re-navigate to the SAME post. With no network, a
     // network-first nav can only resolve if the SW serves the cached copy.
     await ctx.setOffline(true);
-    const resp = await page.goto(`${server.baseURL}/posts/offer-files`, { waitUntil: "load", timeout: 30_000 });
+    const resp = await page.goto(`${server.baseURL}${POST_PATH}`, { waitUntil: "load", timeout: 30_000 });
     expect(resp?.ok(), "the offline navigation resolves (served from the SW cache)").toBe(true);
 
     const offline = await page.evaluate(() => ({ title: document.title, bodyLen: document.body.innerText.length }));
@@ -133,7 +138,7 @@ test("content-addressed assets are cache-first — a hashed chunk is cached and 
   try {
     const page = await loadControlled(ctx, `${server.baseURL}/`);
     // Visit a post online so its hashed JS/CSS load through the SW's cacheFirst.
-    await page.goto(`${server.baseURL}/posts/offer-files`, { waitUntil: "load", timeout: 30_000 });
+    await page.goto(`${server.baseURL}${POST_PATH}`, { waitUntil: "load", timeout: 30_000 });
 
     // Discover a real content-addressed asset the page actually loaded.
     const assetUrl = await page.evaluate(() => {
@@ -229,7 +234,7 @@ test("a redeploy (fresh VERSION) reaps the previous deploy's caches", async () =
   try {
     const page = await loadControlled(ctx, `${server.baseURL}/`);
     // Visit a post so the OLD deploy owns both a static- and a runtime- cache.
-    await page.goto(`${server.baseURL}/posts/offer-files`, { waitUntil: "load", timeout: 30_000 });
+    await page.goto(`${server.baseURL}${POST_PATH}`, { waitUntil: "load", timeout: 30_000 });
 
     const v1 = (swOriginal.match(/const VERSION = "([^"]*)"/) || [])[1] ?? "";
     expect(v1, "the built sw.js carries a VERSION").toMatch(/^\d+$/);

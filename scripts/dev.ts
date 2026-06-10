@@ -103,10 +103,17 @@ function watchDir(dir: string, label: string): FSWatcher | null {
   try {
     return watch(dir, { recursive: true }, (_event, file) => {
       if (!file) return;
-      // Skip generator outputs to avoid restart loops.
-      if (file.includes(".generated") || file.includes(".comments-dev")) return;
+      // Skip any path with a dot-prefixed segment (generator outputs like
+      // .generated/.comments-dev, runtime state like .wrangler, editor
+      // dotfiles) or a node_modules segment, at ANY depth — not just the top
+      // level. The depth matters when a blog lives inside the watched engine
+      // tree (the e2e fixture at templates/content-repo): its own Miniflare
+      // state writes under <engine>/templates/content-repo/.wrangler would
+      // otherwise read as engine changes and restart-loop the server.
+      const segments = file.split(/[\\/]/);
+      if (segments.some((s) => s.startsWith(".") || s === "node_modules")) return;
       // Skip transient editor swap files.
-      if (file.startsWith(".") || file.endsWith("~")) return;
+      if (file.endsWith("~")) return;
       scheduleRestart(`${label}: ${file}`);
     });
   } catch (err) {

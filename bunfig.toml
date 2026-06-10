@@ -20,3 +20,10 @@ minimumReleaseAge = 604800
 # frozenLockfile is deliberately NOT set here: with a single author and no CI, a
 # global frozen install only adds local friction (an intended dep bump would need a
 # flag). It belongs in a future CI lane as `bun install --frozen-lockfile`, not here.
+
+[test]
+# templates/content-repo doubles as the e2e fixture: once bootstrapped it holds
+# its own node_modules and an `engine` symlink back to this repo. Keep the
+# engine's `bun test` out of that whole subtree (the symlink would otherwise
+# let the glob re-enter the engine through a second path).
+pathIgnorePatterns = ["templates/content-repo/**"]

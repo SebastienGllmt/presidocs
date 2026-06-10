@@ -15,12 +15,18 @@
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import type { Browser, BrowserContext, Page } from "playwright";
 import {
+  firstPostSlug,
   launchChrome,
   mintSessionCookie,
   resolveBlogDir,
   startBlogServer,
   type BlogServer,
 } from "./harness.ts";
+
+// The deployable post the suite drives — content-agnostic (harness.firstPostSlug),
+// so the same tests run against any content repo, including the engine's own
+// e2e fixture (templates/content-repo).
+const POST_PATH = `/posts/${firstPostSlug(resolveBlogDir())}`;
 
 let browser: Browser;
 let server: BlogServer;
@@ -107,7 +113,7 @@ test("the comments button + menu activate at a sub-1100px viewport (mouse)", asy
   const ctx = await narrowSignedIn("menu-activate");
   const page = await ctx.newPage();
   try {
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     const btn = page.getByRole("button", { name: "Comments" });
     await btn.waitFor({ state: "visible", timeout: 15_000 });
     expect(await page.evaluate(() => matchMedia("(max-width: 1099px)").matches), "viewport is in mobile mode").toBe(true);
@@ -129,7 +135,7 @@ test("select → menu → compose creates a thread on the SELECTED text (capture
   const ctx = await narrowSignedIn("menu-compose");
   const page = await ctx.newPage();
   try {
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     await page.locator(".cmt-comments-btn").waitFor({ state: "visible", timeout: 15_000 });
     const blocks = await normalParagraphIndices(page);
     expect(blocks.length, "post has prose paragraphs").toBeGreaterThan(2);
@@ -157,7 +163,7 @@ test("select → menu → compose creates a thread on the SELECTED text (capture
     await draft.waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
 
     // Reload → the thread persisted, anchored to the text we originally selected.
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     await page.locator(".cmt-highlight").first().waitFor({ state: "attached", timeout: 15_000 });
     const quotes = await page.evaluate(() =>
       [...document.querySelectorAll<HTMLElement>(".cmt-card .cmt-quote-text")].map((e) => e.textContent ?? ""),
@@ -177,7 +183,7 @@ test("signed in with no selection, the menu shows the hint and no compose entry"
   const ctx = await narrowSignedIn("menu-hint");
   const page = await ctx.newPage();
   try {
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     const btn = page.getByRole("button", { name: "Comments" });
     await btn.waitFor({ state: "visible", timeout: 15_000 });
     // Make sure there's no stray selection.
@@ -198,7 +204,7 @@ test("the pending-selection cue (body.cmt-has-selection) follows the live select
   const ctx = await narrowSignedIn("menu-cue");
   const page = await ctx.newPage();
   try {
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     await page.locator(".cmt-comments-btn").waitFor({ state: "visible", timeout: 15_000 });
     const blocks = await normalParagraphIndices(page);
 
@@ -220,7 +226,7 @@ test("a figure comment opens its thread in a card under the button", async () =>
   const ctx = await narrowSignedIn("menu-figure");
   const page = await ctx.newPage();
   try {
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     await page.locator(".cmt-comments-btn").waitFor({ state: "visible", timeout: 15_000 });
 
     const addBtn = page.locator(".cmt-graphic-btn").first();
@@ -237,7 +243,7 @@ test("a figure comment opens its thread in a card under the button", async () =>
     await draft.waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
 
     // Reload → open the figure's thread from its indicator badge.
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     const indicator = page.locator(".cmt-graphic-indicator:not([hidden])").first();
     await indicator.waitFor({ state: "visible", timeout: 15_000 });
     await indicator.click({ force: true });

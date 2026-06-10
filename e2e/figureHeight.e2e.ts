@@ -8,9 +8,9 @@
 // conformance gate (figureJourney.e2e.ts) proves a figure is deterministic and
 // seekable; it says nothing about whether its LAYOUT stays put. This file does.
 //
-// HOW: load the same two posts the conformance gate loads — between them
-// offer-files + the `_figjourneys` fixture embed every figure that registers a
-// journey — enumerate the registry, and for each figure replay its journey the
+// HOW: load the same posts the conformance gate loads (every post whose source
+// embeds a figure module — between them they carry every figure that registers
+// a journey), enumerate the registry, and for each figure replay its journey the
 // exact way generate/capture-figures.ts does (reset() then forward seek() at the
 // capture fps). At every frame we read `el.offsetHeight` — the LAYOUT height,
 // which ignores CSS transforms, so figures whose inner pieces only translate/
@@ -43,15 +43,15 @@ import { test, expect, beforeAll, afterAll } from "bun:test";
 import type { Browser, Page } from "playwright";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { launchChrome, startBlogServer, resolveBlogDir, type BlogServer } from "./harness.ts";
+import { figurePostSlugs, launchChrome, startBlogServer, resolveBlogDir, type BlogServer } from "./harness.ts";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { CAPTURE_DEFAULTS } from "../generate/capture-defaults.ts";
 import { figureEnvHash, figureCacheKey } from "../generate/figureCacheKey.ts";
 
-// Same two posts the conformance gate uses; together they embed every figure
-// that registers a journey (offer-files carries the in-use ones; `_figjourneys`
-// the two no published post embeds). Keep in sync with figureJourney.e2e.ts.
-const POSTS = ["offer-files", "_figjourneys"];
+// Same discovery the conformance gate uses (figurePostSlugs): every post whose
+// source loads a figure module. On personal-blog that's offer-files (the in-use
+// figures) + `_figjourneys` (the ones no published post embeds).
+const POSTS = figurePostSlugs(resolveBlogDir());
 
 // A layout shift below ~1px doesn't visibly move content, and offsetHeight is an
 // integer so transform-only animations report a flat height. 0.5 means "any

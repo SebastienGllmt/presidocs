@@ -19,7 +19,12 @@
 
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import { chromium, firefox, webkit, type Browser, type BrowserType, type Page } from "playwright";
-import { mintSessionCookie, resolveBlogDir, startBlogServer, type BlogServer } from "./harness.ts";
+import { firstPostSlug, mintSessionCookie, resolveBlogDir, startBlogServer, type BlogServer } from "./harness.ts";
+
+// The deployable post the suite drives — content-agnostic (harness.firstPostSlug),
+// so the same tests run against any content repo, including the engine's own
+// e2e fixture (templates/content-repo).
+const POST_PATH = `/posts/${firstPostSlug(resolveBlogDir())}`;
 
 const CHROME = process.env.PRESIDOCS_E2E_CHROME || "/usr/bin/google-chrome";
 
@@ -46,6 +51,12 @@ async function gotoPost(page: Page, path: string): Promise<void> {
       const resp = await page.goto(`${server.baseURL}${path}`, { waitUntil: "domcontentloaded", timeout: 8000 });
       if (resp && resp.ok()) {
         await page.waitForLoadState("networkidle").catch(() => {});
+        // Comments boot lazily (commentsLoader: first interaction, else
+        // requestIdleCallback / a 2.5s timer fallback where rIC is missing —
+        // i.e. WebKit). On a short post networkidle resolves before that
+        // fallback fires, so wait for the boot's block annotation rather than
+        // assuming load implies booted. 10s ≫ the fallback timer.
+        await page.waitForSelector("[data-comment-block-id]", { timeout: 10_000 });
         return;
       }
     } catch {
@@ -100,7 +111,25 @@ async function seedThreadViaUI(page: Page, blockIndex: number, body: string): Pr
   }, blockIndex);
   expect(ok, `block ${blockIndex} should be a commentable text block`).toBe(true);
 
-  await page.locator(".cmt-action-bar:not([hidden]) .cmt-action-comment").waitFor({ state: "visible", timeout: 5000 });
+  // The action bar follows selectionchange, which the comments boot wires
+  // shortly AFTER the block annotation gotoPost waits on — so a selection set
+  // in that window can land on deaf ears (seen as a rare Firefox flake). A
+  // selection is re-settable for free, so retry the select→pill handshake
+  // instead of widening a sleep.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await page.locator(".cmt-action-bar:not([hidden]) .cmt-action-comment").waitFor({ state: "visible", timeout: 3000 });
+      break;
+    } catch (err) {
+      if (attempt >= 2) throw err;
+      await page.evaluate(() => {
+        const sel = window.getSelection()!;
+        const range = sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null;
+        sel.removeAllRanges();
+        if (range) sel.addRange(range); // re-fire selectionchange with the same range
+      });
+    }
+  }
   // Handler is on mousedown (so the selection isn't lost to focus first).
   await page.evaluate(() =>
     document.querySelector(".cmt-action-comment")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })),
@@ -109,6 +138,13 @@ async function seedThreadViaUI(page: Page, blockIndex: number, body: string): Pr
   const draft = page.locator('.cmt-card[data-draft="true"]');
   await draft.locator("textarea").waitFor({ state: "visible", timeout: 5000 });
   await draft.locator("textarea").fill(body);
+  // Freeze the card's `transition: top 180ms` before the real click: while
+  // adjustCardStacking settles, an anchored card keeps moving and Playwright's
+  // actionability check ("element is not stable" / "outside of the viewport")
+  // can loop until timeout — the same reason the measuring code below disables
+  // it. Final positions are unaffected (a transition animates, it doesn't
+  // decide the destination).
+  await page.addStyleTag({ content: ".cmt-card { transition: none !important }" });
   await draft.locator(".cmt-reply-submit").click();
   await page.locator('.cmt-card[data-draft="true"]').waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
 }
@@ -145,7 +181,7 @@ for (const engine of ENGINES) {
       const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
       await ctx.addCookies([{ name: cookie.name, value: cookie.value, domain: "localhost", path: "/", httpOnly: true, sameSite: "Lax" }]);
       const page = await ctx.newPage();
-      await gotoPost(page, "/posts/offer-files");
+      await gotoPost(page, POST_PATH);
 
       const blocks = await normalParagraphIndices(page);
       expect(blocks.length, "post should have several normal paragraphs").toBeGreaterThan(2);
@@ -199,7 +235,7 @@ test("[chromium] an in-progress draft anchors to its selection (no scroll-to-top
     const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
     await ctx.addCookies([{ name: cookie.name, value: cookie.value, domain: "localhost", path: "/", httpOnly: true, sameSite: "Lax" }]);
     const page = await ctx.newPage();
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
 
     const blocks = await normalParagraphIndices(page);
     const mid = blocks[Math.floor(blocks.length * 0.5)]!;
@@ -274,7 +310,7 @@ test("[chromium] the comment header rail stays pinned in the top gutter, not at 
     const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
     await ctx.addCookies([{ name: cookie.name, value: cookie.value, domain: "localhost", path: "/", httpOnly: true, sameSite: "Lax" }]);
     const page = await ctx.newPage();
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     await page.locator(".cmt-rail").waitFor({ state: "attached", timeout: 10000 });
 
     const r = await page.evaluate(() => {
@@ -314,7 +350,7 @@ test("[chromium] a comment anchored under the header rail cascades below it", as
     const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
     await ctx.addCookies([{ name: cookie.name, value: cookie.value, domain: "localhost", path: "/", httpOnly: true, sameSite: "Lax" }]);
     const page = await ctx.newPage();
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     await page.locator(".cmt-rail").waitFor({ state: "attached", timeout: 10000 });
 
     const blocks = await normalParagraphIndices(page);
@@ -374,7 +410,7 @@ test("[chromium] cards don't vanish when their anchor scrolls off — they scrol
     const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
     await ctx.addCookies([{ name: cookie.name, value: cookie.value, domain: "localhost", path: "/", httpOnly: true, sameSite: "Lax" }]);
     const page = await ctx.newPage();
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
 
     const blocks = await normalParagraphIndices(page);
     const sameBlock = blocks[Math.floor(blocks.length * 0.4)]!;
@@ -424,7 +460,7 @@ test("[chromium] overlapping comments cascade instead of stacking on top of each
     const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
     await ctx.addCookies([{ name: cookie.name, value: cookie.value, domain: "localhost", path: "/", httpOnly: true, sameSite: "Lax" }]);
     const page = await ctx.newPage();
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
 
     const blocks = await normalParagraphIndices(page);
     const sameBlock = blocks[Math.floor(blocks.length * 0.4)]!;

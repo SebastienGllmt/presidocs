@@ -13,6 +13,9 @@ copy or symlink "farm" to go stale. This repo holds only content:
 - `index.html` — the landing page.
 - `index.ts` / `worker.ts` — thin entry points that call the engine factories.
 - `wrangler.toml` / `.env` — per-blog config (worker name, R2 bucket, secrets).
+- `bunfig.toml` — registers the engine's HTML-head plugin for the dev server
+  (createDevServer asserts it at startup) and mirrors the engine's
+  supply-chain install policy.
 - `engine` — a symlink pointing **directly at the sibling engine repo**
   (`../presidocs`), so posts can reference engine assets as
   `../engine/client/narratorLoader.ts` and Bun's bundler resolves + bundles them into
@@ -46,3 +49,13 @@ bun run clean <slug> # delete a post's generated audio + GC the TTS cache
 ```
 
 See `presidocs/methodology.md` for the engine's design and authoring rules.
+
+## Note: this template is also the engine's e2e fixture
+
+The engine's real-browser test suite (`presidocs/e2e/`) drives this directory
+by default (methodology → Testing layout). Its harness materializes the same
+setup products the Setup section above describes — the `engine` symlink,
+`node_modules`, and a generated `.env`/`.dev.vars` secret — all gitignored
+here, so a `bun run test:e2e` in the engine leaves this template's tree
+clean. If those files appear after running the engine's tests, that's the
+fixture bootstrap, not something to commit.

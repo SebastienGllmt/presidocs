@@ -12,7 +12,7 @@
 
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import type { Browser, Page } from "playwright";
-import { launchChrome, startBlogServer, type BlogServer } from "./harness.ts";
+import { figurePostSlugs, launchChrome, resolveBlogDir, startBlogServer, type BlogServer } from "./harness.ts";
 
 let browser: Browser;
 let server: BlogServer;
@@ -26,11 +26,14 @@ afterAll(async () => {
   await server?.stop();
 });
 
-// offer-files carries the in-use figures; _figjourneys is a dev-only fixture
-// (build-html skips `_`-prefixed entries, so it never deploys) that embeds the
-// two figures no published post uses — offerVolume (data-gated) and
-// hashAvalanche — so CI exercises them too.
-const POSTS = ["offer-files", "_figjourneys"];
+// Every post whose source loads a figure module is driven (discovered from the
+// markup, not the runtime registry, so a registration regression fails loudly
+// instead of vacuously skipping). On personal-blog that's offer-files (the
+// in-use figures) plus `_figjourneys`, the dev-only fixture (build-html skips
+// `_`-prefixed entries, so it never deploys) that embeds the figures no
+// published post uses — offerVolume (data-gated) and hashAvalanche — so CI
+// exercises them too.
+const POSTS = figurePostSlugs(resolveBlogDir());
 
 async function openPost(page: Page, slug: string): Promise<void> {
   await page.goto(`${server.baseURL}/posts/${slug}`, { waitUntil: "load", timeout: 30_000 });
@@ -186,13 +189,16 @@ test("registered figure journeys conform to the contract", async () => {
 test("a claimed figure ignores its live triggers (driven guard holds)", async () => {
   const page = await browser.newPage({ viewport: { width: 1366, height: 1200 } });
   try {
-    await openPost(page, "offer-files");
+    for (const slug of POSTS) {
+    await openPost(page, slug);
     const ids: string[] = await page.evaluate(() => [
       ...(window as unknown as { __presidocsFigures: Map<string, unknown> }).__presidocsFigures.keys(),
     ]);
-    expect(ids.length, "offer-files registers figure journeys").toBeGreaterThan(0);
-    // merge-figure is the original offending figure — make sure it's covered.
-    expect(ids, "offer-files embeds the merge figure").toContain("merge-figure");
+    expect(ids.length, `${slug} registers figure journeys`).toBeGreaterThan(0);
+    if (slug === "offer-files") {
+      // merge-figure is the original offending figure — make sure it's covered.
+      expect(ids, "offer-files embeds the merge figure").toContain("merge-figure");
+    }
 
     for (const id of ids) {
       const result = await page.evaluate(async (figId) => {
@@ -222,6 +228,12 @@ test("a claimed figure ignores its live triggers (driven guard holds)", async ()
             el.classList.add("narration-active"); // false→true edge the MutationObserver watches
             await new Promise((r) => setTimeout(r, 500)); // let any rogue tween / IO / loop run
             el.classList.remove("narration-active"); // compare rendered state, not the class attr
+            // classList.add+remove leaves an EMPTY class="" attribute behind — the
+            // test's own residue, not the figure's. On a figure whose journey never
+            // writes classes (so both passes would otherwise have no class attr at
+            // all) that one attribute diverges outerHTML; strip it so the capture
+            // compares only what the figure itself rendered.
+            if (el.getAttribute("class") === "") el.removeAttribute("class");
           }
           j.reset();
           j.seek(0);
@@ -248,6 +260,7 @@ test("a claimed figure ignores its live triggers (driven guard holds)", async ()
         `${id}: forward-pass end frame stays deterministic after live triggers fire`,
       ).toBe(true);
     }
+    }
   } finally {
     await page.close();
   }
@@ -266,7 +279,15 @@ test("a claimed figure ignores its live triggers (driven guard holds)", async ()
 // the stepped mode promises: it holds at endMs (re-seek is idempotent), it
 // advances forward across cues, and the held frame is a pure function of the
 // active step (so scrubbing/replay is deterministic, §4.3).
-test("lifecycle-figure: stepped driving holds at steps[label].endMs and advances forward-only", async () => {
+// The two lifecycle-figure tests below are bound to their test bed: the
+// `step=`-annotated lifecycle-figure that lives in offer-files. They gate on
+// that post being present in the driven content repo (it is, on personal-blog)
+// rather than failing a repo — e.g. the engine's own CI fixture — that simply
+// doesn't carry the test bed. The stepped-driving *machinery* itself is
+// engine code; these are its semantic, content-anchored regression tests.
+const HAS_STEPPED_TEST_BED = POSTS.includes("offer-files");
+
+test.skipIf(!HAS_STEPPED_TEST_BED)("lifecycle-figure: stepped driving holds at steps[label].endMs and advances forward-only", async () => {
   const page = await browser.newPage({ viewport: { width: 1366, height: 1200 } });
   try {
     await openPost(page, "offer-files");
@@ -380,7 +401,7 @@ test("lifecycle-figure: stepped driving holds at steps[label].endMs and advances
 // `immediateRender:false` leaves per-stage inline transform residue that depends
 // on which frames were visited and is irrelevant to what's displayed; comparing
 // it would flag false scrub "mismatches".
-test("lifecycle-figure: stepped driving is scrub-correct (state is a pure function of the active step)", async () => {
+test.skipIf(!HAS_STEPPED_TEST_BED)("lifecycle-figure: stepped driving is scrub-correct (state is a pure function of the active step)", async () => {
   const page = await browser.newPage({ viewport: { width: 1366, height: 1200 } });
   try {
     await openPost(page, "offer-files");

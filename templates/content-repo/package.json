@@ -2,6 +2,8 @@
   "name": "my-blog",
   "type": "module",
   "private": true,
+  "//trustedDependencies": "Empty on purpose: all dependency lifecycle scripts are blocked (the binaries the toolchain needs arrive as platform packages, not scripts). See methodology.md → Supply-chain: install policy.",
+  "trustedDependencies": [],
   "scripts": {
     "dev": "bun engine/scripts/dev.ts",
     "dev:edge": "bun run build && wrangler dev --port 3000",

@@ -41,14 +41,14 @@ import { test, expect, beforeAll, afterAll } from "bun:test";
 import type { Browser, Page } from "playwright";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { launchChrome, startBlogServer, resolveBlogDir, type BlogServer } from "./harness.ts";
+import { figurePostSlugs, launchChrome, startBlogServer, resolveBlogDir, type BlogServer } from "./harness.ts";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { CAPTURE_DEFAULTS } from "../generate/capture-defaults.ts";
 import { figureEnvHash, figureCacheKey } from "../generate/figureCacheKey.ts";
 
-// Same two posts the conformance + height gates load; together they embed every
-// figure that registers a journey. Keep in sync with figureHeight.e2e.ts.
-const POSTS = ["offer-files", "_figjourneys"];
+// Same discovery the conformance + height gates use (figurePostSlugs): every
+// post whose source loads a figure module.
+const POSTS = figurePostSlugs(resolveBlogDir());
 
 // SC 1.4.3 / 1.4.11 thresholds (DESIGN.md §1). A tiny epsilon below the nominal
 // value absorbs sub-0.01 rounding in our luminance vs the browser's, so a colour

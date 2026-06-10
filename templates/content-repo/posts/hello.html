@@ -79,6 +79,58 @@
       <figcaption>A content-owned figure, synced to the narration.</figcaption>
     </figure>
 
+    <p>
+      Everything around this text comes from the engine too: select a passage
+      and a comment pill appears, the byline and footer render themselves, and
+      if this post had generated audio, a narration player would sit in the
+      corner reading it to you in the author's voice.
+    </p>
+
+    <h2 id="features-heading">What you get without writing any of it</h2>
+    <p>
+      The comment system is the most visible piece. Select any passage in this
+      article and a small pill offers to attach a comment to it; the card then
+      anchors itself beside the exact text it discusses, tracking it as the
+      page reflows. Readers sign in with an OAuth provider, and the author sees
+      an unresolved-count badge plus per-thread resolution controls on top of
+      the same surface.
+    </p>
+    <p>
+      Narration is the engine's signature feature. A post can carry a spoken
+      script — the <code>&lt;script type="text/narration"&gt;</code> blocks in
+      this file's head — and the generate step renders it to audio with a
+      cloned voice, aligns every word, and emits a manifest the in-page player
+      uses to highlight the sentence (and drive the figure) being spoken.
+    </p>
+    <p>
+      The same manifest feeds the subscription surfaces: an Atom feed for
+      readers, a podcast RSS feed whose episodes are the narrated posts, and a
+      per-post "copy as Markdown" twin so language models and note-taking tools
+      get clean text instead of scraping the live DOM.
+    </p>
+    <p>
+      Figures like the pulsing dot above are content, not engine: they live in
+      this repository's <code>figures/</code> directory and register a journey
+      the narrator and the offline video renderer can both drive. The engine
+      gates them in CI for determinism, layout stability, and colour contrast,
+      so an animated figure can't silently push the page around or fade its
+      labels below legibility.
+    </p>
+    <p>
+      The build pipeline bundles each post into a self-contained page with
+      content-hashed assets, generates social share cards in the blog's own
+      typeface, injects structured data for crawlers, and emits a service
+      worker that keeps previously-read posts available offline. All of it is
+      static output a dumb edge can serve.
+    </p>
+    <p>
+      None of this requires configuration beyond the <code>.env</code> values
+      the README walks through. The engine's design notes — why comments are a
+      CRDT, why narration is a parallel narrative rather than a read-aloud, why
+      the figures contract is forward-seek-only — live in its
+      <code>methodology.md</code>, which doubles as the system's documentation.
+    </p>
+
     <p id="closing">
       Write content here; let the engine do the rest.
     </p>

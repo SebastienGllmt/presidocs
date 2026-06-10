@@ -21,6 +21,7 @@
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import type { Browser, Page } from "playwright";
 import {
+  firstPostSlug,
   launchChrome,
   mintSessionCookie,
   MOBILE_DEVICE,
@@ -29,6 +30,11 @@ import {
   startBlogServer,
   type BlogServer,
 } from "./harness.ts";
+
+// The deployable post the suite drives — content-agnostic (harness.firstPostSlug),
+// so the same tests run against any content repo, including the engine's own
+// e2e fixture (templates/content-repo).
+const POST_PATH = `/posts/${firstPostSlug(resolveBlogDir())}`;
 
 let browser: Browser;
 let server: BlogServer;
@@ -265,7 +271,7 @@ test("signed in, the menu shows the identity + sign out, with no persistent pill
   await authorize(ctx, "mobile-id-in");
   const page = await ctx.newPage();
   try {
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     const pill = await page.evaluate(() => {
       const id = document.querySelector<HTMLElement>(".cmt-identity");
       return id ? getComputedStyle(id).display : "absent";
@@ -294,7 +300,7 @@ test("signed out, the menu offers sign-in only — no redundant compose entry", 
   const ctx = await newMobileContext(browser);
   const page = await ctx.newPage();
   try {
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     await page.locator(".cmt-comments-btn").waitFor({ state: "visible", timeout: 15_000 });
 
     // Reproduce the exact scenario: select article text, then open the menu with
@@ -346,13 +352,13 @@ test("a tapped highlight opens its card as a top-layer popover under the comment
   await authorize(ctx, "mobile-popover");
   const page = await ctx.newPage();
   try {
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     const blocks = await normalParagraphIndices(page);
     expect(blocks.length, "post should have several normal paragraphs").toBeGreaterThan(2);
     await seedThreadViaUI(page, blocks[Math.floor(blocks.length * 0.4)]!, "mobile tap-to-popover placement");
 
     // Reload → pristine reader state (nothing open).
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     const hl = page.locator(".cmt-highlight").first();
     await hl.waitFor({ state: "visible", timeout: 15_000 });
     const before = await openPopover(page);
@@ -386,13 +392,13 @@ test("tapping highlights drives the popover: open → re-tap closes → a differ
   await authorize(ctx, "mobile-flow");
   const page = await ctx.newPage();
   try {
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     const blocks = await normalParagraphIndices(page);
     expect(blocks.length, "post should have several normal paragraphs").toBeGreaterThan(2);
     await seedThreadViaUI(page, blocks[Math.floor(blocks.length * 0.3)]!, "mobile flow comment one");
     await seedThreadViaUI(page, blocks[Math.floor(blocks.length * 0.6)]!, "mobile flow comment two");
 
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     await page.locator(".cmt-highlight").first().waitFor({ state: "attached", timeout: 15_000 });
     expect(await page.locator(".cmt-highlight").count(), "two seeded threads → two highlights").toBeGreaterThanOrEqual(2);
     expect((await openPopover(page)).count, "nothing open on a fresh load").toBe(0);
@@ -428,14 +434,14 @@ test("same-passage comments never stack on mobile — one popover at a time, tap
   await authorize(ctx, "mobile-overlap");
   const page = await ctx.newPage();
   try {
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     const blocks = await normalParagraphIndices(page);
     expect(blocks.length, "post should have several normal paragraphs").toBeGreaterThan(2);
     const same = blocks[Math.floor(blocks.length * 0.4)]!;
     await seedThreadViaUI(page, same, "same-passage comment one");
     await seedThreadViaUI(page, same, "same-passage comment two");
 
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     await page.locator(".cmt-highlight").first().waitFor({ state: "attached", timeout: 15_000 });
     expect(await page.locator(".cmt-highlight").count(), "two threads → two highlights").toBeGreaterThanOrEqual(2);
     expect((await openPopover(page)).count, "nothing open on a fresh load").toBe(0);
@@ -476,11 +482,11 @@ test("hiding highlights from the menu flattens them and persists across reload",
   await authorize(ctx, "mobile-hide");
   const page = await ctx.newPage();
   try {
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     const blocks = await normalParagraphIndices(page);
     await seedThreadViaUI(page, blocks[Math.floor(blocks.length * 0.4)]!, "hide-highlights comment");
 
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     await page.locator(".cmt-highlight").first().waitFor({ state: "attached", timeout: 15_000 });
 
     const btn = page.getByRole("button", { name: "Comments" });
@@ -496,7 +502,7 @@ test("hiding highlights from the menu flattens them and persists across reload",
     ).toBe(true);
 
     // Reload → the hidden choice persists (written to localStorage).
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
     await page.waitForTimeout(600);
     expect(
       await page.evaluate(() => document.body.classList.contains("cmt-highlights-hidden")),
@@ -530,7 +536,7 @@ test("media emulation: reduced-motion is honored; colour-scheme stays light-only
   await authorize(ctx, "mobile-media");
   const page = await ctx.newPage();
   try {
-    await gotoPost(page, "/posts/offer-files");
+    await gotoPost(page, POST_PATH);
 
     const env = await page.evaluate(() => ({
       reduce: matchMedia("(prefers-reduced-motion: reduce)").matches,
@@ -561,7 +567,7 @@ test("media emulation: reduced-motion is honored; colour-scheme stays light-only
   const plain = await newMobileContext(browser);
   const ppage = await plain.newPage();
   try {
-    await gotoPost(ppage, "/posts/offer-files");
+    await gotoPost(ppage, POST_PATH);
     const env = await ppage.evaluate(() => ({
       reduce: matchMedia("(prefers-reduced-motion: reduce)").matches,
       dark: matchMedia("(prefers-color-scheme: dark)").matches,

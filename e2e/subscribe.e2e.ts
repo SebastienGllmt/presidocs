@@ -12,10 +12,25 @@
 // spec-critical contract from proposals/32-stable-shareable-audio-url.md.
 // The audio-less-post path (article control alone) is unit-tested in
 // client/subscribe.test.ts; the pure helpers in shared/stableAudio.test.ts.
+//
+// Audio-gated: the podcast control renders ONLY on posts with narration audio
+// (a committed generated/<slug>/ manifest), which a content repo may simply
+// not have — the engine's e2e fixture is narration-free by design (no TTS in
+// CI). The audio tests skip on such a repo (the article-feed test still runs);
+// against personal-blog the audio is committed, so they all run.
 
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import type { Browser, BrowserContext, Page } from "playwright";
-import { launchChrome, startBlogServer, type BlogServer } from "./harness.ts";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { firstPostSlug, launchChrome, resolveBlogDir, startBlogServer, type BlogServer } from "./harness.ts";
+
+const BLOG_DIR = resolveBlogDir();
+const FIRST_SLUG = firstPostSlug(BLOG_DIR);
+const GEN_DIR = join(BLOG_DIR, "generated", FIRST_SLUG);
+// Same signal client/subscribe.ts keys the podcast control on: the post's
+// narration manifest existing (generated/<slug>/manifest*.json).
+const HAS_AUDIO = existsSync(GEN_DIR) && readdirSync(GEN_DIR).some((f) => /^manifest(\..*)?\.json$/.test(f));
 
 let browser: Browser;
 let context: BrowserContext;
@@ -57,7 +72,7 @@ function waitForCopied(page: Page, label: string) {
   );
 }
 
-test("both controls render on an audio post: podcast + article feed", async () => {
+test.skipIf(!HAS_AUDIO)("both controls render on an audio post: podcast + article feed", async () => {
   const page = await context.newPage();
   try {
     await openFirstPost(page);
@@ -75,7 +90,7 @@ test("both controls render on an audio post: podcast + article feed", async () =
   }
 });
 
-test("podcast menu carries the four actions + the podcast help deep-link", async () => {
+test.skipIf(!HAS_AUDIO)("podcast menu carries the four actions + the podcast help deep-link", async () => {
   const page = await context.newPage();
   try {
     await openFirstPost(page);
@@ -111,7 +126,7 @@ test("article menu links the article help anchor", async () => {
   }
 });
 
-test("primary buttons copy the canonical feed URLs", async () => {
+test.skipIf(!HAS_AUDIO)("primary buttons copy the canonical feed URLs", async () => {
   const page = await context.newPage();
   try {
     await openFirstPost(page);
@@ -142,7 +157,7 @@ async function copyEpisodeAudioUrl(page: Page): Promise<string> {
   return page.evaluate(() => navigator.clipboard.readText());
 }
 
-test("Copy episode audio copies the STABLE episode URL (no content hash)", async () => {
+test.skipIf(!HAS_AUDIO)("Copy episode audio copies the STABLE episode URL (no content hash)", async () => {
   const page = await context.newPage();
   try {
     const url = await copyEpisodeAudioUrl(page);
@@ -154,7 +169,7 @@ test("Copy episode audio copies the STABLE episode URL (no content hash)", async
   }
 });
 
-test("the stable episode URL serves with revalidation (ETag, 304, ranged 206, If-Range guard)", async () => {
+test.skipIf(!HAS_AUDIO)("the stable episode URL serves with revalidation (ETag, 304, ranged 206, If-Range guard)", async () => {
   const page = await context.newPage();
   try {
     const url = await copyEpisodeAudioUrl(page);

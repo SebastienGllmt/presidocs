@@ -15,10 +15,10 @@
 
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import { chromium, type Page } from "playwright";
-import { mintAuthorSessionCookie, resolveBlogDir, startBlogServer, type BlogServer } from "./harness.ts";
+import { firstPostSlug, mintAuthorSessionCookie, resolveBlogDir, startBlogServer, type BlogServer } from "./harness.ts";
 
 const CHROME = process.env.PRESIDOCS_E2E_CHROME || "/usr/bin/google-chrome";
-const SLUG = "offer-files";
+const SLUG = firstPostSlug(resolveBlogDir());
 
 let server: BlogServer;
 let nonce = 0;
