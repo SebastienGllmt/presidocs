@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="author-email" content="sebastiengllmt@gmail.com" />
+<title>Welcome to your private blog</title>
+<!-- Engine-owned assets, referenced through the `engine` symlink (same
+     wiring as the public template; see templates/content-repo). -->
+<link rel="stylesheet" href="../engine/client/base.css" />
+<link rel="stylesheet" href="../engine/client/narrator.css" />
+<link rel="stylesheet" href="../engine/client/comments.css" />
+<script type="module" src="../engine/client/narratorLoader.ts"></script>
+<script type="module" src="../engine/client/commentsLoader.ts"></script>
+<script type="module" src="../engine/client/byline.ts"></script>
+<script type="module" src="../engine/client/headerLinks.ts"></script>
+<script type="module" src="../engine/client/citationLink.ts"></script>
+<script type="module" src="../engine/client/backLink.ts"></script>
+<script type="module" src="../engine/client/swRegister.ts"></script>
+<script type="module" src="../engine/client/figureCopyId.ts"></script>
+<script type="module" src="../engine/client/copyMarkdown.ts"></script>
+</head>
+<body>
+  <article role="main">
+    <h1 id="title">Welcome to your private blog</h1>
+    <p id="lede">
+      This post's URL ends in an unguessable token — that token is the whole
+      access-control story, so a link to this page is a key, and sharing the
+      link is sharing the key.
+    </p>
+
+    <h2 id="how-heading">How this stays private</h2>
+    <p id="how-body">
+      The engine suppresses everything that would enumerate or advertise
+      posts: no sitemap, no feeds, no llms.txt, no landing-page post list, and
+      every response tells search engines not to index it. A build-time audit
+      fails the deploy if any of that ever regresses, and it also rejects any
+      post whose filename lacks the unguessable suffix — create posts with
+      <code>bun run new-post &lt;slug&gt;</code> so the token is generated for
+      you.
+    </p>
+    <p>
+      If a link ever leaks to someone it shouldn't have, rename the post's
+      file (a new token is a new key), regenerate, and redeploy — the old URL
+      stops resolving. Everything else about the engine works normally here:
+      comments, narration, version history, offline reading.
+    </p>
+  </article>
+</body>
+</html>

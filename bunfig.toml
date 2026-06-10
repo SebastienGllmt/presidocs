@@ -26,4 +26,4 @@ minimumReleaseAge = 604800
 # its own node_modules and an `engine` symlink back to this repo. Keep the
 # engine's `bun test` out of that whole subtree (the symlink would otherwise
 # let the glob re-enter the engine through a second path).
-pathIgnorePatterns = ["templates/content-repo/**"]
+pathIgnorePatterns = ["templates/content-repo/**", "templates/private-content-repo/**"]

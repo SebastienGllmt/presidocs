@@ -8,7 +8,8 @@
   "scripts": {
     "test": "bun test",
     "test:e2e": "for f in ./e2e/*.e2e.ts; do echo \"=== $f ===\"; bun test \"$f\" || exit 1; done",
-    "e2e:fixture": "bun -e \"import('./e2e/harness.ts').then(h => console.log(h.ensureFixtureBlog()))\"",
+    "e2e:fixture": "bun -e \"import('./e2e/harness.ts').then(h => { console.log(h.ensureFixtureBlog()); console.log(h.ensurePrivateFixtureBlog()); })\"",
+    "test:e2e:private": "bun test ./e2e/privateBlog.ts",
     "test:e2e:prod": "bun test ./e2e/prodAudioSmoke.ts",
     "test:e2e:sw": "bun test ./e2e/serviceWorker.ts",
     "test:e2e:csp": "bun test ./e2e/cspConsole.ts",

@@ -27,8 +27,8 @@
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
   },
-  // The starter template imports `presidocs/...` and `./.generated/...`
-  // paths that only resolve once it's been copied into a consumer repo —
-  // it can't typecheck where it lives.
-  "exclude": ["templates/content-repo"]
+  // The starter templates import `presidocs/...` and `./.generated/...`
+  // paths that only resolve once they've been copied into a consumer repo
+  // (or bootstrapped as e2e fixtures) — they can't typecheck where they live.
+  "exclude": ["templates/content-repo", "templates/private-content-repo"]
 }

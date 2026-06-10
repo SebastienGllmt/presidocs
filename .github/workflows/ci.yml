@@ -64,3 +64,8 @@ jobs:
       - run: bun run test:e2e:links
         env:
           PRESIDOCS_E2E_SKIP_BUILD: "1"
+      # The private-blog tier (methodology → Private blogs): builds the
+      # PRIVATE fixture — which runs audit-private.ts — then asserts the
+      # runtime half (404s for enumeration artifacts, unconditional noindex,
+      # no post link on the landing) against its built worker.
+      - run: bun run test:e2e:private

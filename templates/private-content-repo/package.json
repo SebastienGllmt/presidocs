@@ -1,0 +1,41 @@
+{
+  "name": "my-private-blog",
+  "type": "module",
+  "private": true,
+  "//trustedDependencies": "Empty on purpose: all dependency lifecycle scripts are blocked (the binaries the toolchain needs arrive as platform packages, not scripts). See methodology.md \u2192 Supply-chain: install policy.",
+  "trustedDependencies": [],
+  "//": "A PRIVATE (capability-URL) blog: BLOG_PRIVATE=1 in .env inverts the engine's discovery surface, posts carry unguessable --<token> slugs (bun run new-post), and audit-private.ts proves the inversion on every build. See engine methodology.md \u2192 Private blogs. The deploy script deliberately has NO publish-notify/websub steps \u2014 announcing posts is the opposite of this blog's job.",
+  "scripts": {
+    "dev": "bun engine/scripts/dev.ts",
+    "dev:edge": "bun run build && wrangler dev --port 3000",
+    "dev:reset-comments": "bun engine/scripts/clean-dev-comments.ts",
+    "start": "bun engine/generate/post-routes.ts && bun index.ts",
+    "new-post": "bun engine/scripts/new-post.ts",
+    "generate": "bun engine/generate/generate.ts",
+    "clean": "bun engine/generate/clean.ts",
+    "secret-scan": "secretlint --maskSecrets \"**/*\"",
+    "build": "bun engine/generate/post-meta.ts && bun engine/generate/post-versions.ts && bun engine/generate/build-html.ts ./index.html ./posts/*.html && bun engine/generate/copy-static.ts && bun engine/generate/share-card.ts && bun engine/generate/strip-served-html.ts && bun engine/generate/markdown-export.ts && bun engine/generate/feeds.ts && bun engine/generate/site-discovery.ts && bun engine/generate/help-page.ts && bun engine/generate/audit-posts.ts && bun engine/generate/audit-private.ts",
+    "deploy": "bun run build && wrangler deploy",
+    "resolve-threads": "bun engine/authoring/resolveThreads.ts",
+    "export-annotations": "bun engine/authoring/exportAnnotations.ts",
+    "list-unresolved": "bun engine/authoring/listUnresolved.ts",
+    "pull-comments": "bun engine/authoring/r2Sync.ts pull",
+    "push-resolutions": "bun engine/authoring/r2Sync.ts push",
+    "seed-comments": "bun engine/authoring/r2Sync.ts seed"
+  },
+  "dependencies": {
+    "presidocs": "link:presidocs",
+    "gsap": "^3.15.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260511.1",
+    "@secretlint/secretlint-rule-pattern": "^13.0.2",
+    "@secretlint/secretlint-rule-preset-recommend": "^13.0.2",
+    "@types/bun": "latest",
+    "secretlint": "^13.0.2",
+    "wrangler": "^4.90.0"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
