@@ -155,34 +155,74 @@ export function genericPayload(e: FeedEntry): { title: string; url: string; summ
 // We MUST respect these: an embed that exceeds them is rejected outright, and our
 // fail-silent posture would then drop the announcement without a trace. Slack's
 // incoming-webhook `text` has no comparably tight limit (far above a title +
-// one-line summary), so it is left whole.
+// one-line summary), so it is left whole — but a Block Kit `section` text IS
+// capped (3000), so the blocks path truncates like Discord does.
 const DISCORD_TITLE_MAX = 256;
 const DISCORD_DESC_MAX = 4096;
+const SLACK_SECTION_MAX = 3000;
+const SLACK_ALT_TEXT_MAX = 2000;
+
+/**
+ * The post's share-card image URL (the 1200×630 OG card the build renders to
+ * `dist/assets/og/<slug>.png`), or null when the entry isn't a post URL or the
+ * card wasn't generated (post supplies its own og:image, or the card build was
+ * skipped). `cardExists` is injected so this stays pure/golden-testable; the
+ * caller backs it with an existsSync against dist. Null simply means the
+ * richer message degrades to the text-only shape — emit-if-present, no
+ * channel-specific branching.
+ */
+export function shareCardUrlFor(
+  e: FeedEntry,
+  baseUrl: string,
+  cardExists: (slug: string) => boolean,
+): string | null {
+  let pathname: string;
+  try {
+    pathname = new URL(e.url).pathname;
+  } catch {
+    return null;
+  }
+  const m = pathname.match(/^\/posts\/([A-Za-z0-9-]+)$/);
+  if (!m) return null;
+  return cardExists(m[1]!) ? `${baseUrl}/assets/og/${m[1]!}.png` : null;
+}
 
 /** Truncate to `max` chars, with a trailing ellipsis when shortened. */
 export function truncate(s: string, max: number): string {
   return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
 }
 
-/** Discord incoming-webhook body: an embed renders title-as-link + summary.
- * Title/description are truncated to Discord's hard limits. The embed is typed
- * as Discord's official `APIEmbed` and the whole body `satisfies` the official
+/** Discord incoming-webhook body: an embed renders title-as-link + summary,
+ * plus the post's share card as the embed image when one exists. Title/
+ * description are truncated to Discord's hard limits. The embed is typed as
+ * Discord's official `APIEmbed` and the whole body `satisfies` the official
  * webhook-execute body, so a wrong/renamed field is a compile error. */
-export function discordPayload(e: FeedEntry): { embeds: APIEmbed[] } {
+export function discordPayload(e: FeedEntry, imageUrl: string | null = null): { embeds: APIEmbed[] } {
   const embed: APIEmbed = {
     title: truncate(e.title, DISCORD_TITLE_MAX),
     url: e.url,
     ...(e.summary ? { description: truncate(e.summary, DISCORD_DESC_MAX) } : {}),
+    ...(imageUrl ? { image: { url: imageUrl } } : {}),
   };
   return { embeds: [embed] } satisfies RESTPostAPIWebhookWithTokenJSONBody;
 }
 
-/** Slack incoming-webhook body: mrkdwn link + summary in a single text field.
- * Typed to allow official Block Kit `blocks` (from @slack/types) for the richer
- * layout we may add later; v1 emits `text` only. */
-export function slackPayload(e: FeedEntry): { text: string; blocks?: (KnownBlock | Block)[] } {
+/** Slack incoming-webhook body: a Block Kit `section` (mrkdwn title link +
+ * summary) plus an `image` block for the share card when one exists. The
+ * single-line `text` is kept as the notification fallback — Slack uses it for
+ * push/preview when `blocks` are present, and old clients render it whole.
+ * Block shapes are the official `@slack/types` ones, so a wrong/renamed field
+ * is a compile error. */
+export function slackPayload(e: FeedEntry, imageUrl: string | null = null): { text: string; blocks: (KnownBlock | Block)[] } {
   const link = `<${e.url}|${e.title}>`;
-  return { text: e.summary ? `${link}\n${e.summary}` : link };
+  const text = e.summary ? `${link}\n${e.summary}` : link;
+  const blocks: (KnownBlock | Block)[] = [
+    { type: "section", text: { type: "mrkdwn", text: truncate(text, SLACK_SECTION_MAX) } },
+  ];
+  if (imageUrl) {
+    blocks.push({ type: "image", image_url: imageUrl, alt_text: truncate(e.title, SLACK_ALT_TEXT_MAX) });
+  }
+  return { text, blocks };
 }
 
 /**
@@ -255,15 +295,15 @@ export type Job = { url: string; headers: Record<string, string>; body: string; 
  * Standard Webhooks (both generic-only). This is the ONLY place the channels
  * differ — the driver below treats every job identically.
  */
-export function buildJobs(e: FeedEntry, cfg: NotifyConfig, feedSource: string): Job[] {
+export function buildJobs(e: FeedEntry, cfg: NotifyConfig, feedSource: string, imageUrl: string | null = null): Job[] {
   const jobs: Job[] = [];
   const json = (body: unknown) => JSON.stringify(body);
 
   for (const url of cfg.discord) {
-    jobs.push({ url, headers: { "content-type": "application/json" }, body: json(discordPayload(e)), label: "discord" });
+    jobs.push({ url, headers: { "content-type": "application/json" }, body: json(discordPayload(e, imageUrl)), label: "discord" });
   }
   for (const url of cfg.slack) {
-    jobs.push({ url, headers: { "content-type": "application/json" }, body: json(slackPayload(e)), label: "slack" });
+    jobs.push({ url, headers: { "content-type": "application/json" }, body: json(slackPayload(e, imageUrl)), label: "slack" });
   }
   if (cfg.generic.length > 0) {
     const cloud = cfg.format === "cloudevents";
@@ -435,8 +475,10 @@ export async function runNotify(deps: PhaseDeps = defaultPhaseDeps()): Promise<v
     console.log("notify: no new posts — nothing to announce.");
     return;
   }
-  const source = `${feed.baseUrl}/feed.xml`;
-  const jobs = delta.flatMap((e) => buildJobs(e, cfg, source));
+  const baseUrl = feed.baseUrl; // narrowed by the guard above; bind for the closures
+  const source = `${baseUrl}/feed.xml`;
+  const cardExists = (slug: string) => existsSync(join(deps.paths.distDir, "assets", "og", `${slug}.png`));
+  const jobs = delta.flatMap((e) => buildJobs(e, cfg, source, shareCardUrlFor(e, baseUrl, cardExists)));
   console.log(`notify: announcing ${delta.length} post(s) across ${jobs.length} webhook(s).`);
   await deliverJobs(jobs, { paceMs: cfg.paceMs, fetchImpl: deps.fetchImpl });
 }

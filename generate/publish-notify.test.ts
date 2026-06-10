@@ -8,6 +8,7 @@ import {
   decideSnapshot,
   deliverJobs,
   discordPayload,
+  shareCardUrlFor,
   EVENT_TYPE,
   feedEntryIds,
   genericPayload,
@@ -195,10 +196,65 @@ test("discordPayload — omits description when there is no summary", () => {
   expect(discordPayload({ ...ENTRY, summary: "" }).embeds[0]).not.toHaveProperty("description");
 });
 
-test("slackPayload — mrkdwn link + summary", () => {
+test("slackPayload — mrkdwn link + summary; section block mirrors the text", () => {
+  const text = "<https://blog.example.com/posts/hash-functions|Hash Functions>\nWhat makes a good hash.";
   expect(slackPayload(ENTRY)).toEqual({
-    text: "<https://blog.example.com/posts/hash-functions|Hash Functions>\nWhat makes a good hash.",
+    text, // kept as the notification/preview fallback alongside blocks
+    blocks: [{ type: "section", text: { type: "mrkdwn", text } }],
   });
+});
+
+test("slackPayload — share card becomes an image block; alt text is the title", () => {
+  const p = slackPayload(ENTRY, "https://blog.example.com/assets/og/hash-functions.png");
+  expect(p.blocks).toHaveLength(2);
+  expect(p.blocks[1]).toEqual({
+    type: "image",
+    image_url: "https://blog.example.com/assets/og/hash-functions.png",
+    alt_text: "Hash Functions",
+  });
+});
+
+test("slackPayload — section text truncated to Slack's 3000 cap; fallback text left whole", () => {
+  const p = slackPayload({ ...ENTRY, summary: "S".repeat(5000) });
+  const section = p.blocks[0] as { text: { text: string } };
+  expect(section.text.text.length).toBe(3000);
+  expect(p.text.length).toBeGreaterThan(3000);
+});
+
+test("discordPayload — share card becomes the embed image", () => {
+  const p = discordPayload(ENTRY, "https://blog.example.com/assets/og/hash-functions.png");
+  expect(p.embeds[0]!.image).toEqual({ url: "https://blog.example.com/assets/og/hash-functions.png" });
+});
+
+test("discordPayload — no image field without a card (degrade, don't fabricate)", () => {
+  expect(discordPayload(ENTRY).embeds[0]).not.toHaveProperty("image");
+});
+
+test("shareCardUrlFor — post URL + existing card → absolute og card URL", () => {
+  expect(shareCardUrlFor(ENTRY, "https://blog.example.com", (slug) => slug === "hash-functions")).toBe(
+    "https://blog.example.com/assets/og/hash-functions.png",
+  );
+});
+
+test("shareCardUrlFor — null when the card was never generated", () => {
+  expect(shareCardUrlFor(ENTRY, "https://blog.example.com", () => false)).toBeNull();
+});
+
+test("shareCardUrlFor — null for a non-post or unparseable entry URL", () => {
+  expect(shareCardUrlFor({ ...ENTRY, url: "https://blog.example.com/about" }, "https://blog.example.com", () => true)).toBeNull();
+  expect(shareCardUrlFor({ ...ENTRY, url: "not a url" }, "https://blog.example.com", () => true)).toBeNull();
+});
+
+test("buildJobs — the image URL reaches both chat payloads", () => {
+  const cfg = resolveNotifyConfig({
+    DISCORD_WEBHOOK_URL: "https://d.example/hook",
+    SLACK_WEBHOOK_URL: "https://s.example/hook",
+  });
+  const jobs = buildJobs(ENTRY, cfg, "https://blog.example.com/feed.xml", "https://blog.example.com/assets/og/hash-functions.png");
+  const discord = JSON.parse(jobs.find((j) => j.label === "discord")!.body);
+  const slack = JSON.parse(jobs.find((j) => j.label === "slack")!.body);
+  expect(discord.embeds[0].image.url).toBe("https://blog.example.com/assets/og/hash-functions.png");
+  expect(slack.blocks[1].image_url).toBe("https://blog.example.com/assets/og/hash-functions.png");
 });
 
 test("cloudEventPayload — structured envelope; Atom id maps to CE id", () => {
@@ -369,8 +425,10 @@ test("discordPayload — description truncated to Discord's 4096 cap", () => {
 });
 
 test("slackPayload — link only when there is no summary", () => {
+  const text = "<https://blog.example.com/posts/hash-functions|Hash Functions>";
   expect(slackPayload({ ...ENTRY, summary: "" })).toEqual({
-    text: "<https://blog.example.com/posts/hash-functions|Hash Functions>",
+    text,
+    blocks: [{ type: "section", text: { type: "mrkdwn", text } }],
   });
 });
 
