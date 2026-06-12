@@ -748,6 +748,14 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 /* Progress bar: thinner default, accent-colored fill, sleek handle. */
 #narrate-player .shk-bar_wrap { padding: 8px 0 14px; }
 
+/* In the horizontal layout the bar wrap is an absolutely-positioned hit-area
+   overlay (vendor: top: -4px; z-index: 1) — its bottom padding floats over
+   the top of the button row instead of reserving space. Lift the buttons
+   above it so pressing a button's top edge clicks the button, not the seek
+   bar; the scrubber keeps its generous target everywhere a button isn't.
+   (.shk-btn is already position: relative in the vendor sheet.) */
+#narrate-player .shk-btn { z-index: 2; }
+
 #narrate-player .shk-bar {
   height: 4px;
   border-radius: 4px;
