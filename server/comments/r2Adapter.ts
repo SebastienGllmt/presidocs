@@ -1,7 +1,11 @@
 // CommentChangeStore over a Cloudflare R2 bucket binding. Used by
 // the Worker in prod; the dev path uses `fsAdapter.ts` instead.
 
-import type { R2Bucket, R2ListOptions } from "@cloudflare/workers-types";
+import type {
+  R2Bucket,
+  R2ListOptions,
+  R2Object,
+} from "@cloudflare/workers-types";
 import {
   changeHashFromKey,
   changeKey,
@@ -26,6 +30,31 @@ function originFromMetadata(
 ): ChangeOrigin | undefined {
   const v = meta?.origin;
   return v === "production" || v === "localhost" ? v : undefined;
+}
+
+// Exhaustive list: follow R2's pagination cursor until `truncated` clears.
+// A single `bucket.list()` call returns ONE page — and workerd's local R2
+// (Miniflare, behind both the dev server's getPlatformProxy binding and
+// `wrangler dev`) caps a page at 100 objects even when `limit: 1000` is
+// passed (verified empirically; real R2 pages at up to 1000). Reading just
+// the first page silently drops everything past it — which surfaced as a
+// comment-sync pull mirroring only 100 of a user's 130 change-objects.
+// Every listing in this adapter must go through this helper.
+async function listAll(
+  bucket: R2Bucket,
+  options: R2ListOptions,
+): Promise<{ objects: R2Object[]; delimitedPrefixes: string[] }> {
+  const objects: R2Object[] = [];
+  const delimitedPrefixes: string[] = [];
+  let cursor: string | undefined = undefined;
+  for (;;) {
+    const result = await bucket.list({ ...options, cursor });
+    objects.push(...result.objects);
+    delimitedPrefixes.push(...(result.delimitedPrefixes ?? []));
+    if (!result.truncated) break;
+    cursor = result.cursor;
+  }
+  return { objects, delimitedPrefixes };
 }
 
 export function r2Adapter(bucket: R2Bucket): CommentChangeStore {
@@ -67,13 +96,12 @@ export function r2Adapter(bucket: R2Bucket): CommentChangeStore {
     },
 
     async listChanges(post, userId): Promise<ChangeListEntry[]> {
-      // Paginated cursor in R2; at our expected change volume per
-      // user (single-digit), one page is plenty. `include` is required
-      // at runtime for customMetadata to ride on list results (origin
-      // provenance lives there) — verified live against Miniflare, which
-      // returns no metadata without it. The installed workers-types
-      // dropped the field from R2ListOptions, hence the cast.
-      const result = await bucket.list({
+      // `include` is required at runtime for customMetadata to ride on
+      // list results (origin provenance lives there) — verified live
+      // against Miniflare, which returns no metadata without it. The
+      // installed workers-types dropped the field from R2ListOptions,
+      // hence the cast.
+      const result = await listAll(bucket, {
         prefix: userPrefix(post, userId),
         include: ["customMetadata"],
       } as R2ListOptions);
@@ -97,14 +125,14 @@ export function r2Adapter(bucket: R2Bucket): CommentChangeStore {
       // unique userId folders directly under the post path. Avoids
       // listing every change individually just to extract the
       // distinct userIds.
-      const result = await bucket.list({
+      const result = await listAll(bucket, {
         prefix: postPrefix(post),
         delimiter: "/",
       });
       // R2's list returns delimitedPrefixes for the directory-like
       // entries; we trim the trailing slash to get just the userId.
       const users: string[] = [];
-      for (const p of result.delimitedPrefixes ?? []) {
+      for (const p of result.delimitedPrefixes) {
         const trimmed = p.endsWith("/") ? p.slice(0, -1) : p;
         const id = userIdFromKey(`${trimmed}/.bin`);
         if (id) users.push(id);
@@ -129,7 +157,7 @@ export function r2Adapter(bucket: R2Bucket): CommentChangeStore {
     },
 
     async listResolutions(post): Promise<ResolutionListEntry[]> {
-      const result = await bucket.list({ prefix: resolutionPrefix(post) });
+      const result = await listAll(bucket, { prefix: resolutionPrefix(post) });
       const out: ResolutionListEntry[] = [];
       for (const obj of result.objects) {
         const threadId = threadIdFromResolutionKey(obj.key);
