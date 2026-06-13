@@ -23,11 +23,23 @@ test("social-media video is pinned to video/mp4|webm (methodology.md → \"Video
   expect(staticAssetContentTypeOverride("/generated/offer-files/video.f08390bb7a2d25d7.webm")).toBe("video/webm");
 });
 
+test("figure source is pinned to text/plain (not the .ts→video/mp2t sniff)", () => {
+  expect(staticAssetContentTypeOverride("/posts/offer-files/figures/intentCompare.ts")).toBe(
+    "text/plain; charset=utf-8",
+  );
+  // private blogs: the tokened slug dir still matches.
+  expect(staticAssetContentTypeOverride("/posts/offer-files--Xk3n8fQ2pLwz9/figures/fileWrap.ts")).toBe(
+    "text/plain; charset=utf-8",
+  );
+});
+
 test("ordinary asset paths are left untouched (null → no override)", () => {
   expect(staticAssetContentTypeOverride("/posts/offer-files")).toBeNull();
   expect(staticAssetContentTypeOverride("/generated/offer-files/full.f2985f8c0b4fd293.mp3")).toBeNull();
   expect(staticAssetContentTypeOverride("/generated/offer-files/chapters.json")).toBeNull();
   expect(staticAssetContentTypeOverride("/sitemap.xml")).toBeNull(); // only feed .xml paths are overridden
+  // a figure's .css keeps the binding's correct text/css default — not overridden.
+  expect(staticAssetContentTypeOverride("/posts/offer-files/figures/intentCompare.css")).toBeNull();
 });
 
 // Cross-origin readability for browser-based podcast players: the feeds and the

@@ -36,6 +36,7 @@ import { injectPostChrome } from "./articleChromeReserve.ts";
 import { chipsHtmlFromSource, injectFeatureChips } from "../generate/help-page.ts";
 import { injectAiSearch } from "./injectAiSearch.ts";
 import { isPrivateBlog } from "./blogPrivacy.ts";
+import { resolveSourceRepo, sourceUrlForPostPath } from "./sourceRepo.ts";
 import { resolveFeedConfig } from "./feedConfig.ts";
 
 // The above-the-fold Red Hat faces worth preloading: body prose (Text 400),
@@ -78,6 +79,18 @@ export function injectFontPreloads(html: string): string {
   // same relative order the two regexes produced.)
   return new HTMLRewriter()
     .on("head", { element(el) { el.prepend(FONT_PRELOAD_TAGS, { html: true }); } })
+    .transform(html);
+}
+
+// Inject the per-post public-source link `<link rel="vcs-github" href="…">` that
+// client/viewSource.ts reads to render the "View on GitHub" control (proposal 58).
+// Idempotent. The href is attribute-escaped; the rel-vcs microformat also makes
+// the repo pointer machine-discoverable in the head, like rel="canonical".
+export function injectSourceLink(html: string, url: string): string {
+  if (html.includes('rel="vcs-github"')) return html;
+  const href = url.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+  return new HTMLRewriter()
+    .on("head", { element(el) { el.append(`<link rel="vcs-github" href="${href}">`, { html: true }); } })
     .transform(html);
 }
 
@@ -150,6 +163,11 @@ export function htmlHeadPlugin(
             hasAuthor: !!authorMap[postPath]?.name,
             hasVersion: postPath in versionMap,
           });
+          // Public-source link for the "View on GitHub" control (proposal 58).
+          // resolveSourceRepo returns null when SOURCE_REPO_URL is unset OR the
+          // blog is private, so neither case injects anything. Runs dev+prod.
+          const repo = resolveSourceRepo();
+          if (repo) html = injectSourceLink(html, sourceUrlForPostPath(repo, postPath));
         }
         return { contents: html, loader: "html" };
       });

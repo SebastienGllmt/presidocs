@@ -255,3 +255,50 @@ test("front-matter fields are emitted in title → source → updated order", ()
   expect(doc.indexOf("title:")).toBeLessThan(doc.indexOf("source:"));
   expect(doc.indexOf("source:")).toBeLessThan(doc.indexOf("updated:"));
 });
+
+// --- Figure source links (proposal 58) ---------------------------------------
+
+// One animated figure (carries data-figure-src) + one static figure (none).
+const FIG_HTML = `<!DOCTYPE html><html lang="en"><body>
+<article data-narration-src="/generated/x/manifest.json" role="main">
+  <h1 id="title">T</h1>
+  <p>An intro paragraph with enough words that the extractor treats this as a real article body worth keeping around.</p>
+  <figure id="deltas-vanish-figure" data-figure-src="deltasVanish">
+    <figcaption>Deltas vanish on merge.</figcaption>
+  </figure>
+  <figure id="static-chart">
+    <figcaption>A static chart.</figcaption>
+  </figure>
+  <p>More body text afterwards so the article has substantial content on both sides of the figures.</p>
+</article></body></html>`;
+
+test("a figure with data-figure-src + figureSrcBase gets a relative [source] link", () => {
+  const { markdown } = htmlToMarkdown(FIG_HTML, { figureSrcBase: "offer-files" });
+  expect(markdown).toContain("[source](offer-files/figures/deltasVanish.ts)");
+  expect(markdown).toContain("Deltas vanish on merge.");
+});
+
+test("an absolute base produces a self-contained absolute [source] link", () => {
+  const { markdown } = htmlToMarkdown(FIG_HTML, {
+    figureSrcBase: "https://blog.example.com/posts/offer-files",
+  });
+  expect(markdown).toContain("[source](https://blog.example.com/posts/offer-files/figures/deltasVanish.ts)");
+});
+
+test("a private slug base is carried into the link verbatim (inherits the token)", () => {
+  const { markdown } = htmlToMarkdown(FIG_HTML, { figureSrcBase: "offer-files--Xk3n8fQ2pLwz9" });
+  expect(markdown).toContain("[source](offer-files--Xk3n8fQ2pLwz9/figures/deltasVanish.ts)");
+});
+
+test("no figureSrcBase (the dev-server route) → caption only, no link", () => {
+  const { markdown } = htmlToMarkdown(FIG_HTML);
+  expect(markdown).not.toContain("[source]");
+  expect(markdown).toContain("Deltas vanish on merge.");
+});
+
+test("a static figure (no data-figure-src) gets no link, even with a base", () => {
+  const { markdown } = htmlToMarkdown(FIG_HTML, { figureSrcBase: "offer-files" });
+  expect(markdown).toContain("A static chart.");
+  // exactly one source link total — only the animated figure is linked.
+  expect(markdown.match(/\[source\]/g)?.length ?? 0).toBe(1);
+});

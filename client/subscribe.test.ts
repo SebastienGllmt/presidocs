@@ -105,7 +105,9 @@ test("buildControl — renders a primary copy button + a closed menu", () => {
   const group = buildControl(cfg);
 
   const primary = group.querySelector(".subctl-primary")!;
-  expect(primary.textContent).toContain("Copy podcast feed");
+  // Visible label is the short form; the full action is the accessible name.
+  expect(primary.textContent).toContain("Podcast");
+  expect(primary.getAttribute("aria-label")).toBe("Copy podcast feed");
   const more = group.querySelector(".subctl-more")!;
   expect(more.getAttribute("aria-expanded")).toBe("false");
 
@@ -145,8 +147,8 @@ test("mountSubscribeControls — audio post mounts both controls after copy-md",
   const labels = Array.from(row.querySelectorAll(".subctl-primary")).map(
     (b) => b.textContent,
   );
-  expect(labels[0]).toContain("Copy podcast feed");
-  expect(labels[1]).toContain("Copy article feed");
+  expect(labels[0]).toContain("Podcast");
+  expect(labels[1]).toContain("Feed");
 });
 
 test("mountSubscribeControls — text-only post mounts the article control only; idempotent", () => {
@@ -158,7 +160,5 @@ test("mountSubscribeControls — text-only post mounts the article control only;
   expect(rows.length).toBe(1);
   const controls = rows[0]!.querySelectorAll(".subctl");
   expect(controls.length).toBe(1);
-  expect(controls[0]!.querySelector(".subctl-primary")!.textContent).toContain(
-    "Copy article feed",
-  );
+  expect(controls[0]!.querySelector(".subctl-primary")!.textContent).toContain("Feed");
 });

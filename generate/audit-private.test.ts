@@ -6,6 +6,7 @@
 
 import { test, expect } from "bun:test";
 import {
+  auditPrivateFigureDir,
   auditPrivateHtml,
   auditPrivateRobots,
   auditPrivateSlug,
@@ -33,6 +34,13 @@ test("ai-search-leak: the Ask-this-blog affordance fires on a non-post page", ()
   expect(auditPrivateHtml(html, { isPost: false }).map((v) => v.rule)).toContain("ai-search-leak");
 });
 
+test("source-repo-leak: a vcs-github link fires (the View-on-GitHub link must never reach a private build)", () => {
+  const leak = PAGE("", `<link rel="vcs-github" href="https://github.com/you/blog/blob/main/posts/secret--Vq3xW8tR4hZcNdP5.html">`);
+  expect(auditPrivateHtml(leak, { isPost: true }).map((v) => v.rule)).toContain("source-repo-leak");
+  // a clean private page (no such link) does not fire it.
+  expect(auditPrivateHtml(PAGE(""), { isPost: true }).map((v) => v.rule)).not.toContain("source-repo-leak");
+});
+
 test("noindex-meta: missing or non-noindex robots meta fires; noindex passes", () => {
   const missing = `<!DOCTYPE html><html><head></head><body></body></html>`;
   expect(auditPrivateHtml(missing, { isPost: true }).map((v) => v.rule)).toContain("noindex-meta");
@@ -47,6 +55,13 @@ test("slug-token: guessable slugs fire; token slugs and dev-only posts pass", ()
   expect(auditPrivateSlug("my-secret-post--Vq3xW8tR4hZcNdP5")).toBeNull(); // 16 chars
   expect(auditPrivateSlug("my-secret-post--abcDEF123_-x")).toBeNull(); // ≥11, full alphabet
   expect(auditPrivateSlug("_figjourneys")).toBeNull(); // dev-only, never deploys
+});
+
+test("figure-src-token: a guessable figure-source dir fires; tokened and dev-only dirs pass", () => {
+  // Co-located figure source (proposal 58) must inherit the post's capability token.
+  expect(auditPrivateFigureDir("offer-files")?.rule).toBe("figure-src-token");
+  expect(auditPrivateFigureDir("offer-files--Vq3xW8tR4hZcNdP5")).toBeNull(); // 16-char token
+  expect(auditPrivateFigureDir("_figjourneys")).toBeNull(); // dev-only, never deploys
 });
 
 test("robots-sitemap: a Sitemap: pointer fires; the sitemap-less private form passes", () => {

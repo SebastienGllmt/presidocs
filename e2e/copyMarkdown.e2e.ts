@@ -54,7 +54,9 @@ test("the split control renders: a Copy button + a closed More-actions menu", as
 
     const primary = page.locator(".copy-md-primary");
     await primary.waitFor({ state: "attached", timeout: 10_000 });
-    expect(await primary.textContent()).toContain("Copy as Markdown");
+    // Visible label is short ("Copy"); the full action is the accessible name.
+    expect(await primary.textContent()).toContain("Copy");
+    expect(await primary.getAttribute("aria-label")).toBe("Copy as Markdown");
 
     const more = page.getByRole("button", { name: "More Markdown actions" });
     expect(await more.getAttribute("aria-expanded")).toBe("false");

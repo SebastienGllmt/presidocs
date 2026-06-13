@@ -23,6 +23,8 @@
 //                      guessable URL in the deploy.
 //   ai-search-leak   — the Ask-this-blog affordance hands an external LLM the
 //                      blog URL + llms.txt index; it must not be injected.
+//   source-repo-leak — the "View on GitHub" link (proposal 58) would reveal a
+//                      gated post in public; `link[rel=vcs-github]` must be absent.
 //   noindex-meta     — every served page carries <meta name="robots"> with
 //                      noindex (the belt for the X-Robots-Tag header, for any
 //                      path where HTML is mirrored without its headers).
@@ -30,6 +32,9 @@
 //                      `--<token>` capability suffix (≥11 base64url chars;
 //                      see shared/blogPrivacy.ts for the calibration).
 //                      `_`-prefixed dev-only posts are exempt (never deploy).
+//   figure-src-token — every emitted dist/posts/<slug>/ figure-source dir
+//                      (proposal 58) carries that same `--<token>` suffix, so
+//                      co-located source inherits the post's gate.
 //   announce-env     — the announce channels (publish webhooks, WebSub) must
 //                      not be configured: they push post URLs to third
 //                      parties on deploy.
@@ -103,6 +108,14 @@ export function auditPrivateHtml(html: string, opts: { isPost: boolean }): Priva
     out.push({ rule: "noindex-meta", detail: '<meta name="robots"> with noindex missing' });
   }
 
+  // The "View on GitHub" link (proposal 58) must never reach a private build: a
+  // public-source URL reveals the capability-gated post exists in public and
+  // links off-capability. resolveSourceRepo() already returns null on a private
+  // blog so the head plugin injects nothing; this is the belt that proves it.
+  if (document.querySelector('link[rel="vcs-github" i]')) {
+    out.push({ rule: "source-repo-leak", detail: "public-source link present (link[rel=vcs-github])" });
+  }
+
   return out;
 }
 
@@ -113,6 +126,23 @@ export function auditPrivateSlug(slug: string): PrivacyViolation | null {
   return {
     rule: "slug-token",
     detail: `posts/${slug}.html lacks the --<token> capability suffix (≥11 base64url chars; \`bun run new-post\` generates one)`,
+  };
+}
+
+/**
+ * Audit one emitted figure-source directory name under `dist/posts/` (proposal
+ * 58). These co-located `dist/posts/<slug>/figures/` trees hold unminified figure
+ * source; the `<slug>` dir must carry the same `--<token>` capability suffix as
+ * the post itself, or a guessable dir name would hand the source out without the
+ * post — the leak this co-location exists to prevent. Same rule as the slug
+ * check, distinct `figure-src-token` id for a precise failure.
+ */
+export function auditPrivateFigureDir(dirName: string): PrivacyViolation | null {
+  if (dirName.startsWith("_")) return null; // dev-only; never deploys
+  if (PRIVATE_SLUG_TOKEN_RE.test(dirName)) return null;
+  return {
+    rule: "figure-src-token",
+    detail: `dist/posts/${dirName}/ (figure source) lacks the --<token> capability suffix (≥11 base64url chars)`,
   };
 }
 
@@ -160,6 +190,18 @@ async function main(): Promise<void> {
     const slug = relative(paths.postsDir, full).split(sep).join("/").replace(/\.html$/, "");
     const v = auditPrivateSlug(slug);
     if (v) fail(`posts/${slug}.html`, v);
+  }
+
+  // Every co-located figure-source dir (proposal 58) must carry the capability
+  // token, exactly like the post slugs above. dist/posts/ is otherwise flat, so
+  // any subdirectory here is a figure-source tree.
+  const distPostsDir = join(paths.distDir, "posts");
+  if (existsSync(distPostsDir)) {
+    for (const entry of await readdir(distPostsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const v = auditPrivateFigureDir(entry.name);
+      if (v) fail(`dist/posts/${entry.name}/`, v);
+    }
   }
 
   for (const name of FORBIDDEN_ANNOUNCE_VARS) {

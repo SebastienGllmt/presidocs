@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { auditPostHtml, validateHtmlStructure } from "./audit-posts.ts";
+import { auditPostHtml, figureSrcRefs, validateHtmlStructure } from "./audit-posts.ts";
 
 // A minimal post that satisfies every rule. Individual tests mutate it to
 // trigger one violation at a time.
@@ -101,4 +101,18 @@ test("flags aria-label on a roleless element as an error, cleared by a supportin
   const { errors, warnings } = await validateHtmlStructure(fixed);
   expect(ruleIds(errors)).not.toContain("aria-label-misuse");
   expect(ruleIds(warnings)).not.toContain("aria-label-misuse");
+});
+
+// --- figure-src reference collection (proposal 58) ---
+// The figures/<src>.ts existence check itself lives in main() (it needs the
+// filesystem); this exercises the pure HTMLRewriter collector it feeds.
+
+test("figureSrcRefs collects validated, de-duped, sorted data-figure-src values", () => {
+  const html =
+    `<figure data-figure-src="zswapCost"></figure>` +
+    `<figure data-figure-src="deltasVanish"></figure>` +
+    `<figure data-figure-src="deltasVanish"></figure>` +
+    `<figure data-figure-src="../traversal"></figure>` + // unsafe: dropped
+    `<figure id="static"></figure>`; // no attribute: ignored
+  expect(figureSrcRefs(html)).toEqual(["deltasVanish", "zswapCost"]);
 });

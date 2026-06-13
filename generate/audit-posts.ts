@@ -37,11 +37,33 @@
 // machinery), NOT a WCAG 4.1.1 bar — SC 4.1.1 was obsoleted in WCAG 2.2.
 
 import { readdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join, relative } from "node:path";
 import { HtmlValidate, type ConfigData } from "html-validate";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
+import { isValidFigureSrc } from "../shared/figureSource.ts";
 
 export type AuditViolation = { rule: string; detail: string };
+
+/**
+ * The distinct, validated `data-figure-src` module basenames a served post
+ * references (proposal 58). HTMLRewriter to stay browser-free like the rest of
+ * this gate. Exported for unit tests. The existence check (does `figures/<src>.ts`
+ * exist?) needs the filesystem, so it lives in main(), not the pure auditor —
+ * this just enumerates the references.
+ */
+export function figureSrcRefs(html: string): string[] {
+  const refs = new Set<string>();
+  new HTMLRewriter()
+    .on("figure[data-figure-src]", {
+      element(el) {
+        const src = (el.getAttribute("data-figure-src") ?? "").trim();
+        if (src && isValidFigureSrc(src)) refs.add(src);
+      },
+    })
+    .transform(html);
+  return [...refs].sort();
+}
 
 // Pure, browser-free audit of one served post's HTML. Returns one violation per
 // failed invariant (empty array = clean). Exported for unit tests.
@@ -188,6 +210,7 @@ async function main(): Promise<void> {
 
   // One shared validator instance for the structural sub-check, reused per file.
   const hv = new HtmlValidate(HTML_VALIDATE_CONFIG);
+  const figuresDir = join(paths.contentRoot, "figures");
   let failed = 0;
   let warnings = 0;
   for (const file of files) {
@@ -197,6 +220,18 @@ async function main(): Promise<void> {
     // sub-check (errors fail; warnings are reported-not-failed).
     const struct = await validateHtmlStructure(html, rel, hv);
     const errors = [...auditPostHtml(html), ...struct.errors];
+
+    // Figure-source mapping (proposal 58): target-exists-WHEN-PRESENT. An animated
+    // figure's `data-figure-src` must resolve to a real module; a figure without
+    // the attribute is fine (static SVG, no source) — never warn on absence.
+    for (const src of figureSrcRefs(html)) {
+      if (!existsSync(join(figuresDir, `${src}.ts`))) {
+        errors.push({
+          rule: "figure-src",
+          detail: `data-figure-src="${src}" but figures/${src}.ts does not exist`,
+        });
+      }
+    }
 
     if (struct.warnings.length > 0) {
       warnings += struct.warnings.length;

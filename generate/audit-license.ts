@@ -18,8 +18,9 @@
 //   - SITE_URL unset  → local/preview build, exempt (no friction; explore away).
 //   - SITE_URL set    → published build, CONTENT_LICENSE is REQUIRED (hard fail).
 //                       CODE_LICENSE is recommended (warn): a post's code samples
-//                       are all-rights-reserved without it, and proposal 58's
-//                       figure-source advertising will promote this to an error.
+//                       are all-rights-reserved without it. (A blog that advertises
+//                       figure source — proposal 58 — promotes the missing
+//                       CODE_LICENSE to a hard error in figure-source-export.ts.)
 //
 // Pure check + thin main, matching audit-posts.ts: the gate logic is a testable
 // function; main() prints and sets the exit code.
@@ -54,7 +55,7 @@ export function checkLicenseGate(
     warnings.push(
       "CODE_LICENSE is unset: code samples in posts are all-rights-reserved by default. " +
         "Set `CODE_LICENSE=MIT` (or your choice) to license them — recommended for a blog " +
-        "that shows code. (Proposal 58's figure-source advertising will require it.)",
+        "that shows code, and required once a post advertises figure source (proposal 58).",
     );
   }
   return { errors, warnings };

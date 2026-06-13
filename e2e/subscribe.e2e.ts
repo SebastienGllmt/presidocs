@@ -57,15 +57,18 @@ async function openFirstPost(page: Page): Promise<void> {
   await page.goto(new URL(href!, server.baseURL).href, { waitUntil: "domcontentloaded" });
 }
 
+// Select by the primary's accessible name (its `aria-label`), which carries the
+// full action ("Copy podcast feed"); the visible text is the short form
+// ("Podcast"/"Feed"), so matching on visible text would miss it.
 const primaryByLabel = (page: Page, label: string) =>
-  page.locator(".subctl-primary", { hasText: label });
+  page.locator(`.subctl-primary[aria-label="${label}"]`);
 
-/** Poll until the control whose primary carries `label` enters the copied state. */
+/** Poll until the control whose primary carries `label` (its aria-label) enters the copied state. */
 function waitForCopied(page: Page, label: string) {
   return page.waitForFunction(
     (lbl) =>
       [...document.querySelectorAll(".subctl-primary")].some(
-        (b) => (b.textContent ?? "").includes(lbl) && b.classList.contains("subctl-copied"),
+        (b) => b.getAttribute("aria-label") === lbl && b.classList.contains("subctl-copied"),
       ),
     label,
     { timeout: 5_000 },

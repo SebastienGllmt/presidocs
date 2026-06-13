@@ -33,6 +33,20 @@ import { Readability } from "@mozilla/readability";
 import TurndownService from "turndown";
 import { strikethrough, tables, taskListItems } from "@joplin/turndown-plugin-gfm";
 import { stringify } from "yaml";
+import { figureSourceHref, isValidFigureSrc } from "./figureSource.ts";
+
+export type MarkdownOptions = {
+  /**
+   * The post's location, used as the base for figure-source links (proposal 58).
+   * When given, a `<figure data-figure-src="X">` gets a `[source](<base>/figures/X.ts)`
+   * link appended to its caption note, pointing at the co-located unminified
+   * figure source. `base` is an **absolute** post URL (`https://blog/posts/<slug>`)
+   * when the site origin is known — so the link survives the twin being copied as
+   * raw text — or the bare slug (relative) as a fallback. Absent → no link
+   * (caption-only note unchanged).
+   */
+  figureSrcBase?: string;
+};
 
 export type MarkdownExtract = {
   /** The post title (its `<h1 id="title">`, falling back to `<title>`). */
@@ -101,11 +115,26 @@ function figureCaption(figure: Element): string {
   return aria ?? "";
 }
 
+// A `<figure data-figure-src>` co-locates its unminified source at
+// `<slug>/figures/<src>.ts` (proposal 58, emitted by generate/figure-source-export.ts).
+// Build the `<a>source</a>` the caption note appends, or null when there's no
+// base (dev route), no attribute (a static SVG figure — most figures), or an
+// unsafe token. As an `<a>` element so Turndown renders `[source](href)`.
+function figureSourceLink(doc: Document, figure: Element, base: string | undefined): Element | null {
+  if (!base) return null;
+  const src = figure.getAttribute("data-figure-src")?.trim();
+  if (!src || !isValidFigureSrc(src)) return null;
+  const a = doc.createElement("a");
+  a.setAttribute("href", figureSourceHref(base, src));
+  a.textContent = "source";
+  return a;
+}
+
 // Mutate `doc` in place into the simplified DOM both extraction paths share:
 // title-h1 removed, every `<figure>` collapsed to a caption note, all runtime
 // chrome stripped. Operates document-wide (not just the article root) so the
 // dock — a *sibling* of <article> — is gone before Readability scores siblings.
-function preClean(doc: Document, root: Element): void {
+function preClean(doc: Document, root: Element, figureSrcBase?: string): void {
   // Drop the title-h1 (we emit the title ourselves). Match by id first, then
   // the root's first h1, so a post without `id="title"` still de-dupes.
   const titleH1 =
@@ -120,6 +149,13 @@ function preClean(doc: Document, root: Element): void {
     const em = doc.createElement("em");
     em.textContent = caption ? `Figure: ${caption}` : "Figure (omitted).";
     p.appendChild(em);
+    // Animated figures carry `data-figure-src`; append a link to their source so
+    // an AI can fetch the real code. Static figures have none → caption-only.
+    const srcLink = figureSourceLink(doc, figure, figureSrcBase);
+    if (srcLink) {
+      p.appendChild(doc.createTextNode(" — "));
+      p.appendChild(srcLink);
+    }
     note.appendChild(p);
     figure.replaceWith(note);
   }
@@ -155,8 +191,9 @@ function makeTurndown(): TurndownService {
 /**
  * Convert one post's HTML into `{ title, markdown }`. Pure: no IO. The caller
  * (build step / dev route) adds the front-matter header and writes the file.
+ * `opts.figureSrcBase` (the post slug) enables figure-source links (proposal 58).
  */
-export function htmlToMarkdown(html: string): MarkdownExtract {
+export function htmlToMarkdown(html: string, opts: MarkdownOptions = {}): MarkdownExtract {
   // Two independent parses: Readability mutates the document it's handed, so
   // the fallback root must come from a separate, un-consumed parse.
   const fallbackDoc = parseHTML(html).document as unknown as Document;
@@ -165,8 +202,8 @@ export function htmlToMarkdown(html: string): MarkdownExtract {
   const fallbackRoot = findArticleRoot(fallbackDoc);
   const title = extractTitle(fallbackDoc, fallbackRoot);
 
-  preClean(fallbackDoc, fallbackRoot);
-  preClean(readabilityDoc, findArticleRoot(readabilityDoc));
+  preClean(fallbackDoc, fallbackRoot, opts.figureSrcBase);
+  preClean(readabilityDoc, findArticleRoot(readabilityDoc), opts.figureSrcBase);
 
   const fallbackHtml = fallbackRoot.innerHTML;
   const fallbackTextLen = (fallbackRoot.textContent ?? "").replace(/\s+/g, " ").trim().length;

@@ -86,7 +86,18 @@ async function main(): Promise<void> {
     const html = await Bun.file(file).text();
     const postPath = distFileToPostPath(paths.distDir, file);
 
-    const extract = htmlToMarkdown(html);
+    // Base for figure-source links (proposal 58): a `<figure data-figure-src>`
+    // resolves to the co-located `<base>/figures/<src>.ts` emitted by
+    // figure-source-export.ts. Prefer the **absolute** post URL when SITE_URL is
+    // known — the published case, where the twin is most often *pasted as raw
+    // text into an LLM* with no base URL to resolve a relative link against, so a
+    // relative path would be unresolvable. Falls back to the bare slug (a
+    // relative path, resolved against the `.md`'s own URL) for local/preview
+    // builds with no SITE_URL. Either way the base carries the private `--<token>`
+    // slug suffix, so the source stays gated with no public/private branch.
+    const slug = file.split(/[\\/]/).pop()!.replace(/\.html$/, "");
+    const figureSrcBase = siteUrl ? `${siteUrl}${postPath}` : slug;
+    const extract = htmlToMarkdown(html, { figureSrcBase });
     const fm: FrontMatter = { title: extract.title };
     if (siteUrl) fm.url = `${siteUrl}${postPath}`;
     const history = versions[postPath];

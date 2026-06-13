@@ -60,9 +60,13 @@ type MenuItem =
 export type ControlConfig = {
   /** aria-label for the whole group and the basis of the caret's label. */
   name: string;
-  /** Primary-button icon + label; the primary copies `copyText`. */
+  /** Primary-button icon; the primary copies `copyText`. */
   primaryIcon: string;
+  /** Full label — the primary's accessible name (aria-label) + title. */
   primaryLabel: string;
+  /** Short visible label, to keep the byline row compact ("Podcast"/"Feed").
+      Kept Label-in-Name-compliant: primaryLabel contains this word. */
+  primaryShort: string;
   copyText: string;
   items: MenuItem[];
 };
@@ -113,6 +117,7 @@ export function buildConfigs(
       name: "podcast",
       primaryIcon: faPodcast,
       primaryLabel: "Copy podcast feed",
+      primaryShort: "Podcast",
       copyText: podcastFeed,
       items: [
         {
@@ -153,6 +158,7 @@ export function buildConfigs(
     name: "article feed",
     primaryIcon: faRss,
     primaryLabel: "Copy article feed",
+    primaryShort: "Feed",
     copyText: articleFeed,
     items: [
       {
@@ -264,6 +270,10 @@ export function buildControl(cfg: ControlConfig): HTMLElement {
   primary.type = "button";
   primary.className = "subctl-primary";
   primary.title = `${cfg.primaryLabel} (${cfg.copyText})`;
+  // Visible label is short ("Podcast"/"Feed"); the accessible name carries the
+  // full action so the terse pill stays clear to AT (Label-in-Name-compliant —
+  // primaryLabel contains primaryShort).
+  primary.setAttribute("aria-label", cfg.primaryLabel);
   const pIcon = document.createElement("span");
   pIcon.className = "subctl-glyphs";
   pIcon.setAttribute("aria-hidden", "true");
@@ -281,7 +291,7 @@ export function buildControl(cfg: ControlConfig): HTMLElement {
   pLabel.className = "subctl-label";
   const pLabelDefault = document.createElement("span");
   pLabelDefault.className = "subctl-label-default";
-  pLabelDefault.textContent = cfg.primaryLabel;
+  pLabelDefault.textContent = cfg.primaryShort;
   const pLabelCopied = document.createElement("span");
   pLabelCopied.className = "subctl-label-copied";
   pLabelCopied.setAttribute("aria-hidden", "true");

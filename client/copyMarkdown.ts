@@ -113,6 +113,10 @@ export function installCopyMarkdown(article: HTMLElement): void {
   primary.type = "button";
   primary.className = "copy-md-primary";
   primary.title = "Copy this article as Markdown (for pasting into an LLM)";
+  // Visible label is short ("Copy") to keep the byline row compact; the
+  // accessible name keeps the full meaning (Label-in-Name-compliant — it
+  // contains the visible word).
+  primary.setAttribute("aria-label", "Copy as Markdown");
   const pIcon = document.createElement("span");
   pIcon.className = "copy-md-glyphs";
   pIcon.setAttribute("aria-hidden", "true");
@@ -131,7 +135,7 @@ export function installCopyMarkdown(article: HTMLElement): void {
   pLabel.className = "copy-md-label";
   const pLabelDefault = document.createElement("span");
   pLabelDefault.className = "copy-md-label-default";
-  pLabelDefault.textContent = "Copy as Markdown";
+  pLabelDefault.textContent = "Copy";
   const pLabelCopied = document.createElement("span");
   pLabelCopied.className = "copy-md-label-copied";
   pLabelCopied.setAttribute("aria-hidden", "true");

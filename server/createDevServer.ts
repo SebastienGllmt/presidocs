@@ -36,6 +36,8 @@ import { withSecurityHeaders } from "../shared/securityHeaders.ts";
 import { buildAuthorMap } from "../shared/authorProfile.ts";
 import { buildPublicPostVersionsMap } from "../shared/publicPostVersions.ts";
 import { htmlToMarkdown, renderMarkdownDocument, type FrontMatter } from "../shared/htmlToMarkdown.ts";
+import { resolveLicenseConfig } from "../shared/licenseConfig.ts";
+import { isValidFigureSrc, spdxHeader } from "../shared/figureSource.ts";
 import type { BlogPaths } from "../shared/blogPaths.ts";
 import { isPrivateBlog } from "../shared/blogPrivacy.ts";
 import { findFullAudioName, findManifestName } from "../shared/manifestFile.ts";
@@ -539,7 +541,13 @@ export async function createDevServer(opts: DevServerOptions) {
     if (!(await file.exists())) {
       return new Response("not found", { status: StatusCodes.NOT_FOUND });
     }
-    const extract = htmlToMarkdown(await file.text());
+    // Absolute figure-source base (proposal 58): the post's own origin + path, so
+    // the `[source]` links are self-contained URLs (matching prod's SITE_URL form,
+    // just on localhost) rather than relative paths that break when the `.md` is
+    // copied as text. serveFigureSource below serves the targets on the fly.
+    const extract = htmlToMarkdown(await file.text(), {
+      figureSrcBase: `${url.origin}/posts/${safe}`,
+    });
     const fm: FrontMatter = {
       title: extract.title,
       url: `${url.origin}/posts/${safe}`,
@@ -548,9 +556,43 @@ export async function createDevServer(opts: DevServerOptions) {
     const versionMap = await buildPublicPostVersionsMap(paths.versionsJson);
     const updated = versionMap[`/posts/${safe}`]?.lastUpdated;
     if (updated) fm.updated = updated;
+    // License front-matter parity with markdown-export.ts (proposal 59).
+    const license = resolveLicenseConfig();
+    if (license.content) fm.license = license.content.id;
+    if (license.code) fm.codeLicense = license.code.id;
     return new Response(renderMarkdownDocument(extract, fm), {
       headers: {
         "Content-Type": "text/markdown; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    });
+  }
+
+  // `/posts/<slug>/figures/<module>.{ts,css}` — the figure-source twin (proposal
+  // 58). Prod emits these as static files under each post (figure-source-export.ts);
+  // dev has no dist/, so serve the authored source from the content repo's
+  // `figures/` on the fly — with the same SPDX header — so the `[source]` links in
+  // the generated `.md` resolve identically on localhost. Figures are a flat,
+  // blog-global dir, so the `<slug>` path segment is routing only; the module name
+  // is what's served (validated as a safe basename — no traversal).
+  async function serveFigureSource(req: Bun.BunRequest): Promise<Response | null> {
+    const url = new URL(req.url);
+    const m = url.pathname.match(/^\/posts\/[^/]+\/figures\/([^/]+)\.(ts|css)$/);
+    if (!m) return null;
+    const name = decodeURIComponent(m[1]!);
+    const ext = m[2] as "ts" | "css";
+    if (!isValidFigureSrc(name)) {
+      return new Response("forbidden", { status: StatusCodes.FORBIDDEN });
+    }
+    const file = Bun.file(join(paths.contentRoot, "figures", `${name}.${ext}`));
+    if (!(await file.exists())) {
+      return new Response("not found", { status: StatusCodes.NOT_FOUND });
+    }
+    const license = resolveLicenseConfig();
+    const body = spdxHeader(license.code, ext) + (await file.text());
+    return new Response(body, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
         "Cache-Control": "no-store",
       },
     });
@@ -565,6 +607,8 @@ export async function createDevServer(opts: DevServerOptions) {
     async fetch(req: Bun.BunRequest) {
       const md = await serveMarkdown(req);
       if (md) return withSecurityHeaders(md);
+      const fig = await serveFigureSource(req);
+      if (fig) return withSecurityHeaders(fig);
       return new Response("not found", { status: StatusCodes.NOT_FOUND });
     },
   };
