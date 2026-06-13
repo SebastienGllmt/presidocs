@@ -20,6 +20,7 @@
 
 import { z } from "zod";
 import { envFlag, trimmedOr, trimmedOrNull } from "./envSchemas.ts";
+import { resolveLicenseConfig } from "./licenseConfig.ts";
 
 export type FeedConfig = {
   /** Canonical origin, no trailing slash. Null → feeds are skipped. */
@@ -39,10 +40,15 @@ export type FeedConfig = {
    */
   locked: boolean;
   /**
-   * Opt-in `<podcast:license>` for the audio/episodes. A lower-cased identifier
-   * from the Podcast Namespace license list (e.g. `CC-BY-4.0`) for a well-known
-   * public license, or a free-form abbreviation for a custom one. Null → omit
-   * the tag (no wrong default).
+   * `<podcast:license>` for the audio/episodes. An identifier from the Podcast
+   * Namespace license list (e.g. `CC-BY-4.0`) for a well-known public license,
+   * or a free-form abbreviation for a custom one. Null → omit the tag.
+   *
+   * INHERITS `CONTENT_LICENSE` when `PODCAST_LICENSE` is unset: the narrated
+   * audio is a rendition of the prose, so the content license is the right
+   * default for it (see shared/licenseConfig.ts / proposal 59). An explicit
+   * `PODCAST_LICENSE` still wins for an author who licenses audio differently;
+   * with neither set, it stays null.
    */
   license: string | null;
   /**
@@ -120,6 +126,15 @@ export function resolveFeedConfig(env: Record<string, string | undefined> = proc
         `http://localhost (or any 127.0.0.0/8 / ::1) is allowed for local dev.`,
     );
   }
+  // Podcast license inherits the content license when not set explicitly (the
+  // audio is a rendition of the prose). An explicit PODCAST_LICENSE keeps its
+  // own (optional) URL; an inherited one carries the content license's resolved
+  // URL so a custom inherited identifier still satisfies the spec's url rule.
+  const license = resolveLicenseConfig(env);
+  const podcastLicense = e.PODCAST_LICENSE ?? license.content?.id ?? null;
+  const podcastLicenseUrl = e.PODCAST_LICENSE
+    ? e.PODCAST_LICENSE_URL
+    : (license.content?.url ?? null);
   return {
     baseUrl: raw || null,
     language: e.FEED_LANGUAGE,
@@ -128,7 +143,7 @@ export function resolveFeedConfig(env: Record<string, string | undefined> = proc
     ownerEmail: e.PODCAST_OWNER_EMAIL,
     hubUrl: e.WEBSUB_HUB,
     locked: e.PODCAST_LOCKED,
-    license: e.PODCAST_LICENSE,
-    licenseUrl: e.PODCAST_LICENSE_URL,
+    license: podcastLicense,
+    licenseUrl: podcastLicenseUrl,
   };
 }

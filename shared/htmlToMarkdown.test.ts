@@ -108,6 +108,30 @@ test("full document matches the golden vector", () => {
   expect(doc).toBe(GOLDEN);
 });
 
+test("front-matter carries license + code_license, after updated (proposal 59)", () => {
+  const extract = htmlToMarkdown(FIXTURE);
+  const doc = renderMarkdownDocument(extract, {
+    title: extract.title,
+    url: "https://blog.example/posts/fixture",
+    updated: "2026-06-03T12:00:00Z",
+    license: "CC-BY-4.0",
+    codeLicense: "MIT",
+  });
+  const fm = parseFrontMatter(doc);
+  expect(fm.license).toBe("CC-BY-4.0");
+  expect(fm.code_license).toBe("MIT");
+  // Emitted order is title → source → updated → license → code_license.
+  expect(doc.indexOf("license:")).toBeGreaterThan(doc.indexOf("updated:"));
+  expect(doc.indexOf("code_license:")).toBeGreaterThan(doc.indexOf("license:"));
+});
+
+test("front-matter omits license fields when unset", () => {
+  const extract = htmlToMarkdown(FIXTURE);
+  const doc = renderMarkdownDocument(extract, { title: extract.title });
+  expect(doc).not.toContain("license:");
+  expect(doc).not.toContain("code_license:");
+});
+
 test("title comes from the <h1 id=title>, not the SEO <title>", () => {
   expect(htmlToMarkdown(FIXTURE).title).toBe("Fixture Post");
 });

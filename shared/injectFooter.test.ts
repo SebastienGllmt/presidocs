@@ -48,3 +48,33 @@ test("injectSiteFooter — escapes the privacy href", () => {
   expect(out).not.toContain('"><script>');
   expect(out).toContain("&quot;");
 });
+
+test("injectSiteFooter — license link last, labelled by SPDX id, rel=license (proposal 59)", () => {
+  const out = injectSiteFooter(PAGE, {
+    helpHref: "/help",
+    privacyHref: "/privacy",
+    licenseHref: "https://creativecommons.org/licenses/by/4.0/",
+    licenseLabel: "CC-BY-4.0",
+  });
+  expect(out).toContain(
+    '<a href="https://creativecommons.org/licenses/by/4.0/" rel="license">CC-BY-4.0</a>',
+  );
+  // License comes after Privacy in the stable order.
+  expect(out.indexOf(">Privacy Policy<")).toBeLessThan(out.indexOf(">CC-BY-4.0<"));
+});
+
+test("injectSiteFooter — license alone is enough to render the footer", () => {
+  const out = injectSiteFooter(PAGE, {
+    licenseHref: "https://opensource.org/license/mit",
+    licenseLabel: "MIT",
+  });
+  expect(out).toContain('<footer class="site-footer">');
+  expect(out).toContain('rel="license">MIT</a>');
+  expect(out).not.toContain("How this blog works");
+  expect(out).not.toContain("Privacy Policy");
+});
+
+test("injectSiteFooter — a license href with no label falls back to 'License'", () => {
+  const out = injectSiteFooter(PAGE, { licenseHref: "/license" });
+  expect(out).toContain('<a href="/license" rel="license">License</a>');
+});

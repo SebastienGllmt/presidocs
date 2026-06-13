@@ -46,6 +46,18 @@ export interface FooterOptions {
    * help page was emitted).
    */
   helpHref?: string;
+  /**
+   * URL the content-license link points at (the canonical license text/deed).
+   * Empty/omitted → the license link is left out (no CONTENT_LICENSE set).
+   * Present when the operator declared a content license (proposal 59).
+   */
+  licenseHref?: string;
+  /**
+   * Label for the license link — the SPDX identifier (e.g. `CC-BY-4.0`), so the
+   * footer reads like the conventional license badge. Falls back to "License"
+   * when a href is set without a label.
+   */
+  licenseLabel?: string;
 }
 
 // Sentinel class on the injected <footer> so a second pass over the
@@ -58,18 +70,24 @@ const MARKER = `class="${FOOTER_CLASS}"`;
 export function injectSiteFooter(html: string, opts: FooterOptions): string {
   const privacyHref = opts.privacyHref?.trim() ?? "";
   const helpHref = opts.helpHref?.trim() ?? "";
+  const licenseHref = opts.licenseHref?.trim() ?? "";
+  const licenseLabel = opts.licenseLabel?.trim() || "License";
 
   // Build the link list in a stable order. Home first (orientation), then the
-  // engine's help page, then the operator's privacy policy. Anything unset is
-  // simply skipped.
+  // engine's help page, the operator's privacy policy, and the content license.
+  // Anything unset is simply skipped.
   const links: string[] = [`<a href="/">Home</a>`];
   if (helpHref) links.push(`<a href="${escapeAttr(helpHref)}">How this blog works</a>`);
   if (privacyHref) links.push(`<a href="${escapeAttr(privacyHref)}">Privacy Policy</a>`);
+  // rel="license" is the machine-readable hint that this link names the page's
+  // license (microformats / RDFa convention).
+  if (licenseHref)
+    links.push(`<a href="${escapeAttr(licenseHref)}" rel="license">${escapeText(licenseLabel)}</a>`);
 
-  // With no help and no privacy link there's nothing worth a footer (a lone
-  // "Home" link on every page is noise), so no-op — same fail-silent posture as
-  // the other injectors when their gate is unset.
-  if (!helpHref && !privacyHref) return html;
+  // With no help, privacy, or license link there's nothing worth a footer (a
+  // lone "Home" link on every page is noise), so no-op — same fail-silent
+  // posture as the other injectors when their gate is unset.
+  if (!helpHref && !privacyHref && !licenseHref) return html;
   if (html.includes(MARKER)) return html;
 
   const footer = `<footer class="${FOOTER_CLASS}">${links.join("")}</footer>`;
@@ -94,4 +112,10 @@ function escapeAttr(s: string): string {
     .replace(/"/g, "&quot;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+// Escape for element text content (the license-link label). Same as escapeAttr
+// minus the quote (it's not inside an attribute).
+function escapeText(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }

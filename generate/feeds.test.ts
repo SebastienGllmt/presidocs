@@ -32,6 +32,7 @@ const SITE: FeedSite = {
   locked: true,
   license: null,
   licenseUrl: null,
+  contentLicenseId: null,
 };
 
 const POST_WITH_AUDIO: FeedPost = {
@@ -242,6 +243,16 @@ test("RSS: license is opt-in — well-known needs no url, custom carries one", (
   );
 });
 
+test("Atom: <rights> carries the content license, opt-in (proposal 59)", () => {
+  // Unset → no <rights> (no imposed default).
+  expect(buildAtomFeed(SITE, [POST_WITH_AUDIO])).not.toContain("<rights>");
+  // The Atom feed conveys the textual posts → its rights are the CONTENT
+  // license, independent of the podcast/audio license.
+  expect(
+    buildAtomFeed({ ...SITE, contentLicenseId: "CC-BY-4.0" }, [POST_WITH_AUDIO]),
+  ).toContain("<rights>CC-BY-4.0</rights>");
+});
+
 test("RSS: channel <podcast:person> carries the author avatar (img)", () => {
   const xml = buildRssFeed(SITE, [POST_WITH_AUDIO]);
   expect(xml).toContain(
@@ -297,6 +308,7 @@ test("RSS: the fully-populated feed is well-formed XML (every conditional branch
     hubUrl: "https://websubhub.com/hub",
     license: "my-blog-license-v1",
     licenseUrl: "https://example.org/license.pdf",
+    contentLicenseId: "CC-BY-4.0",
   };
   const aligned: FeedPost = {
     ...POST_WITH_AUDIO,

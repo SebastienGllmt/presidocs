@@ -34,6 +34,7 @@ import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { collectHtmlFiles } from "../shared/walkHtml.ts";
 import { findManifestName } from "../shared/manifestFile.ts";
 import { isPrivateBlog } from "../shared/blogPrivacy.ts";
+import { resolveLicenseConfig } from "../shared/licenseConfig.ts";
 
 const paths = resolveBlogPaths();
 const ROOT = paths.contentRoot;
@@ -284,6 +285,13 @@ async function main(): Promise<void> {
   const hasPodcast = await blogHasEpisodeAudio();
   const privateBlog = isPrivateBlog();
 
+  // The content (prose) license — resolved once. Drives both the JSON-LD
+  // `license` URL and the footer license link (URL + SPDX-id label). Null when
+  // CONTENT_LICENSE is unset (those surfaces are then omitted; the engine
+  // imposes no default — see shared/licenseConfig.ts).
+  const contentLicense = resolveLicenseConfig().content;
+  const contentLicenseUrl = contentLicense?.url ?? null;
+
   // Per-blog PWA <head> values, read once from the blog's manifest.webmanifest.
   // If absent, the PWA inject is skipped entirely (no broken /manifest link in
   // the served HTML — same fail-silent posture as the structured-data + footer
@@ -308,14 +316,23 @@ async function main(): Promise<void> {
   // before that step runs is fine — it exists by serve time, exactly like the
   // feed autodiscovery links advertise /feed.xml before generate/feeds.ts runs.
   const helpHref = siteUrl ? "/help" : "";
+  // Footer license link (proposal 59): same resolved content license the
+  // JSON-LD uses, so the bunFooterPlugin and this backstop render an identical
+  // footer (the idempotency-race contract). Empty when CONTENT_LICENSE is unset.
+  const licenseHref = contentLicense?.url ?? "";
+  const licenseLabel = contentLicense?.id ?? "";
 
   const stages = ["author-email + narration + PLS strip"];
   if (siteUrl) stages.push("structured data + OG + Twitter Card");
   else stages.push("(no SITE_URL — skipping structured-data inject)");
-  if (privacyHref || helpHref) {
-    const parts = [helpHref ? "help" : null, privacyHref ? "privacy" : null].filter(Boolean);
+  if (privacyHref || helpHref || licenseHref) {
+    const parts = [
+      helpHref ? "help" : null,
+      privacyHref ? "privacy" : null,
+      licenseHref ? "license" : null,
+    ].filter(Boolean);
     stages.push(`site footer (${parts.join(" + ")})`);
-  } else stages.push("(no PRIVACY_POLICY_URL or SITE_URL — skipping footer inject)");
+  } else stages.push("(no PRIVACY_POLICY_URL / SITE_URL / CONTENT_LICENSE — skipping footer inject)");
   if (pwaOpts) stages.push("PWA <head> (manifest + theme-color + apple-touch-icon)");
   else stages.push("(no manifest.webmanifest — skipping PWA <head> inject)");
   console.log(`Post-build HTML rewrite: ${stages.join(", ")}…`);
@@ -396,6 +413,7 @@ async function main(): Promise<void> {
           modifiedAt: history[0]!.builtAt,
           audio: await readAudio(postPath),
           cardUrl,
+          licenseUrl: contentLicenseUrl,
         };
         after = injectStructuredData(after, ctx);
         // Private: inline this post's byline data so the byline needs no
@@ -420,6 +438,7 @@ async function main(): Promise<void> {
             : null,
           publisher: sitePublisher,
           cardUrl: siteCardUrl,
+          licenseUrl: contentLicenseUrl,
         };
         after = injectSiteStructuredData(after, siteCtx);
       }
@@ -432,8 +451,8 @@ async function main(): Promise<void> {
     // the privacy posture must hold even on a misconfigured build.
     if (privateBlog) after = injectNoindexMeta(after);
 
-    if (privacyHref || helpHref) {
-      after = injectSiteFooter(after, { privacyHref, helpHref });
+    if (privacyHref || helpHref || licenseHref) {
+      after = injectSiteFooter(after, { privacyHref, helpHref, licenseHref, licenseLabel });
     }
     if (pwaOpts) {
       after = injectPwaHead(after, pwaOpts);

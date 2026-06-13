@@ -198,6 +198,18 @@ export type FrontMatter = {
   url?: string;
   /** ISO date the post was last updated (versions.json `builtAt`). */
   updated?: string;
+  /**
+   * Content (prose) license SPDX id, e.g. `CC-BY-4.0` — so a pasted-into-an-LLM
+   * doc states its reuse terms with its provenance. Omitted when CONTENT_LICENSE
+   * is unset (proposal 59).
+   */
+  license?: string;
+  /**
+   * Code-samples license SPDX id, e.g. `MIT` — a post bundles prose AND code
+   * snippets under different terms, so the twin names both. Omitted when
+   * CODE_LICENSE is unset.
+   */
+  codeLicense?: string;
 };
 
 // Assemble the final `.md` document: a small YAML front-matter block (title,
@@ -213,13 +225,15 @@ export type FrontMatter = {
 // null, or number instead of the string the author wrote — and silently broke
 // the `---` block on an embedded newline/tab, `stringify` quotes (or block-folds)
 // exactly the values that need it so the provenance header always round-trips as
-// the string it denotes. Insertion order (title → source → updated) is the
-// emitted field order.
+// the string it denotes. Insertion order (title → source → updated → license →
+// code_license) is the emitted field order.
 export function renderMarkdownDocument(extract: MarkdownExtract, fm: FrontMatter): string {
   const title = (fm.title || extract.title).trim();
   const data: Record<string, string> = { title };
   if (fm.url) data.source = fm.url;
   if (fm.updated) data.updated = fm.updated;
+  if (fm.license) data.license = fm.license;
+  if (fm.codeLicense) data.code_license = fm.codeLicense;
   const front = stringify(data).trimEnd();
   const lines: string[] = ["---", front, "---", ""];
   if (title) lines.push(`# ${title}`, "");

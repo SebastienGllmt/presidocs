@@ -62,6 +62,14 @@ export type StructuredDataContext = {
    * JSON-LD image; a per-post og:image override still takes precedence.
    */
   cardUrl: string | null;
+  /**
+   * Absolute URL of the content (prose) license — JSON-LD `license`. Null when
+   * `CONTENT_LICENSE` is unset (the field is then omitted; the engine imposes
+   * no default — see shared/licenseConfig.ts / proposal 59). The post is prose,
+   * so this is the *content* license; code samples are governed blog-level by
+   * `LICENSE.md`, not per-post JSON-LD.
+   */
+  licenseUrl: string | null;
 };
 
 // Fields we read out of the post HTML in a single rewriter pass.
@@ -278,6 +286,22 @@ export function injectStructuredData(
   if (publisher) {
     ld.publisher = { "@type": "Organization", name: publisher };
   }
+  // Licensing: `license` points at the content license's full text (proposal
+  // 59); `copyrightHolder` reuses the author Person (or the publisher Org when
+  // there's no author profile); `copyrightYear` is the publish year. All three
+  // omit when their source is absent — `license` only appears once the operator
+  // declares CONTENT_LICENSE, so the engine never asserts terms on a blog that
+  // didn't choose them.
+  if (ctx.licenseUrl) ld.license = ctx.licenseUrl;
+  if (ctx.author) {
+    ld.copyrightHolder = { "@type": "Person", name: ctx.author.name };
+  } else if (publisher) {
+    ld.copyrightHolder = { "@type": "Organization", name: publisher };
+  }
+  if (ctx.publishedAt) {
+    const year = Number(ctx.publishedAt.slice(0, 4));
+    if (Number.isFinite(year)) ld.copyrightYear = year;
+  }
   // Google parses both a bare URL and an ImageObject; the object form (with
   // dimensions) is the documented-preferred shape for the Article rich result.
   // We only know the dims for our own card; an override stays a URL string.
@@ -445,6 +469,12 @@ export type SiteStructuredDataContext = {
    * "site card" entry point doesn't require touching this signature again.
    */
   cardUrl: string | null;
+  /**
+   * Content (prose) license URL for the Blog/WebSite `license`. Null when
+   * `CONTENT_LICENSE` is unset (the field is omitted). Same source and posture
+   * as the per-post `licenseUrl` — see proposal 59.
+   */
+  licenseUrl: string | null;
 };
 
 type SiteExtracted = {
@@ -575,6 +605,15 @@ export function injectSiteStructuredData(
   }
   if (publisher) {
     blog.publisher = { "@type": "Organization", name: publisher };
+  }
+  // Blog-level licensing (proposal 59): the same content-license URL and
+  // copyright holder the posts carry, on the Blog node a crawler reads for the
+  // site as a whole. Omitted when CONTENT_LICENSE / author are absent.
+  if (ctx.licenseUrl) blog.license = ctx.licenseUrl;
+  if (ctx.author) {
+    blog.copyrightHolder = { "@type": "Person", name: ctx.author.name };
+  } else if (publisher) {
+    blog.copyrightHolder = { "@type": "Organization", name: publisher };
   }
   if (shareImage) {
     // Documented cast for the numeric ImageObject dimensions — see the matching

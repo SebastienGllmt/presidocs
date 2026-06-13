@@ -37,6 +37,7 @@ const CTX: StructuredDataContext = {
   modifiedAt: "2026-05-30T02:27:47.354Z",
   audio: { url: "/generated/offer-files/full.f2985f8c0b4fd293.mp3", durationMs: 2454530 },
   cardUrl: "/assets/og/offer-files.png",
+  licenseUrl: "https://creativecommons.org/licenses/by/4.0/",
 };
 
 function jsonLd(html: string): any {
@@ -83,6 +84,28 @@ test("emits a BlogPosting with audio, author Person, dates, and publisher", () =
   );
   // 2454530 ms → 2454.53 s → 40m 55s (rounded) → PT40M55S
   expect(ld.audio.duration).toBe("PT40M55S");
+});
+
+test("BlogPosting carries license + copyrightHolder + copyrightYear (proposal 59)", () => {
+  const ld = jsonLd(injectStructuredData(HTML, CTX));
+  expect(ld.license).toBe("https://creativecommons.org/licenses/by/4.0/");
+  // copyrightHolder reuses the author Person; copyrightYear is the publish year.
+  expect(ld.copyrightHolder).toEqual({ "@type": "Person", name: "Sebastien Guillemot" });
+  expect(ld.copyrightYear).toBe(2026);
+});
+
+test("license is omitted when CONTENT_LICENSE is unset; copyright still emitted", () => {
+  // No declared license → no `license` field (the engine imposes no default),
+  // but copyrightHolder/copyrightYear are factual and still emitted.
+  const ld = jsonLd(injectStructuredData(HTML, { ...CTX, licenseUrl: null }));
+  expect(ld.license).toBeUndefined();
+  expect(ld.copyrightHolder).toEqual({ "@type": "Person", name: "Sebastien Guillemot" });
+  expect(ld.copyrightYear).toBe(2026);
+});
+
+test("copyrightHolder falls back to the publisher Organization when no author", () => {
+  const ld = jsonLd(injectStructuredData(HTML, { ...CTX, author: null }));
+  expect(ld.copyrightHolder).toEqual({ "@type": "Organization", name: "presidocs" });
 });
 
 test("post inject: emits a <meta name=description> from the lede when absent", () => {
@@ -246,6 +269,7 @@ const SITE_CTX: SiteStructuredDataContext = {
   },
   publisher: "presidocs",
   cardUrl: null,
+  licenseUrl: "https://creativecommons.org/licenses/by/4.0/",
 };
 
 test("landing inject: emits WebSite + Blog @graph with the same author Person", () => {
@@ -275,6 +299,16 @@ test("landing inject: emits WebSite + Blog @graph with the same author Person", 
     image: "https://blog.example.com/assets/authors/sebastiengllmt.png",
   });
   expect(blog.publisher).toEqual({ "@type": "Organization", name: "presidocs" });
+  // Blog-level licensing (proposal 59): same content-license URL + copyright
+  // holder as the posts.
+  expect(blog.license).toBe("https://creativecommons.org/licenses/by/4.0/");
+  expect(blog.copyrightHolder).toEqual({ "@type": "Person", name: "Sebastien Guillemot" });
+});
+
+test("landing inject: omits Blog license when CONTENT_LICENSE is unset", () => {
+  const out = injectSiteStructuredData(LANDING_HTML, { ...SITE_CTX, licenseUrl: null });
+  const blog = jsonLd(out)["@graph"].find((n: any) => n["@type"] === "Blog");
+  expect(blog.license).toBeUndefined();
 });
 
 test("landing inject: emits OG website tags + a meta description (if absent)", () => {

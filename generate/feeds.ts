@@ -29,6 +29,7 @@ import { join } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { isPrivateBlog } from "../shared/blogPrivacy.ts";
 import { resolveFeedConfig, type FeedConfig } from "../shared/feedConfig.ts";
+import { resolveLicenseConfig } from "../shared/licenseConfig.ts";
 import { buildAuthorMap, type PublicAuthorProfile } from "../shared/authorProfile.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 import { decodeHtmlEntities } from "../shared/htmlEntities.ts";
@@ -127,6 +128,13 @@ export type FeedSite = {
   license: string | null;
   /** Full-text URL for a custom `license` (optional for well-known ones). */
   licenseUrl: string | null;
+  /**
+   * Content (prose) license identifier for the Atom `<rights>` element — the
+   * Atom feed conveys the textual posts, so its rights reflect `CONTENT_LICENSE`
+   * directly, NOT the (possibly different) podcast/audio license above. Null →
+   * omit `<rights>` (proposal 59).
+   */
+  contentLicenseId: string | null;
 };
 
 export type FeedPost = {
@@ -216,6 +224,10 @@ export function buildAtomFeed(site: FeedSite, posts: FeedPost[]): string {
     `<link rel="alternate" type="text/html" href="${escapeXml(site.baseUrl)}/"/>` +
     `<updated>${feedUpdated}</updated>` +
     authorBlock +
+    // <rights> (RFC 4287 §4.2.10): the content license, for parity with the
+    // podcast feed's <podcast:license>. The SPDX identifier is short and the
+    // value consumers key on; omitted when CONTENT_LICENSE is unset.
+    (site.contentLicenseId ? `<rights>${escapeXml(site.contentLicenseId)}</rights>` : "") +
     (site.imageUrl ? `<logo>${escapeXml(site.imageUrl)}</logo>` : "") +
     entries +
     `</feed>\n`
@@ -667,6 +679,7 @@ async function main(): Promise<void> {
     locked: cfg.locked,
     license: cfg.license,
     licenseUrl: cfg.licenseUrl,
+    contentLicenseId: resolveLicenseConfig().content?.id ?? null,
   };
 
   // Validity gate: round-trip each feed through XMLValidator before it touches

@@ -30,6 +30,7 @@ import { join } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { isPrivateBlog } from "../shared/blogPrivacy.ts";
 import { resolveFeedConfig } from "../shared/feedConfig.ts";
+import { resolveLicenseConfig } from "../shared/licenseConfig.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 import { escapeXml, extractPostMeta, readSiteMeta } from "./feeds.ts";
 
@@ -139,6 +140,13 @@ export type LlmsPost = {
 export type LlmsSite = {
   title: string;
   description: string;
+  /**
+   * Reuse terms (proposal 59): the content license governs the prose an LLM
+   * reads here; the code license governs any snippets. Either null → that part
+   * is omitted; both null → no license line at all (no imposed default).
+   */
+  contentLicense: { id: string; url: string } | null;
+  codeLicense: { id: string; url: string } | null;
   /** Absolute feed URLs; podcast may be null when no audio posts exist. */
   feeds: { atom: string; podcast: string | null };
   /**
@@ -159,6 +167,17 @@ export function buildLlmsTxt(site: LlmsSite, posts: LlmsPost[]): string {
   lines.push("");
   if (site.description) {
     lines.push(`> ${site.description}`);
+    lines.push("");
+  }
+  // Reuse terms, so an LLM reading this index knows whether/how it may reuse the
+  // content. Content first (the prose it's about to read), then code samples.
+  // Omitted entirely when no content license is declared.
+  if (site.contentLicense) {
+    const parts = [`[${site.contentLicense.id}](${site.contentLicense.url}) (content)`];
+    if (site.codeLicense) {
+      parts.push(`[${site.codeLicense.id}](${site.codeLicense.url}) (code samples)`);
+    }
+    lines.push(`Licensed under ${parts.join(" and ")}.`);
     lines.push("");
   }
   if (posts.length > 0) {
@@ -272,6 +291,7 @@ async function main(): Promise<void> {
   // (an audio-less blog has no podcast feed, by feeds.ts:508-511).
   const podcastUrl = existsSync(join(distDir, "podcast.xml")) ? `${baseUrl}/podcast.xml` : null;
   const meta = await readSiteMeta();
+  const license = resolveLicenseConfig();
   const llmsPosts: LlmsPost[] = posts.map((p) => ({
     // The Markdown twin emitted by generate/markdown-export.ts (which runs
     // earlier in `bun run build`), so the file is on disk by serve time.
@@ -285,6 +305,8 @@ async function main(): Promise<void> {
       {
         title: meta.title,
         description: meta.description,
+        contentLicense: license.content,
+        codeLicense: license.code,
         feeds: { atom: `${baseUrl}/feed.xml`, podcast: podcastUrl },
         // /help is emitted by generate/help-page.ts under the same SITE_URL
         // gate this step runs under, so it's always reachable here.

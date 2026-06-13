@@ -40,6 +40,7 @@
 
 import type { BunPlugin } from "bun";
 import { injectSiteFooter } from "./injectFooter.ts";
+import { resolveLicenseConfig } from "./licenseConfig.ts";
 
 export type SiteFooterPluginOptions = {
   // Override for the privacy-policy URL. Defaults to PRIVACY_POLICY_URL,
@@ -64,8 +65,14 @@ export function injectSiteFooterFromEnv(
 ): string {
   const privacyHref = (opts.privacyHref ?? process.env.PRIVACY_POLICY_URL ?? "").trim();
   const helpHref = (opts.helpHref ?? (process.env.SITE_URL ? "/help" : "")).trim();
-  if (!privacyHref && !helpHref) return html;
-  return injectSiteFooter(html, { privacyHref, helpHref });
+  // Content license: link the deed/text, labelled with its SPDX id. Resolved
+  // from the same env as everywhere else (CONTENT_LICENSE), so the build-time
+  // and post-build paths agree by construction. Null → no license link.
+  const content = resolveLicenseConfig().content;
+  const licenseHref = content?.url ?? "";
+  const licenseLabel = content?.id ?? "";
+  if (!privacyHref && !helpHref && !licenseHref) return html;
+  return injectSiteFooter(html, { privacyHref, helpHref, licenseHref, licenseLabel });
 }
 
 export function siteFooterPlugin(opts: SiteFooterPluginOptions = {}): BunPlugin {

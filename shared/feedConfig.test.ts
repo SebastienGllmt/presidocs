@@ -55,3 +55,26 @@ test("license + licenseUrl are opt-in (null unless set)", () => {
   });
   expect(custom.licenseUrl).toBe("https://example.org/license.pdf");
 });
+
+test("podcast license inherits CONTENT_LICENSE when PODCAST_LICENSE is unset", () => {
+  // Audio is a rendition of the prose — the content license is its default.
+  const inherited = resolveFeedConfig({ CONTENT_LICENSE: "CC-BY-4.0" });
+  expect(inherited.license).toBe("CC-BY-4.0");
+  expect(inherited.licenseUrl).toBe("https://creativecommons.org/licenses/by/4.0/");
+});
+
+test("an explicit PODCAST_LICENSE overrides the inherited content license", () => {
+  const explicit = resolveFeedConfig({
+    CONTENT_LICENSE: "CC-BY-4.0",
+    PODCAST_LICENSE: "CC-BY-NC-4.0",
+  });
+  expect(explicit.license).toBe("CC-BY-NC-4.0");
+  // Explicit podcast license keeps its own (here unset → null) URL, not the
+  // content one — the two are independent once the podcast one is set.
+  expect(explicit.licenseUrl).toBeNull();
+});
+
+test("no content and no podcast license → still null (nothing imposed)", () => {
+  expect(resolveFeedConfig({}).license).toBeNull();
+  expect(resolveFeedConfig({}).licenseUrl).toBeNull();
+});

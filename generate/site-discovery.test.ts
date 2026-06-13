@@ -62,6 +62,8 @@ test("sitemap.xml: XML-escapes & in URLs", () => {
 const LLMS_SITE: LlmsSite = {
   title: "Presidocs — talks, not just text",
   description: "Blog posts that feel like attending the talk.",
+  contentLicense: null,
+  codeLicense: null,
   feeds: {
     atom: "https://blog.example.com/feed.xml",
     podcast: "https://blog.example.com/podcast.xml",
@@ -101,6 +103,37 @@ test("llms.txt: title, blockquote summary, post list with summaries, ## Optional
   // The help page is listed in ## Optional so an LLM can fetch one curated
   // "how do I subscribe / listen" page instead of inferring from the posts.
   expect(txt).toContain("- [How this blog works](https://blog.example.com/help)");
+});
+
+test("llms.txt: license line names content + code with links (proposal 59)", () => {
+  const txt = buildLlmsTxt(
+    {
+      ...LLMS_SITE,
+      contentLicense: { id: "CC-BY-4.0", url: "https://creativecommons.org/licenses/by/4.0/" },
+      codeLicense: { id: "MIT", url: "https://opensource.org/license/mit" },
+    },
+    LLMS_POSTS,
+  );
+  expect(txt).toContain(
+    "Licensed under [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/) (content) and [MIT](https://opensource.org/license/mit) (code samples).",
+  );
+});
+
+test("llms.txt: license line omitted entirely when no content license", () => {
+  // Default fixture has null licenses → no line, no imposed default.
+  expect(buildLlmsTxt(LLMS_SITE, LLMS_POSTS)).not.toContain("Licensed under");
+});
+
+test("llms.txt: content-only license drops the code clause", () => {
+  const txt = buildLlmsTxt(
+    {
+      ...LLMS_SITE,
+      contentLicense: { id: "CC-BY-4.0", url: "https://creativecommons.org/licenses/by/4.0/" },
+    },
+    LLMS_POSTS,
+  );
+  expect(txt).toContain("Licensed under [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/) (content).");
+  expect(txt).not.toContain("code samples");
 });
 
 test("llms.txt: podcast feed omitted when null (audio-less blog)", () => {

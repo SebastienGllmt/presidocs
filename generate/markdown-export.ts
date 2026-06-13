@@ -19,6 +19,7 @@
 import { readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
+import { resolveLicenseConfig } from "../shared/licenseConfig.ts";
 import {
   htmlToMarkdown,
   renderMarkdownDocument,
@@ -65,6 +66,11 @@ async function main(): Promise<void> {
   // Markdown is still emitted and the button still works.
   const siteUrl = (process.env.SITE_URL ?? "").trim().replace(/\/+$/, "");
 
+  // Reuse terms stamped into every twin's front-matter (proposal 59): a post is
+  // prose (the content license) plus code snippets (the code license). Both omit
+  // when unset — the engine declares no license the operator didn't choose.
+  const license = resolveLicenseConfig();
+
   // Per-post last-updated date — the newest `builtAt`, the same field published
   // as JSON-LD `dateModified` and on the byline's "Last updated". Absent file
   // or post → omit the `updated:` line.
@@ -85,6 +91,8 @@ async function main(): Promise<void> {
     if (siteUrl) fm.url = `${siteUrl}${postPath}`;
     const history = versions[postPath];
     if (history && history.length > 0) fm.updated = history[0]!.builtAt;
+    if (license.content) fm.license = license.content.id;
+    if (license.code) fm.codeLicense = license.code.id;
 
     const doc = renderMarkdownDocument(extract, fm);
     const outPath = file.replace(/\.html$/, ".md");
