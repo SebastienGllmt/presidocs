@@ -76,6 +76,14 @@ export const ManifestSchema = z.object({
   // feeds reads it (for podcast:integrity), and it guards its own presence —
   // so it's `.optional()` here, tolerating an older manifest that predates it.
   audioDigest: z.string().optional(),
+  // Byte length of the delivered track. Feeds read it for the podcast
+  // `<enclosure length>` instead of stat-ing the file, which no longer ships to
+  // `dist/` (it's served from R2). `.optional()` so a manifest
+  // that predates the field still parses; feeds fall back to stat-ing the
+  // on-disk source track when it's absent. NOT in the manifest-name hash set
+  // (it's derived from the same bytes as `audioDigest`), so adding it is
+  // cache-neutral.
+  audioBytes: z.number().optional(),
   duration: MillisecondsSchema,
   chapters: z.array(ManifestChapterSchema),
   marks: z.array(ManifestMarkSchema),

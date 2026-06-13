@@ -38,6 +38,16 @@ run_worker_first = true
 binding = "COMMENTS"
 bucket_name = "my-private-blog-comments"
 
+# Full narration tracks. Served by the Worker (env.AUDIO) instead of the
+# `[assets]` bundle because a long track can exceed Cloudflare's hard 25 MiB
+# per-static-asset limit; R2 has no such cap. `binding` is the FIXED name the
+# shared engine Worker codes against; only `bucket_name` is per-repo. Tracks are
+# uploaded by the deploy step (generate/upload-audio-r2.ts).
+# Create out-of-band:  wrangler r2 bucket create my-private-blog-audio
+[[r2_buckets]]
+binding = "AUDIO"
+bucket_name = "my-private-blog-audio"
+
 # Workers Rate Limiting API bindings. First-class `[[ratelimits]]` block
 # (replaces the legacy `[[unsafe.bindings]] type = "ratelimit"` form — see
 # Workers docs → "Rate Limiting"; requires Wrangler ≥ 4.36.0).

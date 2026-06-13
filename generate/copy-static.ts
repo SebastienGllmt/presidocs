@@ -51,27 +51,65 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
-// The include rule for `generated/<slug>/` files: ship the per-post audio,
-// the (content-addressed) timing manifest, and the word-timed WebVTT
-// transcript; everything else under `generated/` is build-internal (caches,
-// dev comment blobs, GC indexes — see the header comment). Exact-name matches
-// for `manifest.json`/`captions.vtt` keep the rule tight (no stray `.json`/
-// `.vtt` swept in); `full.<hash>.mp3` is matched by extension and the hashed
-// manifest by its regex. Pure + exported so the rule is unit-testable.
+// The include rule for `generated/<slug>/` files: ship the (content-addressed)
+// timing manifest and the word-timed WebVTT transcript; everything else under
+// `generated/` is build-internal (caches, dev comment blobs, GC indexes — see
+// the header comment). Exact-name matches for `manifest.json`/`captions.vtt`
+// keep the rule tight (no stray `.json`/`.vtt` swept in). Pure + exported so
+// the rule is unit-testable.
+//
+// The full narration track (`full.<hash>.<ext>`) is deliberately NOT shipped:
+// a long track can exceed Cloudflare's hard 25 MiB per-static-asset limit, so
+// it's served from R2 by the Worker instead (env.AUDIO; createWorker.ts) and
+// uploaded by the deploy step (generate/upload-audio-r2.ts).
 export function shouldShipGeneratedFile(name: string): boolean {
   // Dotfiles (notably macOS AppleDouble `._*` sidecars) are never shipped.
   if (name.startsWith(".")) return false;
   return (
     MANIFEST_HASHED_RE.test(name) ||
     name === "manifest.json" ||
-    name === "captions.vtt" ||
-    name.endsWith(".mp3")
+    name === "captions.vtt"
+    // `full.<hash>.<ext>` audio → R2, not dist — see above.
     // The social-media video (`video.<hash>.mp4`, methodology.md → "Copying static artifacts") is a LOCAL
     // artifact only — NOT shipped to Cloudflare. The files are large and the
     // author uploads them to platforms by hand, so deploying/edge-serving them
     // would be pure waste; its `.json` sidecar is likewise build-internal. (To
     // edge-serve video again, re-add `VIDEO_HASHED_RE.test(name)` here plus the
     // `video/mp4` MIME + Range path in createWorker.ts.)
+  );
+}
+
+// Cloudflare Workers Static Assets cap each individual file at 25 MiB (a hard,
+// non-configurable platform limit). A build that ships an oversized file fails
+// deep inside Miniflare/wrangler with an opaque stack trace that only surfaces
+// at `bun run dev`/`wrangler deploy` and names a `dist/` path the author never
+// wrote. We pre-empt that with a legible failure at the step that produced the
+// tree. (The realistic offender — full narration tracks — is
+// already routed to R2 above; this is the backstop for anything else, e.g. an
+// outsized image.)
+const MAX_ASSET_BYTES = 25 * 1024 * 1024;
+
+async function assertNoOversizedAssets(): Promise<void> {
+  const offenders: { path: string; bytes: number }[] = [];
+  async function walk(dir: string): Promise<void> {
+    for (const e of await readdir(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) await walk(p);
+      else if (e.isFile()) {
+        const { size } = await stat(p);
+        if (size > MAX_ASSET_BYTES) offenders.push({ path: p, bytes: size });
+      }
+    }
+  }
+  await walk(DIST);
+  if (offenders.length === 0) return;
+  const lines = offenders.map(
+    (o) => `  ${relative(ROOT, o.path)} — ${(o.bytes / 1024 / 1024).toFixed(1)} MiB`,
+  );
+  throw new Error(
+    `Cloudflare Workers caps static assets at 25 MiB; these dist/ files exceed it:\n${lines.join("\n")}\n` +
+      `Audio tracks are served from R2 instead. For anything else, ` +
+      `shrink the file or serve it from R2/object storage rather than the asset bundle.`,
   );
 }
 
@@ -318,6 +356,10 @@ async function main(): Promise<void> {
       pwa.manifest ? "manifest.webmanifest" : "(no manifest)"
     }, ${pwa.icons} icon(s)`,
   );
+  // Backstop: fail legibly if anything in the final tree breaches Cloudflare's
+  // 25 MiB per-asset cap, rather than letting Miniflare/wrangler throw an opaque
+  // trace later.
+  await assertNoOversizedAssets();
   console.log("Done.");
 }
 

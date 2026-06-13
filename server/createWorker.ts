@@ -156,6 +156,44 @@ async function applyRangeSupport(req: Request, res: Response): Promise<Response>
   });
 }
 
+// Fetch the bytes for an audio path from R2 (`env.AUDIO`) when bound, else the
+// static-asset bundle. R2 is authoritative when bound: a long full track can
+// exceed Cloudflare's hard 25 MiB per-static-asset cap, so full narration
+// tracks live in R2 and no longer ship to dist/ (uploaded by
+// generate/upload-audio-r2.ts at deploy). A content repo WITHOUT the binding
+// (its tracks all under the cap) transparently falls back to the pre-R2 ASSETS
+// path. Returns a 200 Response (body + strong ETag + Content-Length + audio
+// Content-Type) or a non-200 the caller treats as "missing/swept".
+//
+// The body is returned WHOLE (R2's native Range isn't used here) so the tested
+// `applyRangeSupport` path — If-Range handling, 206 shaping, the shared range
+// parser — is reused unchanged; this matches the prior ASSETS behavior, which
+// also returned the whole body and sliced. (Native R2 `get(key,{range})` is a
+// future efficiency lever, not a correctness one.)
+async function fetchAudioBytes(env: Env, audioPath: string, baseUrl: string): Promise<Response> {
+  if (env.AUDIO) {
+    const obj = await env.AUDIO.get(audioPath.replace(/^\/+/, ""));
+    if (!obj) return new Response(null, { status: StatusCodes.NOT_FOUND });
+    const headers = new Headers();
+    // All delivered tracks are mono MP3 (audio-pipeline deliveryExt). Set the
+    // type directly rather than round-tripping R2 httpMetadata — fewer moving
+    // parts, and it can't drift from whatever the upload happened to tag.
+    headers.set("Content-Type", "audio/mpeg");
+    headers.set("ETag", obj.httpEtag); // R2 strong validator (already quoted)
+    // R2 gives the exact size — set Content-Length so HEAD carries it (RFC 9110
+    // §9.3.2) and the non-range GET advertises length; applyRangeSupport sets
+    // its own on a 206.
+    headers.set("Content-Length", String(obj.size));
+    // @ts-expect-error - R2's body is the workers-runtime ReadableStream; the DOM
+    // Response constructor's BodyInit doesn't unify with it (same object at runtime).
+    return new Response(obj.body, { status: StatusCodes.OK, statusText: "OK", headers });
+  }
+  // No AUDIO binding → serve from the asset bundle (the pre-R2 path).
+  const assetUrl = new URL(audioPath, baseUrl);
+  // @ts-expect-error - ASSETS.fetch takes the same Request shape; runtime/DOM Request types don't unify.
+  return env.ASSETS.fetch(new Request(assetUrl, { method: "GET" }));
+}
+
 // Content-Type the Static Assets binding's extension default doesn't reliably
 // give us. Returns the MIME to force, or null to leave the asset response
 // untouched. Pure + exported so the routing decision is unit-testable.
@@ -298,12 +336,11 @@ export function createWorkerHandler(content: WorkerContent) {
       });
     }
 
-    // Resolve the stable name to the live hashed asset and fetch it whole (the
-    // ASSETS binding ignores Range — applyRangeSupport slices below).
-    const assetUrl = new URL(audioPath, req.url);
-    // @ts-expect-error - ASSETS.fetch takes the same Request shape; the runtime and DOM Request types don't unify (mirrors the fall-through below).
-    const asset: Response = await env.ASSETS.fetch(new Request(assetUrl, { method: "GET" }));
-    if (asset.status !== 200) return null; // map points at a swept/missing file
+    // Resolve the stable name to the live track bytes — from R2 when bound, else
+    // the asset bundle (fetchAudioBytes). The source returns the whole body and
+    // ignores Range; applyRangeSupport slices below.
+    const asset = await fetchAudioBytes(env, audioPath, req.url);
+    if (asset.status !== 200) return null; // map points at a swept/missing object
 
     // Our validator + cache policy REPLACE whatever the binding emitted; we
     // validate on the strong content-hash ETag only.
@@ -360,14 +397,26 @@ export function createWorkerHandler(content: WorkerContent) {
       // --- Static assets fall-through. The Workers Static Assets binding
       //     handles caching headers and 404s for us. Still wrapped so the
       //     article HTML carries the document CSP. ---
-      // @ts-expect-error - ASSETS.fetch takes the same Request shape but
-      //     types between the runtime Request and DOM Request don't unify.
-      const assetResponse: Response = await env.ASSETS.fetch(req);
+      const path = new URL(req.url).pathname;
+      // Content-hashed full narration tracks are served from R2 (env.AUDIO) when
+      // bound — they no longer ship to dist/ because a long track can exceed
+      // Cloudflare's 25 MiB static-asset cap. Everything else
+      // (HTML, JS, CSS, fonts, manifests, captions, feeds) stays on the ASSETS
+      // bundle, and the immutable/range/Link handling below is identical either
+      // way. Without the binding, fetchAudioBytes itself falls back to ASSETS,
+      // so this is a transparent no-op for repos under the cap.
+      let assetResponse: Response;
+      if (env.AUDIO && HASHED_AUDIO_RE.test(path)) {
+        assetResponse = await fetchAudioBytes(env, path, req.url);
+      } else {
+        // @ts-expect-error - ASSETS.fetch takes the same Request shape but
+        //     types between the runtime Request and DOM Request don't unify.
+        assetResponse = await env.ASSETS.fetch(req);
+      }
 
       // Some static assets need an explicit Content-Type the binding's
       // extension default doesn't reliably give us (feeds, .vtt transcripts);
       // see staticAssetContentTypeOverride. Don't depend on the binding default.
-      const path = new URL(req.url).pathname;
       const overrideCt = staticAssetContentTypeOverride(path);
       // Public feed sidecars get ACAO so browser-based podcast players can
       // fetch them cross-origin (feedAssetCorsOrigin is scoped to those paths

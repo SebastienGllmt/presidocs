@@ -925,6 +925,12 @@ const manifest = {
   // dev server. Hashed into the manifest name below so the content-addressing
   // invariant (filename = hash of narration-bearing fields) still holds.
   audioDigest,
+  // Byte length of the delivered track. feeds.ts reads it for the podcast
+  // `<enclosure length>`; since the track is served from R2 and no longer ships
+  // to dist/, feeds can't stat the dist file for it. NOT in the
+  // manifest-name hash set below (derived from the same bytes as `audioDigest`),
+  // so it's cache-neutral.
+  audioBytes: fullDelivered.byteLength,
   // Build provenance: what actually produced this narration. NOT folded into the
   // manifest-name hash below — the engine/voice/aligner choice is already fully
   // reflected in the hashed `audioDigest` (different engine → different bytes)

@@ -590,9 +590,20 @@ async function main(): Promise<void> {
       try {
         const m = (await Bun.file(join(manifestDir, manifestName)).json()) as Manifest;
         if (m.audio && typeof m.duration === "number") {
-          const distAudio = join(distDir, m.audio.replace(/^\//, ""));
-          if (existsSync(distAudio)) {
-            const byteLength = (await stat(distAudio)).size;
+          // Enclosure byte length. The track is served from R2 and no longer
+          // ships to dist/, so we can't stat the dist file.
+          // Prefer the manifest's persisted `audioBytes`; fall back to stat-ing
+          // the on-disk SOURCE track (always present at build time) for a
+          // manifest that predates the field. Null ⇒ no measurable enclosure ⇒
+          // Atom-only for this post.
+          const srcAudio = join(manifestDir, m.audio.split("/").pop() ?? "");
+          const byteLength =
+            typeof m.audioBytes === "number" && m.audioBytes > 0
+              ? m.audioBytes
+              : existsSync(srcAudio)
+                ? (await stat(srcAudio)).size
+                : null;
+          if (byteLength !== null) {
             // Emit the Podlove chapters sidecar next to the audio. The sidecar
             // format is flat (no nesting primitive), so the two-level hierarchy
             // degrades to a flat list with part-prefixed child

@@ -5,11 +5,19 @@ import { shouldShipGeneratedFile } from "./copy-static.ts";
 // proposals/39: captions.vtt joins the shipped set so it can back a
 // <podcast:transcript type="text/vtt">.
 
-test("ships the per-post audio, manifest, and word-timed transcript", () => {
-  expect(shouldShipGeneratedFile("full.f2985f8c0b4fd293.mp3")).toBe(true);
+test("ships the manifest and word-timed transcript", () => {
   expect(shouldShipGeneratedFile("manifest.f08390bb7a2d25d7.json")).toBe(true);
   expect(shouldShipGeneratedFile("manifest.json")).toBe(true); // dev bare-name fallback
   expect(shouldShipGeneratedFile("captions.vtt")).toBe(true);
+});
+
+test("does NOT ship the full audio track (served from R2, not dist)", () => {
+  // A long track can exceed Cloudflare's 25 MiB static-asset cap, so the full
+  // narration is served from R2 by the Worker and uploaded by the deploy step,
+  // never bundled into dist/.
+  expect(shouldShipGeneratedFile("full.f2985f8c0b4fd293.mp3")).toBe(false);
+  // A stray .mp3 isn't shipped either (the rule no longer matches the extension).
+  expect(shouldShipGeneratedFile("clip.mp3")).toBe(false);
 });
 
 test("does NOT ship build-internal files or stray same-extension names", () => {

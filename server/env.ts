@@ -36,6 +36,13 @@ export type Env = {
   // for any request that doesn't match an API route.
   ASSETS: Fetcher;
 
+  // R2 bucket holding the full narration tracks (`generated/<slug>/full.<hash>.<ext>`).
+  // Served by the Worker instead of the `[assets]` bundle because a long track can
+  // exceed Cloudflare's hard 25 MiB per-static-asset limit; R2 has no such cap.
+  // Optional: a content repo without the binding (its tracks all under the cap)
+  // falls back to the ASSETS path — see `createWorker.ts` `fetchAudioBytes`.
+  AUDIO?: R2Bucket;
+
   // Cloudflare Analytics Engine dataset for engagement events
   // (page_view, narration_play, narration_quartile). Write-only from
   // the Worker via `server/analyticsRoute.ts`; queried by the operator

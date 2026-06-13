@@ -439,6 +439,22 @@ export async function startWranglerServer(blogDirOverride?: string): Promise<Blo
     }
   }
 
+  // Full narration tracks are served from R2, not dist, so the
+  // prod Worker (createWorker.ts → env.AUDIO) needs them in Miniflare's local R2.
+  // Seed it from generated/ on disk before booting wrangler dev, into the SAME
+  // default local state dir wrangler dev uses below (cwd=blogDir, no
+  // --persist-to). Auto-discovers the AUDIO bucket from the blog's wrangler.toml;
+  // a graceful no-op for a blog without the binding.
+  const seed = spawn(["bun", "engine/generate/upload-audio-r2.ts", "--local"], {
+    cwd: blogDir,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if ((await seed.exited) !== 0) {
+    const err = await new Response(seed.stderr as ReadableStream).text();
+    throw new Error(`audio R2 seed failed before wrangler dev:\n${err}`);
+  }
+
   const port = await freePort();
   const baseURL = `http://127.0.0.1:${port}`;
 
