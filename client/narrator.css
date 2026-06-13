@@ -874,7 +874,14 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
     0 12px 28px -10px rgba(0, 0, 0, 0.6),
     0 4px 12px -6px rgba(0, 0, 0, 0.45);
 }
-#narrate-player .shk-title { color: #f0f6fc; }
+/* Both the title AND its marquee clone (the `:after` duplicate Shikwasa
+   scrolls in when the title overflows) must take the dark-dock light color.
+   The base rule above colors both with --page-fg; recoloring only .shk-title
+   here leaves the clone at the article's dark --page-fg, so the marquee would
+   alternate light (real title) and near-black (clone) as it scrolls. Keep
+   this selector list in lockstep with the base .shk-title rule. */
+#narrate-player .shk-title,
+#narrate-player .shk-title_wrap[data-overflow] .shk-title_inner:after { color: #f0f6fc; }
 #narrate-player .shk-artist { color: rgba(240, 246, 252, 0.6); }
 #narrate-player .shk-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
 #narrate-player .shk-btn_speed {
