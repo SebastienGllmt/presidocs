@@ -130,16 +130,102 @@ function figureSourceLink(doc: Document, figure: Element, base: string | undefin
   return a;
 }
 
+// A labeled part divider (`<div class="section-divider-labeled">`) is the post's
+// *part* boundary — the level above `<h2>` that groups several sections (see
+// methodology → "A part is one entity with three renderings"). In the HTML it is
+// deliberately a presentational `<div>`, not a heading, so the on-page document
+// outline stays narration-independent and a11y-stable. The Markdown twin is a
+// different, derived artifact whose job is structural fidelity for ingestion, so
+// here the part earns a real heading level — mirroring the part → section
+// nesting the outline drawer (`collectOutline`) already renders. (methodology →
+// "Copy as Markdown" → "Heading hierarchy: the part divider earns a level".)
+const DIVIDER_SELECTOR = ".section-divider-labeled";
+
+// Rename `el` to `tag`, preserving its `id` and moving its children across.
+// linkedom has no `renameNode`, so a rename is create + copy id + adopt
+// children + replace. The `id` is carried through then dropped by Turndown,
+// exactly as today's authored `<h2 id>` is — the twin has no heading anchors.
+function renameElement(doc: Document, el: Element, tag: string): void {
+  const renamed = doc.createElement(tag);
+  const id = el.getAttribute("id");
+  if (id) renamed.setAttribute("id", id);
+  while (el.firstChild) renamed.appendChild(el.firstChild);
+  el.replaceWith(renamed);
+}
+
+// Give part dividers a heading level in the twin — but only when the post has
+// parts, so a divider-free post is untouched (`<h2>` stays `##`). When parts
+// exist: promote each divider into the `<h2>` slot and demote the authored
+// headings *inside* a part one level, yielding `#` title / `##` part / `###`
+// section / `####` subsection.
+//
+// Demotion is **position-aware**: only headings that follow the first divider in
+// document order are bumped. A section *before* the first divider is a top-level
+// intro section — the on-page outline drawer (`collectOutline`) renders it
+// ungrouped, above the first part — so it keeps its level and stays a sibling of
+// the parts rather than nesting a level deeper (which would also leave a `#`→`###`
+// level skip). This mirrors the drawer exactly, which is the whole justification
+// for promoting dividers in the first place. The demotion runs high level → low
+// so each heading is bumped exactly once; it clamps at `<h6>` (Markdown has no
+// deeper level, and `####`+ already exceeds the depth most renderers visually
+// differentiate).
+//
+// The divider's label is emitted verbatim, including any inline `Short-term · …`
+// prefix: that implicit super-part is a label convention, not encoded structure,
+// so the twin does not reconstruct it (methodology → "Copy as Markdown" → "The
+// implicit 'timeline' super-part is emitted verbatim, not reconstructed").
+function rebuildPartHeadings(doc: Document): void {
+  const dividers = [...doc.querySelectorAll(DIVIDER_SELECTOR)];
+  if (dividers.length === 0) return;
+
+  // Walk dividers + headings together in document order (a combined
+  // `querySelectorAll` yields tree order across all matches — the reliable
+  // ordering primitive here; linkedom's `compareDocumentPosition` is unreliable
+  // across sibling subtrees). Headings before the first divider are top-level
+  // intro sections and keep their level; everything from the first divider on
+  // sits inside a part and demotes one level.
+  const toDemote: Element[] = [];
+  let insidePart = false;
+  for (const node of doc.querySelectorAll(`h2, h3, h4, h5, h6, ${DIVIDER_SELECTOR}`)) {
+    if (node.matches(DIVIDER_SELECTOR)) insidePart = true;
+    else if (insidePart) toDemote.push(node);
+  }
+
+  // Each entry is a distinct original heading renamed exactly once, so order is
+  // irrelevant; clamp at `<h6>` (Markdown has no deeper level, and `####`+
+  // already exceeds the depth most renderers visually differentiate).
+  for (const heading of toDemote) {
+    const level = Number(heading.tagName.slice(1));
+    const next = Math.min(level + 1, 6);
+    if (next !== level) renameElement(doc, heading, `h${next}`);
+  }
+
+  for (const divider of dividers) {
+    // Strip the enhanced "play from here" speaker defensively — narrator.ts
+    // injects it only on a post-JS DOM, so it's absent from the build/source
+    // HTML this transform runs on, but a future live-DOM caller mustn't fold
+    // "Play narration…" into the heading text.
+    divider.querySelector(".divider-speaker")?.remove();
+    renameElement(doc, divider, "h2");
+  }
+}
+
 // Mutate `doc` in place into the simplified DOM both extraction paths share:
-// title-h1 removed, every `<figure>` collapsed to a caption note, all runtime
-// chrome stripped. Operates document-wide (not just the article root) so the
-// dock — a *sibling* of <article> — is gone before Readability scores siblings.
+// title-h1 removed, part dividers promoted to headings, every `<figure>`
+// collapsed to a caption note, all runtime chrome stripped. Operates
+// document-wide (not just the article root) so the dock — a *sibling* of
+// <article> — is gone before Readability scores siblings.
 function preClean(doc: Document, root: Element, figureSrcBase?: string): void {
   // Drop the title-h1 (we emit the title ourselves). Match by id first, then
   // the root's first h1, so a post without `id="title"` still de-dupes.
   const titleH1 =
     root.querySelector("h1#title") ?? root.querySelector("h1");
   titleH1?.remove();
+
+  // Rebuild the heading hierarchy before figures/chrome and before Readability:
+  // a real `<h2>` (vs the original plain `<div>`) is structure Readability keeps
+  // rather than scoring as droppable boilerplate.
+  rebuildPartHeadings(doc);
 
   for (const figure of [...doc.querySelectorAll("figure")]) {
     const caption = figureCaption(figure);

@@ -302,3 +302,82 @@ test("a static figure (no data-figure-src) gets no link, even with a base", () =
   // exactly one source link total — only the animated figure is linked.
   expect(markdown.match(/\[source\]/g)?.length ?? 0).toBe(1);
 });
+
+// --- Part dividers in the twin (methodology → Copy as Markdown) --------------
+
+// A post with parts: two labeled dividers, each opening a section whose `<h2>`
+// then contains an `<h3>`. Bodies are padded so the Readability path (not just
+// the fallback) keeps the structure — this exercises the real extractor. The
+// first divider carries the `Short-term · …` inline prefix that must survive
+// verbatim (the implicit super-part is NOT reconstructed into its own level).
+const PARTS_FIXTURE = `<!DOCTYPE html><html lang="en"><head><title>Parted</title></head>
+<body>
+<article data-narration-src="/generated/parted/manifest.json" role="main">
+  <h1 id="title">Parted Post</h1>
+  <p id="lede">An introduction long enough that the extractor treats this as a genuine article body worth keeping, rather than discarding the whole thing as too short to be readable content.</p>
+  <section>
+    <h2 id="intro">A pre-part intro section</h2>
+    <p>This standalone section precedes the first part divider, so it is a top-level section and must stay at its original level rather than being demoted under a part that does not exist yet.</p>
+  </section>
+  <div class="section-divider-labeled" id="p-one">Short-term · First part</div>
+  <section>
+    <h2 id="s1">First section</h2>
+    <p>Body text for the first section, again with enough words to be substantive and survive the extractor's readerability scoring without being pruned.</p>
+    <h3 id="sub1">A subsection</h3>
+    <p>Subsection prose continuing the discussion with additional detail and several more words so the document body stays comfortably weighty.</p>
+  </section>
+  <div class="section-divider-labeled" id="p-two">Second part</div>
+  <section>
+    <h2 id="s2">Second section</h2>
+    <p>More body text for the second section so the whole document sits well above the extractor's minimum content-length threshold throughout.</p>
+  </section>
+</article>
+</body></html>`;
+
+test("a part divider becomes an h2 and authored headings cascade down one level", () => {
+  const { markdown } = htmlToMarkdown(PARTS_FIXTURE);
+  // part divider → ##, section <h2> → ###, subsection <h3> → ####
+  expect(markdown).toContain("## Short-term · First part");
+  expect(markdown).toContain("### First section");
+  expect(markdown).toContain("#### A subsection");
+  expect(markdown).toContain("## Second part");
+  expect(markdown).toContain("### Second section");
+});
+
+test("a section before the first divider stays top-level (##), not demoted under a part", () => {
+  // Position-aware demotion: only headings *inside* a part (after the first
+  // divider) are bumped. A pre-part intro section is a sibling of the parts —
+  // the outline drawer renders it ungrouped — so it keeps `##`, and there is no
+  // `#`→`###` level skip at the top of the document.
+  const { markdown } = htmlToMarkdown(PARTS_FIXTURE);
+  expect(markdown).toContain("## A pre-part intro section");
+  expect(markdown).not.toContain("### A pre-part intro section");
+});
+
+test("the divider label is emitted verbatim — the inline `Short-term · ` prefix is NOT reconstructed into its own level", () => {
+  const { markdown } = htmlToMarkdown(PARTS_FIXTURE);
+  // No deeper-than-#### heading is synthesized for the implicit super-part.
+  expect(markdown).not.toContain("##### ");
+  // The prefix rides along inside the part heading, exactly as authored — it is
+  // never split out into a standalone `## Short-term` grouping heading.
+  expect(markdown).not.toContain("## Short-term\n");
+  expect(markdown).toContain("## Short-term · First part");
+});
+
+test("the part label is a heading, not orphaned plain text (the bug this fixes)", () => {
+  const { markdown } = htmlToMarkdown(PARTS_FIXTURE);
+  const lines = markdown.split("\n");
+  // The label must not appear as a bare paragraph line anywhere — only ever as
+  // an `##`-prefixed heading.
+  expect(lines).not.toContain("Short-term · First part");
+  expect(lines).not.toContain("Second part");
+});
+
+test("a post with no dividers is untouched: <h2>→##, <h3>→### (no demotion)", () => {
+  // The main golden already locks this for FIXTURE; assert it explicitly as the
+  // regression guard — the heading rebuild is keyed on dividers being present.
+  const { markdown } = htmlToMarkdown(FIXTURE);
+  expect(markdown).toContain("## First section");
+  expect(markdown).toContain("### A sub-section");
+  expect(markdown).not.toContain("#### ");
+});
