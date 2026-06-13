@@ -691,10 +691,11 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 #narrate-player .shk-btn_more,
 #narrate-player .shk-controls_extra { display: none !important; }
 
-/* With the time display now centered inside .shk-main instead of floating
-   above it, we no longer need to inflate .shk-main with min-height or push
-   the buttons to the bottom with flex-end. Buttons sit naturally at their
-   own height, vertically centered alongside the title and time. */
+/* The time display lives inside .shk-main rather than in a dedicated band
+   above it, so we never inflate .shk-main with min-height. This base centers
+   everything vertically — correct for the mobile column layout. The desktop
+   (≥641px) override further down top-aligns .shk-main to seat the time on the
+   artist row while keeping the buttons centered via align-self. */
 #narrate-player .shk-main {
   max-width: 100%;
   padding: 0;
@@ -803,6 +804,39 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.01em;
   color: var(--page-fg-muted);
+}
+
+/* Desktop (horizontal layout) only: lift the time onto the artist's row — the
+   UPPER of the two text lines (Shikwasa stacks the short artist label on top
+   and the bold title beneath it) — instead of floating it vertically centered
+   on the seam between the two rows. The title is the long line; leaving the
+   time on the seam crowds it once the title runs wide. The artist label is
+   short, so the time slots into the empty space at the right of its row.
+
+   Top-align .shk-main so .shk-text's top edge (the artist row) meets the
+   main's top, then pin .shk-display there. The button cluster is pulled back
+   to vertical center with align-self, so only the time moves; the controls
+   stay where they were. No hard-coded row height: this tracks the artist
+   line's font/line-height on its own.
+
+   MUST come after the base .shk-display / .shk-main / .shk-controls rules
+   above: equal selector specificity means later source order wins (same
+   reason the padding-right override is pinned after the .shk-player base).
+   The mobile (≤640px) column layout keeps the unmodified base rules. */
+@media (min-width: 641px) {
+  #narrate-player .shk-main { align-items: flex-start; }
+  #narrate-player .shk-controls { align-self: center; }
+  #narrate-player .shk-display {
+    top: 0;
+    bottom: auto;
+    transform: translateX(-50%);
+    /* Match the artist row's line box (the base rule tightens this to `1` for
+       the centered layout) so the top-anchored time shares the artist text's
+       vertical center instead of hugging the top of the row. .shk-artist_wrap
+       inherits Shikwasa's line-height; inheriting it here makes the two line
+       boxes equal height, so equal top edges → equal centers. */
+    line-height: inherit;
+  }
 }
 
 /* --- Mobile tweaks --------------------------------------------------------- */
