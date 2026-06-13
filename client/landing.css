@@ -89,6 +89,29 @@ main.legal a { color: #0969da; }
   font-size: .9rem;
 }
 
+/* Licenses & acknowledgements page (generate/licenses-page.ts). Each bundled
+   dependency's full license text sits in a collapsed <details>; the texts have
+   very long lines (Apache-2.0 especially), so wrap them — an unwrapped <pre>
+   would overflow the viewport on mobile (horizontal scroll / layout shift). */
+main.legal details { margin: .35rem 0 0; }
+main.legal summary {
+  cursor: pointer;
+  color: #0969da;
+  font-size: .85rem;
+}
+main.legal pre.license-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 0.8rem/1.45 var(--font-mono);
+  background: #f6f8fa;
+  padding: .75rem;
+  border-radius: 6px;
+  margin: .5rem 0 0;
+  max-height: 22rem;
+  overflow-y: auto;
+}
+.license-supplement { font-size: .9rem; }
+
 /* Site footer — present on every page (landing, posts, legal). Holds the
    privacy-policy link required by GDPR / CalOPPA / APPI guidance. Kept
    minimal so it never competes with content for attention. */

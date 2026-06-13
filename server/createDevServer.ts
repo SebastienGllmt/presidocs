@@ -31,12 +31,14 @@ import { buildOpenApiDocument } from "./openapi.ts";
 import { handleAnalyticsRequest } from "./analyticsRoute.ts";
 import { handleRegenerateRequest } from "./regenerate.dev.ts";
 import { renderHelpHtmlFromSource } from "../generate/help-page.ts";
+import { renderLicensesHtmlFromSource } from "../generate/licenses-page.ts";
 import { handleSoundTestList, handleSoundTestRegenerate } from "./soundTest.dev.ts";
 import { withSecurityHeaders } from "../shared/securityHeaders.ts";
 import { buildAuthorMap } from "../shared/authorProfile.ts";
 import { buildPublicPostVersionsMap } from "../shared/publicPostVersions.ts";
 import { htmlToMarkdown, renderMarkdownDocument, type FrontMatter } from "../shared/htmlToMarkdown.ts";
 import { resolveLicenseConfig } from "../shared/licenseConfig.ts";
+import { OWN_LICENSE_FILENAME } from "../shared/servedLicense.ts";
 import { isValidFigureSrc, spdxHeader } from "../shared/figureSource.ts";
 import type { BlogPaths } from "../shared/blogPaths.ts";
 import { isPrivateBlog } from "../shared/blogPrivacy.ts";
@@ -356,6 +358,33 @@ export async function createDevServer(opts: DevServerOptions) {
       }
       return new Response(html, {
         headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+      });
+    }),
+    // Combined license + third-party acknowledgements page (proposal 60). In
+    // prod it's a dist/ artifact (generate/licenses-page.ts); here it's rendered
+    // on the fly from source per request (like /help), deriving the client dep
+    // set from the real bundle metafile each time. Null → no SITE_URL, so no page.
+    "/licenses": pub(async () => {
+      const html = await renderLicensesHtmlFromSource(
+        '<link rel="stylesheet" href="/engine/client/landing.css" />',
+      );
+      if (html == null) return new Response("not found", { status: StatusCodes.NOT_FOUND });
+      return new Response(html, {
+        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+      });
+    }),
+    // The blog's own license, served self-hosted (proposal 60). In prod
+    // copy-static.ts ships LICENSE.md to dist/license; here we read it from the
+    // content root per request, as text/plain — matching the Worker's
+    // staticAssetContentTypeOverride for /license. Missing → 404 (and the footer
+    // link stays on the external deed, same as prod).
+    "/license": pub(async () => {
+      const own = Bun.file(join(paths.contentRoot, OWN_LICENSE_FILENAME));
+      if (!(await own.exists())) {
+        return new Response("not found", { status: StatusCodes.NOT_FOUND });
+      }
+      return new Response(await own.text(), {
+        headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
       });
     }),
     // The engine landing stylesheet, so the on-the-fly /help above is styled the

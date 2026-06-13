@@ -33,6 +33,15 @@ test("figure source is pinned to text/plain (not the .ts→video/mp2t sniff)", (
   );
 });
 
+test("the blog's own license (/license) is pinned to text/plain (proposal 60)", () => {
+  // copy-static ships LICENSE.md to the extension-less dist/license; without the
+  // override the binding serves it as octet-stream (a download) instead of text.
+  expect(staticAssetContentTypeOverride("/license")).toBe("text/plain; charset=utf-8");
+  // Scoped to the exact path — the combined /licenses page is real HTML and must
+  // keep the binding's text/html default, not be forced to plain text.
+  expect(staticAssetContentTypeOverride("/licenses")).toBeNull();
+});
+
 test("ordinary asset paths are left untouched (null → no override)", () => {
   expect(staticAssetContentTypeOverride("/posts/offer-files")).toBeNull();
   expect(staticAssetContentTypeOverride("/generated/offer-files/full.f2985f8c0b4fd293.mp3")).toBeNull();

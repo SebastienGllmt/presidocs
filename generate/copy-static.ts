@@ -35,6 +35,7 @@ import { isPrivateBlog } from "../shared/blogPrivacy.ts";
 import { buildAuthorMap } from "../shared/authorProfile.ts";
 import { buildPublicPostVersionsMap } from "../shared/publicPostVersions.ts";
 import { MANIFEST_HASHED_RE } from "../shared/manifestFile.ts";
+import { OWN_LICENSE_FILENAME, ownLicenseSourcePath } from "../shared/servedLicense.ts";
 import { renderHttpRangeForSw, spliceHttpRangeIntoSw } from "./swHttpRange.ts";
 
 const paths = resolveBlogPaths();
@@ -214,6 +215,28 @@ async function copyFonts(): Promise<number> {
   return n;
 }
 
+// The blog's OWN license → dist/license (proposal 60, closing proposal 59's
+// gap #2). Proposal 59 declared CONTENT_LICENSE/CODE_LICENSE and pointed the
+// footer link at the external deed, but the full combined text (notably the
+// code half) was never reachable from the site. Copy the content repo's
+// LICENSE.md to dist/license; the Worker forces text/plain on it
+// (staticAssetContentTypeOverride) and the footer "License" link retargets here
+// (shared/servedLicense.ts). It's a per-blog constant (the blog's own terms,
+// never a post), so — like /fonts/OFL.txt — it's served unconditionally,
+// including on a private blog. Missing LICENSE.md → nothing served and the
+// footer link stays on the external deed (same fail-silent posture as the rest).
+async function copyOwnLicense(): Promise<boolean> {
+  const src = ownLicenseSourcePath(ROOT);
+  if (!(await exists(src))) {
+    console.warn(
+      `  ${OWN_LICENSE_FILENAME} not found in content root — skipping /license (footer link stays on the external deed)`,
+    );
+    return false;
+  }
+  await cp(src, join(DIST, "license"));
+  return true;
+}
+
 async function copyAuthorAssets(): Promise<number> {
   const { map, avatars } = await buildAuthorMap(
     paths.postsDir,
@@ -342,6 +365,8 @@ async function main(): Promise<void> {
   if (wasmOk) console.log(`  automerge.wasm → dist/assets/automerge.wasm`);
   const fontCount = await copyFonts();
   console.log(`  client/fonts → dist/fonts/ (${fontCount} file(s), incl. OFL.txt)`);
+  const ownLicense = await copyOwnLicense();
+  if (ownLicense) console.log(`  ${OWN_LICENSE_FILENAME} → dist/license (served at /license)`);
   const avatarCount = await copyAuthorAssets();
   console.log(
     `  authors/ → dist/assets/authors.json + ${avatarCount} avatar(s)`,

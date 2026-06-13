@@ -41,6 +41,7 @@
 import type { BunPlugin } from "bun";
 import { injectSiteFooter } from "./injectFooter.ts";
 import { resolveLicenseConfig } from "./licenseConfig.ts";
+import { resolveLicenseLinkHref, ACKNOWLEDGEMENTS_PATH } from "./servedLicense.ts";
 
 export type SiteFooterPluginOptions = {
   // Override for the privacy-policy URL. Defaults to PRIVACY_POLICY_URL,
@@ -65,14 +66,28 @@ export function injectSiteFooterFromEnv(
 ): string {
   const privacyHref = (opts.privacyHref ?? process.env.PRIVACY_POLICY_URL ?? "").trim();
   const helpHref = (opts.helpHref ?? (process.env.SITE_URL ? "/help" : "")).trim();
-  // Content license: link the deed/text, labelled with its SPDX id. Resolved
+  // Content license: link the license text, labelled with its SPDX id. Resolved
   // from the same env as everywhere else (CONTENT_LICENSE), so the build-time
-  // and post-build paths agree by construction. Null → no license link.
+  // and post-build paths agree by construction. Null → no license link. The href
+  // prefers the SELF-HOSTED /license (proposal 60) when the blog ships a
+  // LICENSE.md, falling back to the external deed — via the shared predicate so
+  // this path and strip-served-html.ts can't disagree.
   const content = resolveLicenseConfig().content;
-  const licenseHref = content?.url ?? "";
+  const licenseHref = resolveLicenseLinkHref(content?.url ?? "");
   const licenseLabel = content?.id ?? "";
-  if (!privacyHref && !helpHref && !licenseHref) return html;
-  return injectSiteFooter(html, { privacyHref, helpHref, licenseHref, licenseLabel });
+  // Acknowledgements (proposal 60): the combined /licenses page is emitted under
+  // the same SITE_URL gate /help is (generate/licenses-page.ts), so it exists by
+  // serve time exactly when the help link does — gate it on the same resolved
+  // condition rather than re-reading the env.
+  const acknowledgementsHref = helpHref ? ACKNOWLEDGEMENTS_PATH : "";
+  if (!privacyHref && !helpHref && !licenseHref && !acknowledgementsHref) return html;
+  return injectSiteFooter(html, {
+    privacyHref,
+    helpHref,
+    licenseHref,
+    licenseLabel,
+    acknowledgementsHref,
+  });
 }
 
 export function siteFooterPlugin(opts: SiteFooterPluginOptions = {}): BunPlugin {

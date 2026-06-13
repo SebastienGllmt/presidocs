@@ -214,6 +214,11 @@ export function staticAssetContentTypeOverride(pathname: string): string | null 
   //    otherwise sniffs to. Scoped to the figures dir; figure source is the only
   //    `.ts` served. Matches the dev route (createDevServer.ts serveFigureSource).
   if (pathname.endsWith(".ts") && pathname.includes("/figures/")) return "text/plain; charset=utf-8";
+  //  - the blog's own license (proposal 60): copy-static ships LICENSE.md to the
+  //    extension-less dist/license, which the binding would otherwise serve as
+  //    octet-stream (a download). Force text/plain so the footer "License" link
+  //    renders the terms in the browser. Mirrors the dev route in createDevServer.ts.
+  if (pathname === "/license") return "text/plain; charset=utf-8";
   return null;
 }
 

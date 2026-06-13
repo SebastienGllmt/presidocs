@@ -78,3 +78,23 @@ test("injectSiteFooter — a license href with no label falls back to 'License'"
   const out = injectSiteFooter(PAGE, { licenseHref: "/license" });
   expect(out).toContain('<a href="/license" rel="license">License</a>');
 });
+
+test("injectSiteFooter — acknowledgements link last, after license (proposal 60)", () => {
+  const out = injectSiteFooter(PAGE, {
+    helpHref: "/help",
+    privacyHref: "/privacy",
+    licenseHref: "/license",
+    licenseLabel: "CC-BY-4.0",
+    acknowledgementsHref: "/licenses",
+  });
+  expect(out).toContain('<a href="/licenses">Acknowledgements</a>');
+  // Stable order: License before Acknowledgements.
+  expect(out.indexOf(">CC-BY-4.0<")).toBeLessThan(out.indexOf(">Acknowledgements<"));
+});
+
+test("injectSiteFooter — acknowledgements alone is enough to render the footer", () => {
+  const out = injectSiteFooter(PAGE, { acknowledgementsHref: "/licenses" });
+  expect(out).toContain('<footer class="site-footer">');
+  expect(out).toContain(">Acknowledgements</a>");
+  expect(out).not.toContain("How this blog works");
+});

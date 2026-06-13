@@ -47,7 +47,7 @@ import { buildAuthorMap } from "../shared/authorProfile.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 import { decodeHtmlEntities } from "../shared/htmlEntities.ts";
 import { findManifestName } from "../shared/manifestFile.ts";
-import { injectSiteFooter } from "../shared/injectFooter.ts";
+import { injectSiteFooterFromEnv } from "../shared/bunFooterPlugin.ts";
 // Typed Schema.org vocabulary (Apache-2.0), `import type` only → erased at
 // compile time, never bundled. Catches a misspelled `@type`/property in the
 // FAQ graph at `tsc` instead of in Google's validator post-deploy.
@@ -550,8 +550,11 @@ async function buildHelpContext(args: {
 }
 
 // PWA <head> + site footer chrome, so /help isn't an outlier among served pages.
-// Shared by prod and dev. Reads the content repo's manifest for theme/icon.
-async function applyHelpChrome(helpHtml: string, privacyHref: string | null): Promise<string> {
+// Shared by prod and dev. Reads the content repo's manifest for theme/icon. The
+// footer is composed by the same env-derived helper every other served page uses
+// (injectSiteFooterFromEnv), so /help carries the identical Home / Help / Privacy
+// / License / Acknowledgements set — no per-page footer drift.
+async function applyHelpChrome(helpHtml: string): Promise<string> {
   let out = helpHtml;
   const manifestSrc = join(paths.contentRoot, "manifest.webmanifest");
   if (existsSync(manifestSrc)) {
@@ -562,7 +565,7 @@ async function applyHelpChrome(helpHtml: string, privacyHref: string | null): Pr
       // malformed manifest → skip PWA head
     }
   }
-  return injectSiteFooter(out, { privacyHref: privacyHref ?? "", helpHref: "/help" });
+  return injectSiteFooterFromEnv(out);
 }
 
 async function readVersions(): Promise<Record<string, VersionEntry[]>> {
@@ -618,7 +621,7 @@ export async function renderHelpHtmlFromSource(cssLinks: string): Promise<string
     cssLinks,
   });
   const helpHtml = buildHelpHtml(ctx, buildQuestions(ctx));
-  return applyHelpChrome(helpHtml, ctx.privacyHref);
+  return applyHelpChrome(helpHtml);
 }
 
 async function main(): Promise<void> {
@@ -682,7 +685,7 @@ async function main(): Promise<void> {
 
   // 1) Emit dist/help.html with the same head/footer chrome the other served
   //    pages get (PWA <head> + site footer) so /help isn't an outlier.
-  const helpHtml = await applyHelpChrome(buildHelpHtml(ctx, questions), ctx.privacyHref);
+  const helpHtml = await applyHelpChrome(buildHelpHtml(ctx, questions));
   await writeFile(landingPath.replace(/index\.html$/, "help.html"), helpHtml, "utf8");
 
   // 2) Inject the feature chips into the landing (idempotent).

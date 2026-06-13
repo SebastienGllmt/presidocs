@@ -35,6 +35,7 @@ import { collectHtmlFiles } from "../shared/walkHtml.ts";
 import { findManifestName } from "../shared/manifestFile.ts";
 import { isPrivateBlog } from "../shared/blogPrivacy.ts";
 import { resolveLicenseConfig } from "../shared/licenseConfig.ts";
+import { resolveLicenseLinkHref, ACKNOWLEDGEMENTS_PATH } from "../shared/servedLicense.ts";
 
 const paths = resolveBlogPaths();
 const ROOT = paths.contentRoot;
@@ -319,17 +320,25 @@ async function main(): Promise<void> {
   // Footer license link (proposal 59): same resolved content license the
   // JSON-LD uses, so the bunFooterPlugin and this backstop render an identical
   // footer (the idempotency-race contract). Empty when CONTENT_LICENSE is unset.
-  const licenseHref = contentLicense?.url ?? "";
+  // Prefers the self-hosted /license (proposal 60) when LICENSE.md ships, else
+  // the external deed — via the shared predicate the bunFooterPlugin also uses,
+  // so the two paths resolve the identical href.
+  const licenseHref = resolveLicenseLinkHref(contentLicense?.url ?? "");
   const licenseLabel = contentLicense?.id ?? "";
+  // Footer acknowledgements link (proposal 60): the combined /licenses page is
+  // emitted under the same SITE_URL gate /help is, so it exists by serve time on
+  // the same condition. Matches the bunFooterPlugin so the two paths agree.
+  const acknowledgementsHref = helpHref ? ACKNOWLEDGEMENTS_PATH : "";
 
   const stages = ["author-email + narration + PLS strip"];
   if (siteUrl) stages.push("structured data + OG + Twitter Card");
   else stages.push("(no SITE_URL — skipping structured-data inject)");
-  if (privacyHref || helpHref || licenseHref) {
+  if (privacyHref || helpHref || licenseHref || acknowledgementsHref) {
     const parts = [
       helpHref ? "help" : null,
       privacyHref ? "privacy" : null,
       licenseHref ? "license" : null,
+      acknowledgementsHref ? "acknowledgements" : null,
     ].filter(Boolean);
     stages.push(`site footer (${parts.join(" + ")})`);
   } else stages.push("(no PRIVACY_POLICY_URL / SITE_URL / CONTENT_LICENSE — skipping footer inject)");
@@ -451,8 +460,14 @@ async function main(): Promise<void> {
     // the privacy posture must hold even on a misconfigured build.
     if (privateBlog) after = injectNoindexMeta(after);
 
-    if (privacyHref || helpHref || licenseHref) {
-      after = injectSiteFooter(after, { privacyHref, helpHref, licenseHref, licenseLabel });
+    if (privacyHref || helpHref || licenseHref || acknowledgementsHref) {
+      after = injectSiteFooter(after, {
+        privacyHref,
+        helpHref,
+        licenseHref,
+        licenseLabel,
+        acknowledgementsHref,
+      });
     }
     if (pwaOpts) {
       after = injectPwaHead(after, pwaOpts);
