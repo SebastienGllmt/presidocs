@@ -860,10 +860,13 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 }
 
 /* ============================================================================
-   Spoken-script drawer — slides in from the left and lists the full
-   narration script grouped by chapter. Segments have stable
-   `id="spoken-<mark-name>"` so they're URL-fragment-targetable for deep
-   links and (future) per-segment comment threads.
+   Script & outline drawer — ONE drawer sliding in from the left, hosting two
+   panels that share the slot by construction: the spoken script (full
+   narration grouped by chapter; segments have stable `id="spoken-<mark-name>"`
+   so they're URL-fragment-targetable for deep links and per-segment comment
+   threads) and the article outline (parts + h2/h3, jump-to-section). Two
+   stacked edge tabs open straight to a panel; the header's panel tabs switch
+   in place while open.
    ============================================================================ */
 
 .narrate-drawer {
@@ -918,9 +921,16 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   transform: translateX(2px);
 }
 
-.narrate-drawer-tab[aria-expanded="true"] {
-  /* The drawer header already provides an X to close, so the tab is
-     redundant once the drawer is open — hide it rather than restyling. */
+/* The outline tab stacks below the script tab on the same edge. Offset =
+   script tab's top (96px) + its rendered height (~38px) + a 10px gap. */
+.narrate-drawer-tab[data-panel-target="outline"] {
+  top: 144px;
+}
+
+/* While the drawer is open both tabs hide: the header carries the panel
+   switcher and an X to close, so the edge handles are redundant — and on
+   mobile (drawer = 100vw) they'd sit off-screen anyway. */
+.narrate-drawer[data-open="true"] .narrate-drawer-tab {
   display: none;
 }
 
@@ -941,6 +951,12 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
 .narrate-drawer[data-entering="true"] .narrate-drawer-tab {
   animation: narrate-drawer-tab-in 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
+/* The outline tab follows the script tab on a short stagger — one cascade
+   down the edge rather than two things arriving at once. `both` keeps it
+   hidden until its delay elapses. */
+.narrate-drawer[data-entering="true"] .narrate-drawer-tab[data-panel-target="outline"] {
+  animation-delay: 70ms;
+}
 
 .narrate-drawer-header {
   display: flex;
@@ -951,13 +967,60 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   border-bottom: 1px solid #e1e4e8;
 }
 
-.narrate-drawer-header h2 {
+/* Panel switcher sitting where the old static title did, styled like it: the
+   active panel's name IS the drawer title — it just happens to have a sibling
+   you can press. Both stay at the full muted shade (6.17:1 — no faded-out
+   inactive state; see the contrast work in DESIGN.md): the active one is
+   distinguished by the accent underline and full-dark text, not by dimming
+   the other below readability. */
+.drawer-panel-tabs {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.drawer-panel-tab {
   margin: 0;
+  padding: 2px 0 6px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font: inherit;
   font-size: 0.82rem;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--page-fg-muted);
+  /* Reserve the underline's space at rest so toggling doesn't shift text. */
+  border-bottom: 2px solid transparent;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.drawer-panel-tab:hover {
+  color: var(--page-fg);
+}
+
+.drawer-panel-tab[aria-pressed="true"] {
+  color: var(--page-fg);
+  border-bottom-color: var(--accent-strong);
+  cursor: default;
+}
+
+/* Script panel's screen-reader title (the visible title moved into the panel
+   switcher). Standard visually-hidden recipe — NOT display:none, which would
+   hide it from the accessibility tree too. Also load-bearing for comment
+   anchors: this <h2> holds the same walk position + text the old header title
+   had, so the drawer's positional block ids don't renumber (see buildDrawer).
+   */
+.narrate-drawer-sr-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .narrate-drawer-close {
@@ -992,6 +1055,125 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   /* Sticky offset used by sub-chapter headings to stack just below the
      parent chapter heading. Must match the parent h3's effective height. */
   --sticky-chapter-h: 40px;
+}
+
+/* The inactive panel is `hidden`. Explicit (not left to the UA sheet) so a
+   later `display:` on either panel class can't silently re-show both. */
+.narrate-drawer-body[hidden],
+.narrate-drawer-outline[hidden] {
+  display: none;
+}
+
+/* ----------------------------------------------------------------------------
+   Outline panel — the article's structure (part dividers + h2/h3), one link
+   per entry. Mirrors the script panel's visual grammar: sticky part labels in
+   the labeled-divider style, a vertical hairline down each group's entries.
+   ---------------------------------------------------------------------------- */
+
+.narrate-drawer-outline {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 12px 32px;
+  scroll-behavior: smooth;
+}
+
+.outline-part {
+  margin: 0;
+}
+
+/* Part label: same sticky labeled-divider treatment as the script panel's
+   chapter headings (.spoken-chapter > h3). The label is itself a link — a
+   part divider has an id, so "jump to the part" is one click too. */
+.outline-part > h3 {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--page-bg);
+  display: flex;
+  align-items: center;
+  gap: 0.8em;
+  margin: 0;
+  padding: 12px 0 8px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--page-fg-muted);
+}
+
+.outline-part > h3::before,
+.outline-part > h3::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid currentColor;
+  opacity: 0.5;
+}
+
+/* The label link rides the h3's small-caps look; compact pill geometry so the
+   active fill (below) reads as a pill on it, like the chapter strip's. */
+.outline-part > h3 > a {
+  color: inherit;
+  text-decoration: none;
+  padding: 3px 10px;
+  margin: 0;
+  border-radius: 999px;
+}
+
+.outline-part > h3 > a:not(.outline-active):hover {
+  color: var(--page-fg);
+}
+
+/* Entry list: vertical hairline continuing the script panel's grammar. */
+.outline-entries {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 6px;
+  border-left: 1px solid rgba(87, 96, 106, 0.35);
+}
+
+.outline-entries > li {
+  display: block;
+}
+
+/* h3 entries sit one indent in, slightly smaller — sub-detail of their h2. */
+.outline-entries > li[data-level="3"] > .outline-link {
+  padding-left: 26px;
+  font-size: 0.82rem;
+}
+
+.outline-link {
+  display: block;
+  padding: 8px 12px;
+  margin: 2px 0;
+  border-radius: 8px;
+  color: var(--page-fg);
+  font-size: 0.88rem;
+  line-height: 1.35;
+  text-decoration: none;
+  scroll-margin-top: 16px;
+  scroll-margin-bottom: 16px;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.outline-link:hover {
+  background: rgba(15, 25, 40, 0.035);
+}
+
+.outline-link:focus-visible {
+  outline: 2px solid var(--accent-strong); /* focus ring on the light drawer → ≥3:1 */
+  outline-offset: 2px;
+}
+
+/* Current section (scroll-spy; aria-current="location" travels with it).
+   Reuses the chapter strip's active-pill treatment — solid accent fill,
+   white text (5.19:1, same pairing as .chapter-pill[data-active]) — so
+   "you are here" looks the same wherever this blog says it. Declared after
+   :hover so hovering the active entry doesn't wash the fill out. */
+.outline-link.outline-active {
+  background: var(--accent-strong);
+  color: #fff;
+  box-shadow: 0 4px 12px -4px rgba(88, 166, 255, 0.45);
 }
 
 .spoken-chapter {
@@ -1287,14 +1469,20 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   100% { background: transparent; }
 }
 
-/* Mobile: drawer fills the viewport (the tab still appears, hanging on the
-   right edge). */
+/* Mobile: drawer fills the viewport (the tabs still appear, hanging on the
+   right edge while closed; both hide when open — see the data-open rule). */
 @media (max-width: 640px) {
   .narrate-drawer {
     width: 100vw;
     border-right: none;
   }
   .narrate-drawer-tab { top: 64px; }
+  .narrate-drawer-tab[data-panel-target="outline"] { top: 112px; }
+  /* The mobile comments button (.cmt-comments-btn, fixed top-right, z 1500)
+     deliberately floats ABOVE the open drawer — it anchors the narration-
+     comment popovers — so keep the drawer's own close X clear of it instead
+     of fighting it: 16px FAB inset + 44px FAB + 12px gap. */
+  .narrate-drawer-header { padding-right: 72px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -16,6 +16,7 @@ import { beforeEach, expect, test } from "bun:test";
 
 import { asMs } from "../shared/time.ts";
 import {
+  collectOutline,
   firstMarkAfter,
   loadCaptureControls,
   parseSpokenHash,
@@ -434,4 +435,55 @@ test("matchesKeyBinding — jump-chapter matches 1-9 only, never 0 or multi-char
   expect(matchesKeyBinding(jump, { code: "Digit0", key: "0" })).toBe(false);
   expect(matchesKeyBinding(jump, { code: "", key: "12" })).toBe(false);
   expect(matchesKeyBinding(jump, { code: "KeyA", key: "a" })).toBe(false);
+});
+
+// ---- collectOutline (drawer outline panel source) ----------------------
+
+test("collectOutline — parts and h2/h3 in document order, with levels", () => {
+  document.body.innerHTML = `
+    <article>
+      <h2 id="lead">Lead section</h2>
+      <div class="section-divider-labeled" id="p-one">Part one</div>
+      <h2 id="a">Alpha</h2>
+      <h3 id="a-sub">Alpha detail</h3>
+      <h2 id="b">Beta</h2>
+    </article>
+  `;
+  const article = document.querySelector("article")!;
+  expect(collectOutline(article)).toEqual([
+    { kind: "heading", id: "lead", text: "Lead section", level: 2 },
+    { kind: "part", id: "p-one", text: "Part one" },
+    { kind: "heading", id: "a", text: "Alpha", level: 2 },
+    { kind: "heading", id: "a-sub", text: "Alpha detail", level: 3 },
+    { kind: "heading", id: "b", text: "Beta", level: 2 },
+  ]);
+});
+
+test("collectOutline — skips headings inside <figure> and <nav>, and id-less / empty ones", () => {
+  document.body.innerHTML = `
+    <article>
+      <h2 id="real">Real</h2>
+      <figure><h3 id="fig-h">Figure internals</h3></figure>
+      <nav><h2 id="nav-h">Nav chrome</h2></nav>
+      <h2>No id</h2>
+      <h3 id="empty">   </h3>
+    </article>
+  `;
+  const article = document.querySelector("article")!;
+  expect(collectOutline(article)).toEqual([
+    { kind: "heading", id: "real", text: "Real", level: 2 },
+  ]);
+});
+
+test("collectOutline — collapses whitespace and keeps inline markup text (e.g. <code>)", () => {
+  document.body.innerHTML = `
+    <article>
+      <h2 id="x">zSwap vs. a
+        <code>ZswapOffer</code></h2>
+    </article>
+  `;
+  const article = document.querySelector("article")!;
+  expect(collectOutline(article)).toEqual([
+    { kind: "heading", id: "x", text: "zSwap vs. a ZswapOffer", level: 2 },
+  ]);
 });

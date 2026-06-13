@@ -24,6 +24,7 @@ import { QUARTILES, type PlayTrigger, type Quartile } from "../shared/analyticsS
 import {
   SPOKEN_ID_PREFIX,
   spokenSegmentId,
+  collectOutline,
   firstMarkAfter,
   parseSpokenHash,
   loadCaptureControls,
@@ -81,6 +82,16 @@ const SPEAKER_GLYPH_SVG =
 
 // Register the chapter plugin once for the lifetime of the page.
 Player.use(Chapter);
+
+// The two panels sharing the left-edge drawer. ONE drawer, two panels — they
+// occupy the same space by construction, so "script and outline can't both be
+// open" is an invariant of the DOM shape, not a rule two drawers coordinate on.
+type DrawerPanel = "script" | "outline";
+
+// Article scroll position counts as "inside" a section once the section's
+// heading has risen to within this many px of the viewport top. Drives the
+// outline panel's current-section highlight.
+const OUTLINE_ACTIVE_OFFSET_PX = 120;
 
 class Narrator {
   private manifest: Manifest | null = null;
@@ -144,9 +155,25 @@ class Narrator {
   // last session stays released without having to re-toggle.
   private captureControls = true;
   private captureBtn: HTMLButtonElement | null = null;
-  // Spoken-script drawer + per-mark segment elements.
+  // Script-&-outline drawer + per-mark segment elements. One drawer element,
+  // two panels (`drawerPanel` picks which body is shown); two edge tabs open
+  // it straight to a panel, the header panel-tabs switch in place.
   private drawerEl: HTMLElement | null = null;
   private drawerTabBtn: HTMLButtonElement | null = null;
+  private outlineTabBtn: HTMLButtonElement | null = null;
+  private panelTabBtns = new Map<DrawerPanel, HTMLButtonElement>();
+  private drawerPanel: DrawerPanel = "script";
+  // Outline panel: lazily built like the script body (`ensureOutlineBody`).
+  // `outlineEntries` pairs each rendered link with its article target so the
+  // scroll-spy never re-queries the DOM per scroll frame.
+  private outlineBodyEl: HTMLElement | null = null;
+  private outlineBuilt = false;
+  private outlineEntries: { link: HTMLAnchorElement; target: HTMLElement }[] = [];
+  private outlineActiveLink: HTMLAnchorElement | null = null;
+  // Scroll-spy listener is armed only while (drawer open ∧ panel = outline),
+  // so a closed drawer costs nothing per scroll. rAF-coalesced.
+  private outlineScrollArmed = false;
+  private outlineSyncQueued = false;
   // The drawer body is built lazily off the boot path — see `ensureDrawerBody`
   // and the narrator↔comments contract in narratorDom.ts. `drawerBodyEl` is the
   // empty container appended with the shell; `drawerBodyBuilt` guards the
@@ -1376,12 +1403,13 @@ class Narrator {
       // The drawer segment mirrors the highlight regardless of
       // `highlightEnabled` — that flag is about the article's reading-clean
       // mode, not about the drawer (whose entire purpose is to surface the
-      // spoken script). Scroll inside the drawer only when it's open; the
-      // drawer body's overflow-y keeps the page itself from scrolling.
+      // spoken script). Scroll inside the drawer only when it's open AND
+      // showing the script panel (a `hidden` panel has no boxes to scroll);
+      // the drawer body's overflow-y keeps the page itself from scrolling.
       const seg = this.segmentEls.get(id);
       if (seg) {
         seg.classList.add("narration-active");
-        if (this.drawerOpen) {
+        if (this.drawerOpen && this.drawerPanel === "script") {
           seg.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
         }
       }
@@ -1517,49 +1545,84 @@ class Narrator {
     this.figureDetachHandler = null;
   }
 
-  // Build the slide-in drawer SHELL (the `<aside>` + tab handle + header + an
-  // empty body) eagerly. The BODY — one `<article id="spoken-<markName>">` per
-  // segment, each split into per-word spans on an aligned post — is the node
-  // bulk, so it's deferred to `ensureDrawerBody` and built on demand: when the
-  // reader opens the drawer, on a `#spoken-…` deep link, or when the logged-in
-  // comment system requests it (a logged-out reader never triggers it, so on
-  // the common path — and the Lighthouse trace — the body never builds unless
-  // the reader opens the script). See the narrator↔comments contract in
-  // narratorDom.ts and methodology → Narrator ("Loading: a lazy boot").
+  // Build the slide-in drawer SHELL (the `<aside>` + edge tabs + header + two
+  // empty panel bodies) eagerly. The drawer hosts TWO panels — the spoken
+  // script and the article outline — in one element, so the panels share the
+  // left-edge slot by construction (they can never both be open). The script
+  // BODY — one `<article id="spoken-<markName>">` per segment, each split into
+  // per-word spans on an aligned post — is the node bulk, so it's deferred to
+  // `ensureDrawerBody` and built on demand: when the reader opens that panel,
+  // on a `#spoken-…` deep link, or when the logged-in comment system requests
+  // it (a logged-out reader never triggers it, so on the common path — and the
+  // Lighthouse trace — the body never builds unless the reader opens the
+  // script). The outline body defers the same way (`ensureOutlineBody`). See
+  // the narrator↔comments contract in narratorDom.ts and methodology →
+  // Narrator ("Loading: a lazy boot").
+  //
+  // Comment-anchor invariant (see walkBlocks in commentsDom.ts): the comment
+  // system indexes this whole aside and hands out POSITIONAL fallback ids in
+  // walk order, so the sequence of walker-visible blocks must not change:
+  // [h2 "Spoken script"] then the script body's chapters/segments. All chrome
+  // added for the two-panel drawer is either non-block (buttons) or wrapped
+  // in <nav> (the panel switcher, the outline panel), which the walker skips.
   private buildDrawer() {
     const drawer = document.createElement("aside");
     drawer.id = "narrate-drawer";
     drawer.className = "narrate-drawer";
-    drawer.setAttribute("aria-label", "Spoken script");
+    drawer.setAttribute("aria-label", "Script & outline");
     drawer.dataset.open = "false";
+    drawer.dataset.panel = "script";
 
-    // Tab handle attached to the drawer's left edge. Travels with the drawer
-    // — when closed it juts into the viewport from the right; when open it
-    // sits at the drawer's left edge inside the page.
-    const tab = document.createElement("button");
-    tab.type = "button";
-    tab.className = "narrate-drawer-tab";
-    tab.setAttribute("aria-controls", "narrate-drawer");
-    tab.setAttribute("aria-expanded", "false");
-    tab.setAttribute("aria-label", "Open spoken script");
-    tab.innerHTML =
+    // Edge tabs, stacked on the drawer's left edge — one per panel, each
+    // opening the drawer straight to its panel. They travel with the drawer
+    // (anchored at `left: 100%`): peeking out from the viewport's left edge
+    // when closed, hidden while open (the header switcher takes over).
+    this.drawerTabBtn = this.buildEdgeTab(
+      drawer,
+      "script",
+      "Script",
       '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
-      '<path d="M5 4h10l4 4v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm10 0v5h4M8 12h8M8 16h6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
-      '<span class="tab-label">Script</span>';
-    tab.addEventListener("click", () => this.setDrawerOpen(!this.drawerOpen));
-    drawer.appendChild(tab);
-    this.drawerTabBtn = tab;
+        '<path d="M5 4h10l4 4v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm10 0v5h4M8 12h8M8 16h6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+      "Open spoken script",
+    );
+    this.outlineTabBtn = this.buildEdgeTab(
+      drawer,
+      "outline",
+      "Outline",
+      '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
+        '<path d="M9 6h11M9 12h11M9 18h11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>' +
+        '<circle cx="4.5" cy="6" r="1.4" fill="currentColor"/><circle cx="4.5" cy="12" r="1.4" fill="currentColor"/><circle cx="4.5" cy="18" r="1.4" fill="currentColor"/></svg>',
+      "Open outline",
+    );
 
-    // Header with title + close affordance.
+    // Header: panel switcher + close affordance. The switcher sits where the
+    // old static title did and is styled like it — the active panel's name IS
+    // the drawer title, you just happen to be able to press the other one.
+    // It lives in a <nav> so the comment walker skips it (see above).
     const header = document.createElement("header");
     header.className = "narrate-drawer-header";
-    const h2 = document.createElement("h2");
-    h2.textContent = "Spoken script";
-    header.appendChild(h2);
+    const tabsNav = document.createElement("nav");
+    tabsNav.className = "drawer-panel-tabs";
+    tabsNav.setAttribute("aria-label", "Drawer panels");
+    const panelLabels: [DrawerPanel, string][] = [
+      ["script", "Spoken script"],
+      ["outline", "Outline"],
+    ];
+    for (const [panel, label] of panelLabels) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "drawer-panel-tab";
+      btn.textContent = label;
+      btn.setAttribute("aria-pressed", String(panel === "script"));
+      btn.addEventListener("click", () => this.setPanel(panel));
+      tabsNav.appendChild(btn);
+      this.panelTabBtns.set(panel, btn);
+    }
+    header.appendChild(tabsNav);
     const closeBtn = document.createElement("button");
     closeBtn.type = "button";
     closeBtn.className = "narrate-drawer-close";
-    closeBtn.setAttribute("aria-label", "Close spoken script");
+    closeBtn.setAttribute("aria-label", "Close drawer");
     closeBtn.innerHTML =
       '<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">' +
       '<path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
@@ -1567,17 +1630,36 @@ class Narrator {
     header.appendChild(closeBtn);
     drawer.appendChild(header);
 
-    // Empty body container — populated lazily by `ensureDrawerBody`.
+    // Script panel — populated lazily by `ensureDrawerBody`. The visually-
+    // hidden <h2> titles the panel for screen readers AND keeps the comment
+    // walker's block sequence byte-identical to the pre-outline drawer (the
+    // title used to be a visible header <h2>; same text, same walk position,
+    // so the positional `narration:__b-…` ids — and every anchor hashed
+    // against them — survive the restructure untouched).
     const body = document.createElement("div");
     body.className = "narrate-drawer-body";
+    const srTitle = document.createElement("h2");
+    srTitle.className = "narrate-drawer-sr-title";
+    srTitle.textContent = "Spoken script";
+    body.appendChild(srTitle);
     drawer.appendChild(body);
 
+    // Outline panel — populated lazily by `ensureOutlineBody`. A real <nav>
+    // for its own sake (it IS the post's navigation) and for the walker skip.
+    const outline = document.createElement("nav");
+    outline.className = "narrate-drawer-outline";
+    outline.setAttribute("aria-label", "Outline");
+    outline.hidden = true;
+    drawer.appendChild(outline);
+    this.outlineBodyEl = outline;
+
     // One-shot entrance: the shell is built client-side at narrator boot, so
-    // without this the tab pops into the left edge. `data-entering` (set before
-    // append so the first render carries it) drives the tab's slide+fade in
-    // (see `.narrate-drawer-tab` in narrator.css) — a single coordinated motion
-    // with the dock's reveal. Cleared after the animation so reclosing the
-    // drawer (which re-shows the tab) doesn't replay it.
+    // without this the tabs pop into the left edge. `data-entering` (set before
+    // append so the first render carries it) drives the tabs' slide+fade in
+    // (see `.narrate-drawer-tab` in narrator.css; the outline tab follows the
+    // script tab on a short stagger) — a single coordinated motion with the
+    // dock's reveal. Cleared after the animation so reclosing the drawer
+    // (which re-shows the tabs) doesn't replay it.
     drawer.dataset.entering = "true";
 
     document.body.appendChild(drawer);
@@ -1595,6 +1677,28 @@ class Narrator {
       this.ensureDrawerBody();
     }
     document.addEventListener(REQUEST_DRAWER_BODY_EVENT, () => this.ensureDrawerBody());
+  }
+
+  // One edge tab handle. `data-panel-target` keys both the click behavior
+  // (open straight to that panel) and the CSS stacking offset.
+  private buildEdgeTab(
+    drawer: HTMLElement,
+    panel: DrawerPanel,
+    label: string,
+    iconSvg: string,
+    ariaLabel: string,
+  ): HTMLButtonElement {
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.className = "narrate-drawer-tab";
+    tab.dataset.panelTarget = panel;
+    tab.setAttribute("aria-controls", "narrate-drawer");
+    tab.setAttribute("aria-expanded", "false");
+    tab.setAttribute("aria-label", ariaLabel);
+    tab.innerHTML = `${iconSvg}<span class="tab-label">${label}</span>`;
+    tab.addEventListener("click", () => this.setDrawerOpen(true, panel));
+    drawer.appendChild(tab);
+    return tab;
   }
 
   // Populate the deferred drawer body once: one section per chapter, each a
@@ -1806,30 +1910,178 @@ class Narrator {
     this.activeWord = null;
   }
 
-  private setDrawerOpen(open: boolean) {
-    if (!this.drawerEl || !this.drawerTabBtn) return;
-    // Opening reveals the script — build the (deferred) body first so there's
+  private setDrawerOpen(open: boolean, panel?: DrawerPanel) {
+    if (!this.drawerEl) return;
+    if (open && panel) this.setPanel(panel);
+    // Opening reveals a panel — build its (deferred) body first so there's
     // something to show. No-op if already built.
-    if (open) this.ensureDrawerBody();
+    if (open) this.ensurePanelBody(this.drawerPanel);
     if (this.drawerOpen === open) return;
     this.drawerOpen = open;
     this.drawerEl.dataset.open = String(open);
-    this.drawerTabBtn.setAttribute("aria-expanded", String(open));
-    this.drawerTabBtn.setAttribute(
-      "aria-label",
-      open ? "Close spoken script" : "Open spoken script",
-    );
+    for (const tab of [this.drawerTabBtn, this.outlineTabBtn]) {
+      tab?.setAttribute("aria-expanded", String(open));
+    }
     document.body.classList.toggle("drawer-open", open);
-    // When opening with an active mark already, jump the drawer to it so the
-    // user doesn't have to hunt.
-    if (open && this.activeId) {
-      const seg = this.segmentEls.get(this.activeId);
-      const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      // Defer past the open-transition's first frame so layout has settled
-      // and `scrollIntoView` finds non-zero dimensions.
-      requestAnimationFrame(() => {
-        seg?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
-      });
+    this.armOutlineScrollSync();
+    if (open) this.revealPanelPosition(this.drawerPanel);
+  }
+
+  // Switch which panel the (single) drawer shows. In-place swap — no slide,
+  // the drawer doesn't move, only its body changes. Builds the incoming
+  // panel's body lazily when the drawer is (or is being) opened.
+  private setPanel(panel: DrawerPanel) {
+    if (!this.drawerEl || this.drawerPanel === panel) return;
+    this.drawerPanel = panel;
+    this.drawerEl.dataset.panel = panel;
+    for (const [p, btn] of this.panelTabBtns) {
+      btn.setAttribute("aria-pressed", String(p === panel));
+    }
+    if (this.drawerBodyEl) this.drawerBodyEl.hidden = panel !== "script";
+    if (this.outlineBodyEl) this.outlineBodyEl.hidden = panel !== "outline";
+    if (this.drawerOpen) {
+      this.ensurePanelBody(panel);
+      this.revealPanelPosition(panel);
+    }
+    this.armOutlineScrollSync();
+  }
+
+  private ensurePanelBody(panel: DrawerPanel) {
+    if (panel === "script") this.ensureDrawerBody();
+    else this.ensureOutlineBody();
+  }
+
+  // After opening (or switching panels while open), bring the panel's "you
+  // are here" into view: the active narration segment (script) or the current
+  // section (outline), so the reader doesn't have to hunt.
+  private revealPanelPosition(panel: DrawerPanel) {
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let target: HTMLElement | null | undefined;
+    if (panel === "script") {
+      target = this.activeId ? this.segmentEls.get(this.activeId) : null;
+    } else {
+      this.syncOutlineActive();
+      target = this.outlineActiveLink;
+    }
+    if (!target) return;
+    // Defer past the open-transition's first frame so layout has settled
+    // and `scrollIntoView` finds non-zero dimensions.
+    requestAnimationFrame(() => {
+      target?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
+    });
+  }
+
+  // Populate the deferred outline panel once from the ARTICLE's structure —
+  // part dividers + h2/h3 headings (collectOutline in narratorDom.ts), NOT
+  // the narration manifest: the outline is a reading tool, so it lists every
+  // heading whether or not narration touches it. Tiny next to the script body
+  // (tens of links, no per-word spans), but deferred the same way — same
+  // pattern, and a reader who never opens it pays nothing.
+  private ensureOutlineBody() {
+    if (this.outlineBuilt) return;
+    const nav = this.outlineBodyEl;
+    if (!nav) return;
+    this.outlineBuilt = true;
+
+    const makeLink = (id: string, text: string): HTMLAnchorElement | null => {
+      const target = document.getElementById(id);
+      if (!target) return null;
+      const a = document.createElement("a");
+      a.className = "outline-link";
+      a.href = `#${id}`;
+      a.textContent = text;
+      this.outlineEntries.push({ link: a, target });
+      return a;
+    };
+
+    // Group: one section per part divider, holding the headings under it;
+    // headings before the first divider go in a leading label-less section.
+    let section = document.createElement("section");
+    section.className = "outline-part";
+    let list: HTMLOListElement | null = null;
+    const flushSection = () => {
+      if (section.childNodes.length > 0) nav.appendChild(section);
+    };
+    for (const entry of collectOutline(this.narrationRoot)) {
+      if (entry.kind === "part") {
+        flushSection();
+        section = document.createElement("section");
+        section.className = "outline-part";
+        list = null;
+        const label = document.createElement("h3");
+        const a = makeLink(entry.id, entry.text);
+        if (a) label.appendChild(a);
+        else label.textContent = entry.text;
+        section.appendChild(label);
+      } else {
+        if (!list) {
+          list = document.createElement("ol");
+          list.className = "outline-entries";
+          section.appendChild(list);
+        }
+        const a = makeLink(entry.id, entry.text);
+        if (!a) continue;
+        const li = document.createElement("li");
+        li.dataset.level = String(entry.level ?? 2);
+        li.appendChild(a);
+        list.appendChild(li);
+      }
+    }
+    flushSection();
+
+    // Navigating from an entry deliberately does NOT close the drawer: the
+    // outline is a browsing surface (hop between sections, skim, hop again),
+    // and native anchor behavior already does the hash + smooth scroll. The
+    // scroll-spy follows the jump, so the highlight lands on the clicked
+    // entry by itself; closing stays on the X / the panel's edge tabs.
+  }
+
+  // ----- Outline scroll-spy --------------------------------------------------
+  // While (drawer open ∧ panel = outline), the article's scroll position is
+  // mirrored as a highlight on the outline entry whose section the reader is
+  // in. Armed/disarmed on those two state edges so a closed drawer costs
+  // nothing per scroll; rAF-coalesced so a scroll burst computes once a frame.
+
+  private onArticleScroll = () => {
+    if (this.outlineSyncQueued) return;
+    this.outlineSyncQueued = true;
+    requestAnimationFrame(() => {
+      this.outlineSyncQueued = false;
+      this.syncOutlineActive();
+    });
+  };
+
+  private armOutlineScrollSync() {
+    const want = this.drawerOpen && this.drawerPanel === "outline";
+    if (want === this.outlineScrollArmed) return;
+    this.outlineScrollArmed = want;
+    if (want) {
+      window.addEventListener("scroll", this.onArticleScroll, { passive: true });
+    } else {
+      window.removeEventListener("scroll", this.onArticleScroll);
+    }
+  }
+
+  // Current section = LAST outline target risen to within
+  // OUTLINE_ACTIVE_OFFSET_PX of the viewport top. Above the first target
+  // (still in the lede) nothing is current — honest, not a bug.
+  private syncOutlineActive() {
+    let active: HTMLAnchorElement | null = null;
+    for (const { link, target } of this.outlineEntries) {
+      if (target.getBoundingClientRect().top <= OUTLINE_ACTIVE_OFFSET_PX) {
+        active = link;
+      }
+    }
+    if (active === this.outlineActiveLink) return;
+    this.outlineActiveLink?.classList.remove("outline-active");
+    this.outlineActiveLink?.removeAttribute("aria-current");
+    this.outlineActiveLink = active;
+    if (active) {
+      active.classList.add("outline-active");
+      active.setAttribute("aria-current", "location");
+      // Keep the lit entry visible as the article scrolls under the open
+      // drawer. "nearest" so we never yank a drawer the reader is browsing.
+      active.scrollIntoView({ block: "nearest" });
     }
   }
 
@@ -1846,7 +2098,7 @@ class Narrator {
     this.ensureDrawerBody();
     const seg = this.segmentEls.get(markName);
     if (!seg) return;
-    this.setDrawerOpen(true);
+    this.setDrawerOpen(true, "script");
     // Highlight briefly so it's easy to spot when arrived from a link.
     seg.classList.add("anchor-flash");
     setTimeout(() => seg.classList.remove("anchor-flash"), 1500);

@@ -112,6 +112,26 @@ test("walkBlocks — skips <script> and <style> subtrees entirely", () => {
   expect(ids).toEqual(["p1", "p2"]);
 });
 
+test("walkBlocks — skips <nav> subtrees entirely (navigation chrome is not commentable)", () => {
+  // The narrator drawer's outline panel is a <nav> full of LI/H3 (both in
+  // BLOCK_TAGS) living INSIDE the indexed drawer root. The skip keeps those
+  // out of the comment index AND keeps the positional `__b-<n>` fallback ids
+  // of the blocks after the nav stable whether the nav is present or not.
+  document.body.innerHTML = `
+    <article>
+      <p id="p1">before</p>
+      <nav>
+        <h3 id="trap-h">Part label</h3>
+        <ol><li id="trap-li"><a href="#x">entry</a></li></ol>
+      </nav>
+      <p id="p2">after</p>
+    </article>
+  `;
+  const root = document.querySelector("article")!;
+  const ids = Array.from(walkBlocks(root, BLOCK_TAGS)).map((el) => el.id);
+  expect(ids).toEqual(["p1", "p2"]);
+});
+
 test("walkBlocks — empty root yields nothing", () => {
   document.body.innerHTML = `<article></article>`;
   const root = document.querySelector("article")!;

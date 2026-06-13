@@ -235,6 +235,11 @@ test("a figure comment opens its thread in a card under the button", async () =>
       console.warn("[menu-figure] post has no commentable figure; skipping");
       return;
     }
+    // Center the figure first: Playwright's minimal scroll-into-view can park
+    // a small figure at the viewport bottom, where the fixed narration dock
+    // overlays it and swallows the force-click's coordinates. A real reader
+    // scrolls the figure clear of the dock before tapping.
+    await addBtn.evaluate((el) => el.scrollIntoView({ block: "center", behavior: "instant" }));
     await addBtn.click({ force: true });
     const draft = page.locator('.cmt-card[data-draft="true"]');
     await draft.locator("textarea").waitFor({ state: "visible", timeout: 5000 });
@@ -246,6 +251,8 @@ test("a figure comment opens its thread in a card under the button", async () =>
     await gotoPost(page, POST_PATH);
     const indicator = page.locator(".cmt-graphic-indicator:not([hidden])").first();
     await indicator.waitFor({ state: "visible", timeout: 15_000 });
+    // Same dock-clearance scroll as the add-button click above.
+    await indicator.evaluate((el) => el.scrollIntoView({ block: "center", behavior: "instant" }));
     await indicator.click({ force: true });
     await page.waitForTimeout(300);
     const open = await page.evaluate(() => {

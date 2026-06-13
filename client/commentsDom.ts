@@ -61,6 +61,15 @@ export function normalizeText(s: string): string {
  * `<script>` and `<style>` subtrees are skipped entirely — they hold no
  * commentable content and would otherwise pollute the index with
  * synthesized ids that point at non-rendered bytes.
+ *
+ * `<nav>` subtrees are skipped for a different reason: navigation chrome
+ * (the drawer's outline panel, any future in-article nav) lists pointers
+ * to content, not content — readers comment on the prose a nav entry
+ * points AT, never on the entry itself. The skip is also load-bearing for
+ * anchor stability: blocks without ids get POSITIONAL fallback ids
+ * (`<context>:__b-<n>`, assigned in walk order), so chrome wrapped in
+ * `<nav>` can grow or move inside an indexed root (the narrator drawer)
+ * without renumbering — and thereby orphaning — every anchor after it.
  */
 export function* walkBlocks(
   root: Element,
@@ -70,7 +79,11 @@ export function* walkBlocks(
   while (stack.length) {
     const node = stack.pop()!;
     if (node !== root) {
-      if (node.tagName === "SCRIPT" || node.tagName === "STYLE") continue;
+      if (
+        node.tagName === "SCRIPT" ||
+        node.tagName === "STYLE" ||
+        node.tagName === "NAV"
+      ) continue;
       if (tagSet.has(node.tagName)) {
         yield node as HTMLElement;
         continue;

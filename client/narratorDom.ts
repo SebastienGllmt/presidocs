@@ -89,6 +89,62 @@ export function firstMarkAfter<M extends MarkRef>(
   return null;
 }
 
+// ---- Outline (drawer outline panel) ----------------------------------------
+//
+// The drawer's outline panel lists the article's own structure — part
+// dividers (`.section-divider-labeled`) and <h2>/<h3> headings — so a reader
+// can jump to a section without scrolling. It is sourced from the ARTICLE
+// DOM, not the narration manifest: the outline is a reading tool, so it must
+// list every heading whether or not narration touches it, and the ids it
+// links to are the same ones headerLinks.ts guarantees on every heading.
+// <h4> is deliberately out (deep prose detail, noise at outline altitude;
+// headerLinks still deep-links it for sharing).
+
+export type OutlineEntry = {
+  /** "part" = labeled section divider (group label); "heading" = h2/h3. */
+  readonly kind: "part" | "heading";
+  /** Target element id — entries whose element has no id are dropped. */
+  readonly id: string;
+  /** Display text (whitespace-collapsed textContent). */
+  readonly text: string;
+  /** Heading depth, 2 or 3. Absent on parts. */
+  readonly level?: 2 | 3;
+};
+
+/**
+ * Collect the outline entries from an article root, in document order.
+ *
+ * Skips: elements inside a `<figure>` (a figure's internal headings are part
+ * of the graphic, not the prose structure), elements inside a `<nav>`
+ * (navigation chrome must never list itself), elements without an id (no
+ * target to jump to — headerLinks backfills ids on every heading, so in
+ * practice this only drops a heading whose text slugs to nothing), and
+ * elements with empty text.
+ */
+export function collectOutline(article: ParentNode): OutlineEntry[] {
+  const out: OutlineEntry[] = [];
+  const nodes = article.querySelectorAll<HTMLElement>(
+    ".section-divider-labeled, h2, h3",
+  );
+  for (const el of nodes) {
+    if (el.closest("figure") || el.closest("nav")) continue;
+    if (!el.id) continue;
+    const text = (el.textContent ?? "").replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    if (el.classList.contains("section-divider-labeled")) {
+      out.push({ kind: "part", id: el.id, text });
+    } else {
+      out.push({
+        kind: "heading",
+        id: el.id,
+        text,
+        level: el.tagName === "H2" ? 2 : 3,
+      });
+    }
+  }
+  return out;
+}
+
 // Minimal Storage shape we read/write from. Anything supporting
 // `getItem(key) → string | null` and `setItem(key, value)` works — happy-
 // dom's localStorage, our in-memory shim, or a Map-backed test stub.
