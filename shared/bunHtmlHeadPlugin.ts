@@ -83,7 +83,7 @@ export function injectFontPreloads(html: string): string {
 }
 
 // Inject the per-post public-source link `<link rel="vcs-github" href="…">` that
-// client/viewSource.ts reads to render the "View on GitHub" control (proposal 58).
+// client/viewSource.ts reads to render the "View on GitHub" control.
 // Idempotent. The href is attribute-escaped; the rel-vcs microformat also makes
 // the repo pointer machine-discoverable in the head, like rel="canonical".
 export function injectSourceLink(html: string, url: string): string {
@@ -163,7 +163,7 @@ export function htmlHeadPlugin(
             hasAuthor: !!authorMap[postPath]?.name,
             hasVersion: postPath in versionMap,
           });
-          // Public-source link for the "View on GitHub" control (proposal 58).
+          // Public-source link for the "View on GitHub" control.
           // resolveSourceRepo returns null when SOURCE_REPO_URL is unset OR the
           // blog is private, so neither case injects anything. Runs dev+prod.
           const repo = resolveSourceRepo();

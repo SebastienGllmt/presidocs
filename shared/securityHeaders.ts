@@ -145,7 +145,8 @@ export function securityHeaders(
 /**
  * `X-Robots-Tag: noindex` for responses served off the canonical host —
  * belt-and-suspenders that keeps a preview/staging deploy (which returns the
- * same 200s as production) out of search indexes (proposal 16 item 6). The
+ * same 200s as production) out of search indexes (methodology → Site-level
+ * discovery). The
  * post pages' `<link rel="canonical">` already covers the duplicate-content
  * case; this additionally covers the landing page, feeds, and every non-HTML
  * asset, which carry no canonical of their own. One data-keyed rule: emitted

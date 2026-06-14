@@ -1,5 +1,6 @@
 // Build step: emit the blog's combined license + third-party acknowledgements
-// page (proposal 60). We minify-bundle third-party code into the client and
+// page (methodology → Licensing: content vs code). We minify-bundle third-party
+// code into the client and
 // serve it to every reader; several of those licenses (MIT "in all copies",
 // Apache-2.0 §4, and CC-BY's *visible* attribution for the Font Awesome icons)
 // require their notice to travel with the distribution. Nothing in the engine
@@ -12,7 +13,7 @@
 //                        and any non-standard license (CC-BY for the icons,
 //                        GreenSock's custom license for GSAP) lands in its own
 //                        group, which is what makes the outliers stand out
-//                        without a hand-placed callout (proposal 60, Q4).
+//                        without a hand-placed callout.
 //   dist/licenses.txt    The same notices as concatenated raw text, for anyone
 //                        auditing compliance programmatically.
 //
@@ -70,7 +71,7 @@ export const SELF_HOSTED_FONTS: FontNotice = {
 // helper snippets into the output (not resolved node_modules modules, so they
 // never appear in the client metafile clientDeps.ts reads). This covers them
 // without singling any tool out. (There are no polyfill/transpile injectors
-// pulling third-party code into the bundle — verified; see proposal 60, Q2.)
+// pulling third-party code into the bundle — verified.)
 export const BUILD_TOOLS_NOTE =
   "Built with other open-source build tools; any build-tool-injected runtime helpers remain under their respective licenses.";
 
@@ -116,7 +117,7 @@ export type LicensesContext = {
   lang: string;
   cssLinks: string;
   private: boolean;
-  /** Resolved own content/code licenses (proposal 59), null when unset. */
+  /** Resolved own content/code licenses, null when unset. */
   ownContent: License | null;
   ownCode: License | null;
   /** True → link the self-hosted full text at /license. */

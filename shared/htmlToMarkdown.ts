@@ -1,5 +1,5 @@
 // Pure HTML → Markdown transform for the "Copy as Markdown" feature
-// (methodology.md → "Copy as Markdown", proposal 30). Turns one post's HTML
+// (methodology.md → "Copy as Markdown"). Turns one post's HTML
 // into clean Markdown an LLM can ingest — figures collapsed to their caption
 // text, runtime chrome dropped, the article body serialized.
 //
@@ -18,7 +18,7 @@
 // created yet, the dock is empty, and each figure is still its static
 // `<svg role="img" aria-label>` fallback. So the only structural work is
 // collapsing `<figure>` to text; everything else is just "serialize the
-// article." See proposal 30 §1–§2.
+// article." See methodology → Copy as Markdown.
 //
 // We still run Mozilla's Readability (the actual Firefox engine) as the
 // extractor — it robustly finds the article root and strips stray chrome on
@@ -37,7 +37,7 @@ import { figureSourceHref, isValidFigureSrc } from "./figureSource.ts";
 
 export type MarkdownOptions = {
   /**
-   * The post's location, used as the base for figure-source links (proposal 58).
+   * The post's location, used as the base for figure-source links.
    * When given, a `<figure data-figure-src="X">` gets a `[source](<base>/figures/X.ts)`
    * link appended to its caption note, pointing at the co-located unminified
    * figure source. `base` is an **absolute** post URL (`https://blog/posts/<slug>`)
@@ -116,7 +116,7 @@ function figureCaption(figure: Element): string {
 }
 
 // A `<figure data-figure-src>` co-locates its unminified source at
-// `<slug>/figures/<src>.ts` (proposal 58, emitted by generate/figure-source-export.ts).
+// `<slug>/figures/<src>.ts` (emitted by generate/figure-source-export.ts).
 // Build the `<a>source</a>` the caption note appends, or null when there's no
 // base (dev route), no attribute (a static SVG figure — most figures), or an
 // unsafe token. As an `<a>` element so Turndown renders `[source](href)`.
@@ -277,7 +277,7 @@ function makeTurndown(): TurndownService {
 /**
  * Convert one post's HTML into `{ title, markdown }`. Pure: no IO. The caller
  * (build step / dev route) adds the front-matter header and writes the file.
- * `opts.figureSrcBase` (the post slug) enables figure-source links (proposal 58).
+ * `opts.figureSrcBase` (the post slug) enables figure-source links.
  */
 export function htmlToMarkdown(html: string, opts: MarkdownOptions = {}): MarkdownExtract {
   // Two independent parses: Readability mutates the document it's handed, so
@@ -324,7 +324,7 @@ export type FrontMatter = {
   /**
    * Content (prose) license SPDX id, e.g. `CC-BY-4.0` — so a pasted-into-an-LLM
    * doc states its reuse terms with its provenance. Omitted when CONTENT_LICENSE
-   * is unset (proposal 59).
+   * is unset.
    */
   license?: string;
   /**

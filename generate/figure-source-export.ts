@@ -1,7 +1,8 @@
 // Build step: copy each post's referenced figure SOURCE — the authored,
 // unminified `figures/<module>.ts` (+ its optional `.css`) — to a per-post,
 // self-origin path `dist/posts/<slug>/figures/<module>.ts`, so the Markdown
-// twin's figure notes can link an AI to a figure's real code (proposal 58).
+// twin's figure notes can link an AI to a figure's real code (methodology →
+// Copy as Markdown, figure source pointers).
 //
 // Sibling to markdown-export.ts and runs in the same place: over the FINAL
 // served HTML in `dist/posts/`, after strip-served-html.ts, before
@@ -11,12 +12,12 @@
 // source is then reachable exactly when the post is. On a PRIVATE blog the slug
 // carries the `--<token>` capability suffix, so the source inherits the gate
 // with no public/private branch — a flat, guessable, post-enumerating dir would
-// be the exact leak class proposal 57 fixed in the byline. audit-private.ts
+// be the exact leak class the private-blog byline gate fixed. audit-private.ts
 // asserts every emitted `dist/posts/<slug>/` dir carries the token.
 //
 // Why only `.ts` + `.css` and no import-tree walk: every figure module imports
 // just `gsap` (vendor) and the shared engine `figureAnimation.ts` contract — no
-// figure imports a sibling or author helper (proposal 58) — so a
+// figure imports a sibling or author helper — so a
 // figure's authored logic is single-file. Vendor and the engine contract are
 // deliberately NOT copied (they're not the figure).
 //
@@ -94,7 +95,7 @@ async function main(): Promise<void> {
       "Figure-source export FAILED: posts declare `data-figure-src` (advertising figure source) " +
         "on a published build (SITE_URL is set) but CODE_LICENSE is unset.\n" +
         "  Set CODE_LICENSE (e.g. `CODE_LICENSE=MIT`) so the emitted source states its reuse terms " +
-        "(see proposals/58 & 59). Builds without SITE_URL are exempt.",
+        "(see methodology → Licensing: content vs code). Builds without SITE_URL are exempt.",
     );
     process.exit(1);
   }

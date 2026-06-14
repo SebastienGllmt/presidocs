@@ -1,6 +1,7 @@
 // Derives the set of third-party (`node_modules`) packages that actually reach
 // the CLIENT bundle — the deps the blog distributes to every reader and
-// therefore owes a license notice for (proposal 60). The same "derive from the
+// therefore owes a license notice for (methodology → Licensing: content vs
+// code). The same "derive from the
 // real artifact" discipline `generate/audit-deps.ts` uses for CVEs (`bun audit`
 // over the real lockfile), applied to licenses: only what the browser actually
 // receives is listed, so the set can't silently drift when a client `import` is
@@ -21,7 +22,7 @@
 // correctly never appear — they're build-only.)
 //
 // (`legalComments: "external"` would have been the obvious source for the actual
-// notice text, but `Bun.build` silently ignores it — see proposal 60 / Option B.
+// notice text, but `Bun.build` silently ignores it.
 // So this only derives the package *set*; the notice text comes from each
 // package's own `LICENSE` file, resolved by `generate/licenseFiles.ts`.)
 

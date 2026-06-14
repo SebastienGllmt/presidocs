@@ -65,7 +65,7 @@ export type StructuredDataContext = {
   /**
    * Absolute URL of the content (prose) license — JSON-LD `license`. Null when
    * `CONTENT_LICENSE` is unset (the field is then omitted; the engine imposes
-   * no default — see shared/licenseConfig.ts / proposal 59). The post is prose,
+   * no default — see shared/licenseConfig.ts). The post is prose,
    * so this is the *content* license; code samples are governed blog-level by
    * `LICENSE.md`, not per-post JSON-LD.
    */
@@ -345,7 +345,8 @@ export function injectStructuredData(
 
   // BreadcrumbList: the site is two levels deep (no /posts index page), so the
   // trail is just landing → this post. Thin, but it names the parent surface
-  // for search/LLM consumers either way (proposal 16 item 7). Its own script
+  // for search/LLM consumers either way (methodology → Site-level discovery).
+  // Its own script
   // block (not folded into the BlogPosting): Google parses multiple ld+json
   // scripts, and the breadcrumb is a page property, not an article property.
   // The landing crumb is named by the publisher (the blog's name) when known —
@@ -472,7 +473,7 @@ export type SiteStructuredDataContext = {
   /**
    * Content (prose) license URL for the Blog/WebSite `license`. Null when
    * `CONTENT_LICENSE` is unset (the field is omitted). Same source and posture
-   * as the per-post `licenseUrl` — see proposal 59.
+   * as the per-post `licenseUrl` — see methodology → Licensing: content vs code.
    */
   licenseUrl: string | null;
 };
@@ -606,7 +607,7 @@ export function injectSiteStructuredData(
   if (publisher) {
     blog.publisher = { "@type": "Organization", name: publisher };
   }
-  // Blog-level licensing (proposal 59): the same content-license URL and
+  // Blog-level licensing: the same content-license URL and
   // copyright holder the posts carry, on the Blog node a crawler reads for the
   // site as a whole. Omitted when CONTENT_LICENSE / author are absent.
   if (ctx.licenseUrl) blog.license = ctx.licenseUrl;

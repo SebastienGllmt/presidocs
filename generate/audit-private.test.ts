@@ -1,6 +1,6 @@
 // Unit tests for the privacy gate's pure checkers (generate/audit-private.ts)
-// — including the seeded-violation negative controls proposal 57's acceptance
-// criteria call for: each rule must FIRE on its violation, not just stay
+// — including the seeded-violation negative controls the private-blog design
+// calls for: each rule must FIRE on its violation, not just stay
 // silent on clean input. The fs/env orchestration in main() is exercised
 // end-to-end by the private fixture's build (e2e/privateBlog.ts boots it).
 
@@ -58,7 +58,7 @@ test("slug-token: guessable slugs fire; token slugs and dev-only posts pass", ()
 });
 
 test("figure-src-token: a guessable figure-source dir fires; tokened and dev-only dirs pass", () => {
-  // Co-located figure source (proposal 58) must inherit the post's capability token.
+  // Co-located figure source must inherit the post's capability token.
   expect(auditPrivateFigureDir("offer-files")?.rule).toBe("figure-src-token");
   expect(auditPrivateFigureDir("offer-files--Vq3xW8tR4hZcNdP5")).toBeNull(); // 16-char token
   expect(auditPrivateFigureDir("_figjourneys")).toBeNull(); // dev-only, never deploys

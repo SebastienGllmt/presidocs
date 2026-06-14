@@ -3,7 +3,7 @@
 // where that gate fails the release on a content-tree regression, this one fails
 // it when a *published* build hasn't declared its content license.
 //
-// Why a gate at all (proposal 59): the license config is OPT-IN — unset means the
+// Why a gate at all: the license config is OPT-IN — unset means the
 // surfaces omit the license, which is *safe* in the copyright sense (omission =
 // all-rights-reserved by default, so nothing is given away). But that has the
 // inverse footgun: an author who MEANT to publish under CC-BY but forgot to set
@@ -19,7 +19,7 @@
 //   - SITE_URL set    → published build, CONTENT_LICENSE is REQUIRED (hard fail).
 //                       CODE_LICENSE is recommended (warn): a post's code samples
 //                       are all-rights-reserved without it. (A blog that advertises
-//                       figure source — proposal 58 — promotes the missing
+//                       figure source — promotes the missing
 //                       CODE_LICENSE to a hard error in figure-source-export.ts.)
 //
 // Pure check + thin main, matching audit-posts.ts: the gate logic is a testable
@@ -48,14 +48,14 @@ export function checkLicenseGate(
     errors.push(
       "SITE_URL is set (this is a published build) but CONTENT_LICENSE is unset. " +
         "Declare your content license before publishing — e.g. `CONTENT_LICENSE=CC-BY-4.0` " +
-        "in .env (see LICENSE.md and proposals/59). Builds without SITE_URL are exempt.",
+        "in .env (see LICENSE.md and methodology → Licensing: content vs code). Builds without SITE_URL are exempt.",
     );
   }
   if (license.content && !license.code) {
     warnings.push(
       "CODE_LICENSE is unset: code samples in posts are all-rights-reserved by default. " +
         "Set `CODE_LICENSE=MIT` (or your choice) to license them — recommended for a blog " +
-        "that shows code, and required once a post advertises figure source (proposal 58).",
+        "that shows code, and required once a post advertises figure source.",
     );
   }
   return { errors, warnings };

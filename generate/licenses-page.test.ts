@@ -105,7 +105,7 @@ test("buildLicensesHtml — own license, fonts, each group heading, and every de
   for (const d of DEPS) expect(html).toContain(`<strong>${d.name}</strong>`);
 });
 
-test("buildLicensesHtml — carries the build-tools blanket note (proposal 60, Q2 gray area)", () => {
+test("buildLicensesHtml — carries the build-tools blanket note", () => {
   expect(buildLicensesHtml(ctx())).toContain(
     "build-tool-injected runtime helpers remain under their respective licenses",
   );

@@ -49,7 +49,7 @@ export interface FooterOptions {
   /**
    * URL the content-license link points at (the canonical license text/deed).
    * Empty/omitted → the license link is left out (no CONTENT_LICENSE set).
-   * Present when the operator declared a content license (proposal 59).
+   * Present when the operator declared a content license.
    */
   licenseHref?: string;
   /**
@@ -60,7 +60,7 @@ export interface FooterOptions {
   licenseLabel?: string;
   /**
    * URL the "Acknowledgements" link points at (typically "/licenses"), the
-   * combined third-party-notices page (proposal 60). Empty/omitted → the link is
+   * combined third-party-notices page. Empty/omitted → the link is
    * left out (e.g. no SITE_URL, so the page wasn't emitted).
    */
   acknowledgementsHref?: string;

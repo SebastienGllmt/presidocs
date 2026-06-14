@@ -108,7 +108,7 @@ test("full document matches the golden vector", () => {
   expect(doc).toBe(GOLDEN);
 });
 
-test("front-matter carries license + code_license, after updated (proposal 59)", () => {
+test("front-matter carries license + code_license, after updated", () => {
   const extract = htmlToMarkdown(FIXTURE);
   const doc = renderMarkdownDocument(extract, {
     title: extract.title,
@@ -256,7 +256,7 @@ test("front-matter fields are emitted in title → source → updated order", ()
   expect(doc.indexOf("source:")).toBeLessThan(doc.indexOf("updated:"));
 });
 
-// --- Figure source links (proposal 58) ---------------------------------------
+// --- Figure source links ---------------------------------------
 
 // One animated figure (carries data-figure-src) + one static figure (none).
 const FIG_HTML = `<!DOCTYPE html><html lang="en"><body>

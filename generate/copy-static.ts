@@ -215,10 +215,10 @@ async function copyFonts(): Promise<number> {
   return n;
 }
 
-// The blog's OWN license → dist/license (proposal 60, closing proposal 59's
-// gap #2). Proposal 59 declared CONTENT_LICENSE/CODE_LICENSE and pointed the
-// footer link at the external deed, but the full combined text (notably the
-// code half) was never reachable from the site. Copy the content repo's
+// The blog's OWN license → dist/license (methodology → Licensing: content vs
+// code). CONTENT_LICENSE/CODE_LICENSE are declared via env and the footer link
+// can point at the external deed, but on its own the full combined text (notably
+// the code half) is never reachable from the site. Copy the content repo's
 // LICENSE.md to dist/license; the Worker forces text/plain on it
 // (staticAssetContentTypeOverride) and the footer "License" link retargets here
 // (shared/servedLicense.ts). It's a per-blog constant (the blog's own terms,

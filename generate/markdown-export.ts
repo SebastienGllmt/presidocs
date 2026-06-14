@@ -1,6 +1,6 @@
 // Build step: emit a Markdown twin of every built post — `dist/posts/<slug>.md`
 // next to `dist/posts/<slug>.html` — for the "Copy as Markdown" feature
-// (methodology.md → "Copy as Markdown", proposal 30). The client button fetches
+// (methodology.md → "Copy as Markdown"). The client button fetches
 // this static file; it doubles as an LLM-readable artifact (advertised via the
 // `<link rel="alternate" type="text/markdown">` that strip-served-html.ts
 // injects into each post, and listable in llms.txt).
@@ -66,7 +66,7 @@ async function main(): Promise<void> {
   // Markdown is still emitted and the button still works.
   const siteUrl = (process.env.SITE_URL ?? "").trim().replace(/\/+$/, "");
 
-  // Reuse terms stamped into every twin's front-matter (proposal 59): a post is
+  // Reuse terms stamped into every twin's front-matter: a post is
   // prose (the content license) plus code snippets (the code license). Both omit
   // when unset — the engine declares no license the operator didn't choose.
   const license = resolveLicenseConfig();
@@ -86,7 +86,7 @@ async function main(): Promise<void> {
     const html = await Bun.file(file).text();
     const postPath = distFileToPostPath(paths.distDir, file);
 
-    // Base for figure-source links (proposal 58): a `<figure data-figure-src>`
+    // Base for figure-source links: a `<figure data-figure-src>`
     // resolves to the co-located `<base>/figures/<src>.ts` emitted by
     // figure-source-export.ts. Prefer the **absolute** post URL when SITE_URL is
     // known — the published case, where the twin is most often *pasted as raw

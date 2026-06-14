@@ -2,7 +2,7 @@
 // blog's reuse terms, stamped into every build-emitted surface (JSON-LD,
 // Atom <rights>, the Markdown twin's front-matter, llms.txt, the footer link,
 // and — once they're built — figure-source SPDX headers and the video
-// end-card). See proposals/59-licensing-content-and-code.md.
+// end-card). See methodology → Licensing: content vs code.
 //
 // The licensing is DUAL: prose/figures/audio are one license (recommended
 // CC-BY-4.0), code samples + figure source are another (recommended MIT). Each

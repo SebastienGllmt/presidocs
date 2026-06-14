@@ -1,11 +1,12 @@
 #!/usr/bin/env bun
-// Deploy-time license-compliance gate (proposal 60). The license sibling of
+// Deploy-time license-compliance gate (methodology → Licensing: content vs
+// code). The license sibling of
 // generate/audit-deps.ts: where that fails the release when a shipped dependency
 // has a CVE, this fails it when a CLIENT-bundled dependency carries a license we
 // can't satisfy — a non-permissive / unrecognised license reaching the code we
 // distribute to every reader, or a dep whose required notice we have no text to
 // reproduce. (Distinct from generate/audit-license.ts — singular — which gates
-// the blog's OWN declared content license under proposal 59.)
+// the blog's OWN declared content license.)
 //
 // Why this exists: generate/licenses-page.ts SURFACES the notices, but nothing
 // stops a future client `import` from pulling in a copyleft or unknown-licensed

@@ -1,6 +1,6 @@
 // Build-time PRIVACY gate for a private (capability-URL) blog — the
 // allowlist-shaped proof that every discovery emitter actually suppressed
-// itself (methodology → Private blogs; proposal 57). Suppression happens at
+// itself (methodology → Private blogs). Suppression happens at
 // each emitter, consulting `BLOG_PRIVATE` (shared/blogPrivacy.ts); this gate
 // is the belt over those suspenders, run as the LAST step of a private
 // content repo's `bun run build`, after audit-posts.ts.
@@ -23,7 +23,7 @@
 //                      guessable URL in the deploy.
 //   ai-search-leak   — the Ask-this-blog affordance hands an external LLM the
 //                      blog URL + llms.txt index; it must not be injected.
-//   source-repo-leak — the "View on GitHub" link (proposal 58) would reveal a
+//   source-repo-leak — the "View on GitHub" link would reveal a
 //                      gated post in public; `link[rel=vcs-github]` must be absent.
 //   noindex-meta     — every served page carries <meta name="robots"> with
 //                      noindex (the belt for the X-Robots-Tag header, for any
@@ -33,7 +33,7 @@
 //                      see shared/blogPrivacy.ts for the calibration).
 //                      `_`-prefixed dev-only posts are exempt (never deploy).
 //   figure-src-token — every emitted dist/posts/<slug>/ figure-source dir
-//                      (proposal 58) carries that same `--<token>` suffix, so
+//                      carries that same `--<token>` suffix, so
 //                      co-located source inherits the post's gate.
 //   announce-env     — the announce channels (publish webhooks, WebSub) must
 //                      not be configured: they push post URLs to third
@@ -108,7 +108,7 @@ export function auditPrivateHtml(html: string, opts: { isPost: boolean }): Priva
     out.push({ rule: "noindex-meta", detail: '<meta name="robots"> with noindex missing' });
   }
 
-  // The "View on GitHub" link (proposal 58) must never reach a private build: a
+  // The "View on GitHub" link must never reach a private build: a
   // public-source URL reveals the capability-gated post exists in public and
   // links off-capability. resolveSourceRepo() already returns null on a private
   // blog so the head plugin injects nothing; this is the belt that proves it.
@@ -192,7 +192,7 @@ async function main(): Promise<void> {
     if (v) fail(`posts/${slug}.html`, v);
   }
 
-  // Every co-located figure-source dir (proposal 58) must carry the capability
+  // Every co-located figure-source dir must carry the capability
   // token, exactly like the post slugs above. dist/posts/ is otherwise flat, so
   // any subdirectory here is a figure-source tree.
   const distPostsDir = join(paths.distDir, "posts");

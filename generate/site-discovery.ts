@@ -141,7 +141,7 @@ export type LlmsSite = {
   title: string;
   description: string;
   /**
-   * Reuse terms (proposal 59): the content license governs the prose an LLM
+   * Reuse terms: the content license governs the prose an LLM
    * reads here; the code license governs any snippets. Either null → that part
    * is omitted; both null → no license line at all (no imposed default).
    */

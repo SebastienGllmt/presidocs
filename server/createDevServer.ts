@@ -360,7 +360,7 @@ export async function createDevServer(opts: DevServerOptions) {
         headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
       });
     }),
-    // Combined license + third-party acknowledgements page (proposal 60). In
+    // Combined license + third-party acknowledgements page. In
     // prod it's a dist/ artifact (generate/licenses-page.ts); here it's rendered
     // on the fly from source per request (like /help), deriving the client dep
     // set from the real bundle metafile each time. Null → no SITE_URL, so no page.
@@ -373,7 +373,7 @@ export async function createDevServer(opts: DevServerOptions) {
         headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
       });
     }),
-    // The blog's own license, served self-hosted (proposal 60). In prod
+    // The blog's own license, served self-hosted. In prod
     // copy-static.ts ships LICENSE.md to dist/license; here we read it from the
     // content root per request, as text/plain — matching the Worker's
     // staticAssetContentTypeOverride for /license. Missing → 404 (and the footer
@@ -570,7 +570,7 @@ export async function createDevServer(opts: DevServerOptions) {
     if (!(await file.exists())) {
       return new Response("not found", { status: StatusCodes.NOT_FOUND });
     }
-    // Absolute figure-source base (proposal 58): the post's own origin + path, so
+    // Absolute figure-source base: the post's own origin + path, so
     // the `[source]` links are self-contained URLs (matching prod's SITE_URL form,
     // just on localhost) rather than relative paths that break when the `.md` is
     // copied as text. serveFigureSource below serves the targets on the fly.
@@ -585,7 +585,7 @@ export async function createDevServer(opts: DevServerOptions) {
     const versionMap = await buildPublicPostVersionsMap(paths.versionsJson);
     const updated = versionMap[`/posts/${safe}`]?.lastUpdated;
     if (updated) fm.updated = updated;
-    // License front-matter parity with markdown-export.ts (proposal 59).
+    // License front-matter parity with markdown-export.ts.
     const license = resolveLicenseConfig();
     if (license.content) fm.license = license.content.id;
     if (license.code) fm.codeLicense = license.code.id;

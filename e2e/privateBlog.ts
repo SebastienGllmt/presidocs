@@ -1,4 +1,4 @@
-// Private-blog tier (methodology → Private blogs; proposal 57): drives the
+// Private-blog tier (methodology → Private blogs): drives the
 // PRIVATE fixture (`templates/private-content-repo`, BLOG_PRIVATE=1) through
 // a full `bun run build` — which includes `audit-private.ts`, so a green boot
 // here already proves the build-time half of the privacy ledger — and then

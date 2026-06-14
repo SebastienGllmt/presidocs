@@ -1,8 +1,9 @@
-// The blog's OWN license, served self-hosted (proposals 59 + 60). Proposal 59
-// declared the license via env (CONTENT_LICENSE / CODE_LICENSE) and pointed the
-// footer "License" link at the EXTERNAL license deed; it left a gap — the full
-// text (notably the code half, MIT) was never reachable from the site itself.
-// Proposal 60 closes that: `generate/copy-static.ts` copies the content repo's
+// The blog's OWN license, served self-hosted (methodology → Licensing: content
+// vs code). The license is declared via env (CONTENT_LICENSE / CODE_LICENSE) and
+// the footer "License" link can point at the EXTERNAL license deed; on its own
+// that leaves a gap — the full text (notably the code half, MIT) is never
+// reachable from the site itself.
+// Self-hosting closes that: `generate/copy-static.ts` copies the content repo's
 // `LICENSE.md` to `dist/license` (served at `/license` as text/plain — see
 // `staticAssetContentTypeOverride` in server/createWorker.ts) whenever the file
 // exists, and the footer link retargets to that self-hosted text.
@@ -54,8 +55,8 @@ export function hasOwnLicenseFile(
 
 /**
  * Resolve the footer license-link href: the self-hosted `/license` when the
- * blog ships a `LICENSE.md` we serve, else the given external deed URL
- * (proposal 59's prior behaviour). `deedUrl` is the resolved content-license URL
+ * blog ships a `LICENSE.md` we serve, else the given external deed URL.
+ * `deedUrl` is the resolved content-license URL
  * — `""` when no `CONTENT_LICENSE` is set, in which case there's no footer
  * license link at all and we return `""` unchanged.
  */

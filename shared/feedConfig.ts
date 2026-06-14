@@ -46,7 +46,7 @@ export type FeedConfig = {
    *
    * INHERITS `CONTENT_LICENSE` when `PODCAST_LICENSE` is unset: the narrated
    * audio is a rendition of the prose, so the content license is the right
-   * default for it (see shared/licenseConfig.ts / proposal 59). An explicit
+   * default for it (see shared/licenseConfig.ts). An explicit
    * `PODCAST_LICENSE` still wins for an author who licenses audio differently;
    * with neither set, it stays null.
    */

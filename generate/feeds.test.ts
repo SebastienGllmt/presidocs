@@ -243,7 +243,7 @@ test("RSS: license is opt-in — well-known needs no url, custom carries one", (
   );
 });
 
-test("Atom: <rights> carries the content license, opt-in (proposal 59)", () => {
+test("Atom: <rights> carries the content license, opt-in", () => {
   // Unset → no <rights> (no imposed default).
   expect(buildAtomFeed(SITE, [POST_WITH_AUDIO])).not.toContain("<rights>");
   // The Atom feed conveys the textual posts → its rights are the CONTENT

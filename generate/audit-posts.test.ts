@@ -103,7 +103,7 @@ test("flags aria-label on a roleless element as an error, cleared by a supportin
   expect(ruleIds(warnings)).not.toContain("aria-label-misuse");
 });
 
-// --- figure-src reference collection (proposal 58) ---
+// --- figure-src reference collection ---
 // The figures/<src>.ts existence check itself lives in main() (it needs the
 // filesystem); this exercises the pure HTMLRewriter collector it feeds.
 

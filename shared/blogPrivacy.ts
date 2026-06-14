@@ -1,4 +1,4 @@
-// The blog-level privacy knob (proposal 57 → methodology → Private blogs).
+// The blog-level privacy knob (methodology → Private blogs).
 //
 // `BLOG_PRIVATE=1` (or `true`) in the content repo's `.env` marks the whole
 // deploy as a capability-URL blog: posts are reachable only by people given
@@ -19,7 +19,7 @@ export function isPrivateBlog(env: Record<string, string | undefined> = process.
 }
 
 /**
- * The unguessable-slug token contract (proposal 57 §3): every post filename in
+ * The unguessable-slug token contract (methodology → Private blogs): every post filename in
  * a private blog ends `--<token>` where the token is ≥11 base64url chars
  * (≈64 bits — calibrated to ONLINE guessing against the worker, where even
  * 2^64 at a generous 10^6 req/s is ~580k years; `new-post` generates 16 chars

@@ -69,13 +69,13 @@ export function injectSiteFooterFromEnv(
   // Content license: link the license text, labelled with its SPDX id. Resolved
   // from the same env as everywhere else (CONTENT_LICENSE), so the build-time
   // and post-build paths agree by construction. Null → no license link. The href
-  // prefers the SELF-HOSTED /license (proposal 60) when the blog ships a
+  // prefers the SELF-HOSTED /license when the blog ships a
   // LICENSE.md, falling back to the external deed — via the shared predicate so
   // this path and strip-served-html.ts can't disagree.
   const content = resolveLicenseConfig().content;
   const licenseHref = resolveLicenseLinkHref(content?.url ?? "");
   const licenseLabel = content?.id ?? "";
-  // Acknowledgements (proposal 60): the combined /licenses page is emitted under
+  // Acknowledgements: the combined /licenses page is emitted under
   // the same SITE_URL gate /help is (generate/licenses-page.ts), so it exists by
   // serve time exactly when the help link does — gate it on the same resolved
   // condition rather than re-reading the env.

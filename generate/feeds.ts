@@ -132,7 +132,7 @@ export type FeedSite = {
    * Content (prose) license identifier for the Atom `<rights>` element — the
    * Atom feed conveys the textual posts, so its rights reflect `CONTENT_LICENSE`
    * directly, NOT the (possibly different) podcast/audio license above. Null →
-   * omit `<rights>` (proposal 59).
+   * omit `<rights>`.
    */
   contentLicenseId: string | null;
 };

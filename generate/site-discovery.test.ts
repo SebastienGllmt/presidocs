@@ -105,7 +105,7 @@ test("llms.txt: title, blockquote summary, post list with summaries, ## Optional
   expect(txt).toContain("- [How this blog works](https://blog.example.com/help)");
 });
 
-test("llms.txt: license line names content + code with links (proposal 59)", () => {
+test("llms.txt: license line names content + code with links", () => {
   const txt = buildLlmsTxt(
     {
       ...LLMS_SITE,

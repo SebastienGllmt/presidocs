@@ -1,4 +1,5 @@
-// Shared figure-source helpers (proposal 58). Three small, browser-safe pieces
+// Shared figure-source helpers (methodology → Copy as Markdown, figure source
+// pointers). Three small, browser-safe pieces
 // that the figure-source feature's separate parts must agree on:
 //
 //   - the filename-safe token rule for a `data-figure-src` value,
@@ -35,7 +36,7 @@ export function isValidFigureSrc(src: string): boolean {
  * (a **relative** path resolved against the `.md`'s own URL) as a local/preview
  * fallback. Either form carries the post's slug — and its private `--<token>`
  * capability suffix — so the source inherits the post's gate with no
- * public/private branch (proposal 58). The caller (markdown-export.ts /
+ * public/private branch. The caller (markdown-export.ts /
  * createDevServer.ts) decides absolute-vs-relative; this just appends the figure
  * path, since the source dir sits one level below the post.
  */
@@ -47,7 +48,7 @@ export function figureSourceHref(base: string, src: string): string {
  * The one-line SPDX header stamped atop each emitted/served figure-source file,
  * so the reuse terms travel with the artifact when it's fetched standalone
  * (detached from the twin's `code_license` front-matter). Empty when no code
- * license is set — omission, never a guessed default (proposal 59's opt-in
+ * license is set — omission, never a guessed default (the opt-in
  * posture). Shared by the build emitter (`generate/figure-source-export.ts`) and
  * the dev-server route so dev and prod serve byte-identical source. Typed
  * structurally (`{ id } | null`) to keep this module dependency-free.

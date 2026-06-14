@@ -47,7 +47,7 @@ export type AuditViolation = { rule: string; detail: string };
 
 /**
  * The distinct, validated `data-figure-src` module basenames a served post
- * references (proposal 58). HTMLRewriter to stay browser-free like the rest of
+ * references. HTMLRewriter to stay browser-free like the rest of
  * this gate. Exported for unit tests. The existence check (does `figures/<src>.ts`
  * exist?) needs the filesystem, so it lives in main(), not the pure auditor —
  * this just enumerates the references.
@@ -221,7 +221,7 @@ async function main(): Promise<void> {
     const struct = await validateHtmlStructure(html, rel, hv);
     const errors = [...auditPostHtml(html), ...struct.errors];
 
-    // Figure-source mapping (proposal 58): target-exists-WHEN-PRESENT. An animated
+    // Figure-source mapping: target-exists-WHEN-PRESENT. An animated
     // figure's `data-figure-src` must resolve to a real module; a figure without
     // the attribute is fine (static SVG, no source) — never warn on absence.
     for (const src of figureSrcRefs(html)) {

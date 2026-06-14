@@ -317,15 +317,15 @@ async function main(): Promise<void> {
   // before that step runs is fine — it exists by serve time, exactly like the
   // feed autodiscovery links advertise /feed.xml before generate/feeds.ts runs.
   const helpHref = siteUrl ? "/help" : "";
-  // Footer license link (proposal 59): same resolved content license the
+  // Footer license link: same resolved content license the
   // JSON-LD uses, so the bunFooterPlugin and this backstop render an identical
   // footer (the idempotency-race contract). Empty when CONTENT_LICENSE is unset.
-  // Prefers the self-hosted /license (proposal 60) when LICENSE.md ships, else
+  // Prefers the self-hosted /license when LICENSE.md ships, else
   // the external deed — via the shared predicate the bunFooterPlugin also uses,
   // so the two paths resolve the identical href.
   const licenseHref = resolveLicenseLinkHref(contentLicense?.url ?? "");
   const licenseLabel = contentLicense?.id ?? "";
-  // Footer acknowledgements link (proposal 60): the combined /licenses page is
+  // Footer acknowledgements link: the combined /licenses page is
   // emitted under the same SITE_URL gate /help is, so it exists by serve time on
   // the same condition. Matches the bunFooterPlugin so the two paths agree.
   const acknowledgementsHref = helpHref ? ACKNOWLEDGEMENTS_PATH : "";

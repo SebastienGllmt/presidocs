@@ -86,7 +86,7 @@ test("emits a BlogPosting with audio, author Person, dates, and publisher", () =
   expect(ld.audio.duration).toBe("PT40M55S");
 });
 
-test("BlogPosting carries license + copyrightHolder + copyrightYear (proposal 59)", () => {
+test("BlogPosting carries license + copyrightHolder + copyrightYear", () => {
   const ld = jsonLd(injectStructuredData(HTML, CTX));
   expect(ld.license).toBe("https://creativecommons.org/licenses/by/4.0/");
   // copyrightHolder reuses the author Person; copyrightYear is the publish year.
@@ -299,7 +299,7 @@ test("landing inject: emits WebSite + Blog @graph with the same author Person", 
     image: "https://blog.example.com/assets/authors/sebastiengllmt.png",
   });
   expect(blog.publisher).toEqual({ "@type": "Organization", name: "presidocs" });
-  // Blog-level licensing (proposal 59): same content-license URL + copyright
+  // Blog-level licensing: same content-license URL + copyright
   // holder as the posts.
   expect(blog.license).toBe("https://creativecommons.org/licenses/by/4.0/");
   expect(blog.copyrightHolder).toEqual({ "@type": "Person", name: "Sebastien Guillemot" });

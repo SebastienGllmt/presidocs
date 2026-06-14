@@ -33,7 +33,7 @@ test("figure source is pinned to text/plain (not the .ts→video/mp2t sniff)", (
   );
 });
 
-test("the blog's own license (/license) is pinned to text/plain (proposal 60)", () => {
+test("the blog's own license (/license) is pinned to text/plain", () => {
   // copy-static ships LICENSE.md to the extension-less dist/license; without the
   // override the binding serves it as octet-stream (a download) instead of text.
   expect(staticAssetContentTypeOverride("/license")).toBe("text/plain; charset=utf-8");

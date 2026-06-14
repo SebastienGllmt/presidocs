@@ -52,8 +52,8 @@ async function main(): Promise<void> {
 
   // The canonical host, baked at build from SITE_URL (null when unset — the
   // same gate every discovery feature uses). The Worker compares request hosts
-  // against it to X-Robots-Tag-noindex preview/staging hosts (proposal 16
-  // item 6); baking it here avoids duplicating SITE_URL into wrangler vars.
+  // against it to X-Robots-Tag-noindex preview/staging hosts (methodology →
+  // Site-level discovery); baking it here avoids duplicating SITE_URL into wrangler vars.
   const siteUrl = (process.env.SITE_URL ?? "").trim();
   let siteHost: string | null = null;
   if (siteUrl) {

@@ -49,7 +49,7 @@ test("injectSiteFooter — escapes the privacy href", () => {
   expect(out).toContain("&quot;");
 });
 
-test("injectSiteFooter — license link last, labelled by SPDX id, rel=license (proposal 59)", () => {
+test("injectSiteFooter — license link last, labelled by SPDX id, rel=license", () => {
   const out = injectSiteFooter(PAGE, {
     helpHref: "/help",
     privacyHref: "/privacy",
@@ -79,7 +79,7 @@ test("injectSiteFooter — a license href with no label falls back to 'License'"
   expect(out).toContain('<a href="/license" rel="license">License</a>');
 });
 
-test("injectSiteFooter — acknowledgements link last, after license (proposal 60)", () => {
+test("injectSiteFooter — acknowledgements link last, after license", () => {
   const out = injectSiteFooter(PAGE, {
     helpHref: "/help",
     privacyHref: "/privacy",

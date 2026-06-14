@@ -1,5 +1,6 @@
 // Resolves the license NOTICE for one client-shipped dependency from its
-// installed `node_modules` directory (proposal 60). The package's own `LICENSE`
+// installed `node_modules` directory (methodology → Licensing: content vs
+// code). The package's own `LICENSE`
 // file is the authoritative notice text — more complete than a stripped
 // `@license` banner, and the thing MIT ("in all copies"), Apache-2.0 (§4), and
 // CC-BY ("visible attribution") actually require us to reproduce when we ship

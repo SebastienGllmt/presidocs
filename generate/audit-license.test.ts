@@ -1,4 +1,4 @@
-// Tests for the deploy-time license-declaration gate (proposal 59 follow-up).
+// Tests for the deploy-time license-declaration gate.
 
 import { test, expect } from "bun:test";
 import { checkLicenseGate } from "./audit-license.ts";

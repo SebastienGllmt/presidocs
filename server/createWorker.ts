@@ -208,13 +208,13 @@ export function staticAssetContentTypeOverride(pathname: string): string | null 
   //    (applyRangeSupport below), so scrubbing works once the MIME is correct.
   if (pathname.endsWith(".mp4")) return "video/mp4";
   if (pathname.endsWith(".webm")) return "video/webm";
-  //  - figure source (proposal 58): `/posts/<slug>/figures/<module>.ts` — force
+  //  - figure source: `/posts/<slug>/figures/<module>.ts` — force
   //    text/plain so an agent (or browser) following the Markdown twin's [source]
   //    link reads the TypeScript as text, not the `video/mp2t` an `.ts` extension
   //    otherwise sniffs to. Scoped to the figures dir; figure source is the only
   //    `.ts` served. Matches the dev route (createDevServer.ts serveFigureSource).
   if (pathname.endsWith(".ts") && pathname.includes("/figures/")) return "text/plain; charset=utf-8";
-  //  - the blog's own license (proposal 60): copy-static ships LICENSE.md to the
+  //  - the blog's own license: copy-static ships LICENSE.md to the
   //    extension-less dist/license, which the binding would otherwise serve as
   //    octet-stream (a download). Force text/plain so the footer "License" link
   //    renders the terms in the browser. Mirrors the dev route in createDevServer.ts.
