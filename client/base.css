@@ -478,25 +478,21 @@
   .copy-md-copied .copy-md-glyph-copied { opacity: 1; }
   .copy-md-copied { color: var(--page-fg); }
 
-  /* Label cross-fade. The default label sits in normal flow and reserves the
-     button's width; "Copied!" (shorter) is absolutely overlaid, so the swap
-     never resizes the button. */
+  /* Label cross-fade. Both labels share ONE grid cell, so the control reserves
+     the width of the WIDER label ("Copied!", which is longer than "Copy") and
+     neither state overflows the pill. The swap is opacity-only, so it never
+     resizes the button (no layout shift — the e2e asserts the width is stable). */
   .copy-md-label {
-    position: relative;
-    display: inline-flex;
+    display: inline-grid;
+    place-items: center;
   }
-  .copy-md-label-default { transition: opacity 120ms ease; }
+  .copy-md-label-default,
   .copy-md-label-copied {
-    position: absolute;
-    left: 0;
-    top: 0;
-    height: 100%;
-    display: inline-flex;
-    align-items: center;
+    grid-area: 1 / 1;
     white-space: nowrap;
-    opacity: 0;
     transition: opacity 120ms ease;
   }
+  .copy-md-label-copied { opacity: 0; }
   .copy-md-copied .copy-md-label-default { opacity: 0; }
   .copy-md-copied .copy-md-label-copied { opacity: 1; }
 

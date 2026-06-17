@@ -127,10 +127,11 @@ export function installCopyMarkdown(article: HTMLElement): void {
     svg.setAttribute("aria-hidden", "true");
     svg.setAttribute("focusable", "false");
   }
-  // Two stacked labels: the default sits in normal flow and reserves the
-  // button's width; "Copied!" is absolutely positioned over it (out of flow),
-  // so flipping to the shorter text doesn't resize the button. The copied span
-  // is aria-hidden so the button's accessible name stays "Copy as Markdown".
+  // Two stacked labels sharing one grid cell (see `.copy-md-label` in base.css):
+  // the button reserves the width of the wider label ("Copied!"), so neither
+  // state overflows the pill and the opacity swap doesn't resize the button. The
+  // copied span is aria-hidden so the button's accessible name stays "Copy as
+  // Markdown".
   const pLabel = document.createElement("span");
   pLabel.className = "copy-md-label";
   const pLabelDefault = document.createElement("span");

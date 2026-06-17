@@ -115,8 +115,8 @@ test("Copy writes the .md to the clipboard and flips to Copied! without resizing
       { timeout: 5_000 },
     );
 
-    // "Copied!" is overlaid on the (wider) default label, not swapped in, so the
-    // button keeps its exact size.
+    // Both labels share one grid cell sized to the wider "Copied!", so the
+    // opacity swap keeps the button at its exact size in both states.
     const widthAfter = (await primary.boundingBox())!.width;
     expect(Math.abs(widthAfter - widthBefore)).toBeLessThan(0.5);
 

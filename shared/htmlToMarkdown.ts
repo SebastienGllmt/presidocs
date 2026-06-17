@@ -141,6 +141,15 @@ function figureSourceLink(doc: Document, figure: Element, base: string | undefin
 // "Copy as Markdown" → "Heading hierarchy: the part divider earns a level".)
 const DIVIDER_SELECTOR = ".section-divider-labeled";
 
+// Splice `el`'s children into its place and drop `el` itself. linkedom has no
+// `unwrap`, so move each child up before the wrapper, then remove it.
+function unwrapElement(el: Element): void {
+  const parent = el.parentNode;
+  if (!parent) return;
+  while (el.firstChild) parent.insertBefore(el.firstChild, el);
+  parent.removeChild(el);
+}
+
 // Rename `el` to `tag`, preserving its `id` and moving its children across.
 // linkedom has no `renameNode`, so a rename is create + copy id + adopt
 // children + replace. The `id` is carried through then dropped by Turndown,
@@ -228,6 +237,16 @@ function preClean(doc: Document, root: Element, figureSrcBase?: string): void {
   rebuildPartHeadings(doc);
 
   for (const figure of [...doc.querySelectorAll("figure")]) {
+    // A `<figure>` that wraps a `<table>` carries real tabular data — these are
+    // data tables (e.g. the benchmark widgets) tagged `<figure>` only so readers
+    // can comment on them as a graphic. Collapsing them to a caption note would
+    // throw the table away; instead unwrap the figure so the GFM `tables` rule
+    // converts the `<table>` exactly as it did when the wrapper was a plain
+    // `<div>`. (A genuine graphic figure has no `<table>` and still collapses.)
+    if (figure.querySelector("table")) {
+      unwrapElement(figure);
+      continue;
+    }
     const caption = figureCaption(figure);
     const note = doc.createElement("blockquote");
     note.className = "x-figure-note";

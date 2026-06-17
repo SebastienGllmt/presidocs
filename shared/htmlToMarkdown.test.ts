@@ -164,6 +164,25 @@ test("a figure with neither caption nor aria-label degrades to a placeholder", (
   expect(htmlToMarkdown(html).markdown).toContain("Figure (omitted).");
 });
 
+test("a figure wrapping a table is unwrapped — the table survives, not collapsed to a caption", () => {
+  // Data tables are tagged <figure> only so readers can comment on them as a
+  // graphic; the twin must still convert the <table>, not throw it away with a
+  // `> _Figure: …_` note. Fallback path (short post) keeps it simple.
+  const html =
+    '<article data-narration-src="/x"><h1 id="title">T</h1>' +
+    '<figure id="bench" aria-label="Prove time by layer (scrollable)">' +
+    "<table><thead><tr><th>Layer</th><th>Time</th></tr></thead>" +
+    "<tbody><tr><td>L1</td><td>2s</td></tr></tbody></table></figure></article>";
+  const { markdown } = htmlToMarkdown(html);
+  expect(markdown).toContain("| Layer | Time |");
+  expect(markdown).toContain("| --- | --- |");
+  // Cells are padded to column width by Turndown (`| L1  | 2s  |`).
+  expect(markdown).toMatch(/\| L1 +\| 2s +\|/);
+  // The figure must NOT have collapsed to a caption note.
+  expect(markdown).not.toContain("Prove time by layer");
+  expect(markdown).not.toContain("_Figure:");
+});
+
 test("tables become GFM pipe tables (header + separator row), not flattened text", () => {
   const { markdown } = htmlToMarkdown(FIXTURE);
   // Header row, the alignment/separator row, and a body row — the three lines a
