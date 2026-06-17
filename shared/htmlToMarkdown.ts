@@ -285,6 +285,30 @@ function makeTurndown(): TurndownService {
   // (its cell text concatenated) — see proposal 23 / methodology "Copy as
   // Markdown". Scoped to exactly these three rules; no autolinks etc.
   td.use([tables, strikethrough, taskListItems]);
+  // Collapsible "technical aside" blocks. The post authors them as
+  // `<details class="aside"><summary>…</summary>…</details>` (Readability keeps
+  // the tags, dropping only the class), but Turndown has no `<details>` rule, so
+  // by default it flattens both: the summary becomes a bare paragraph and the
+  // structure is lost. Most Markdown renderers (GitHub et al.) render raw
+  // `<details>`/`<summary>` HTML as a real collapsible block, so we emit that
+  // verbatim rather than inventing Markdown for it — the same "preserve the
+  // structure the source already has" stance the table rule takes. The one
+  // load-bearing detail is the blank line after `</summary>`: without it GitHub
+  // treats the body as literal text instead of Markdown. The `id` is dropped
+  // (Markdown twins carry no element ids — see "Copy as Markdown").
+  td.addRule("detailsAside", {
+    filter: "details",
+    replacement: (content) =>
+      "\n\n<details>\n" + content.replace(/^\n+|\n+$/g, "") + "\n\n</details>\n\n",
+  });
+  td.addRule("detailsSummary", {
+    filter: "summary",
+    // The summary's children convert to inline Markdown (e.g. `<code>k</code>`
+    // → `` `k` ``); collapse incidental source whitespace to a single line, then
+    // leave the blank line the body needs to parse as Markdown.
+    replacement: (content) =>
+      "<summary>" + content.replace(/\s+/g, " ").trim() + "</summary>\n\n",
+  });
   // Any stray inline SVG that survived (figures are pre-collapsed, but a
   // decorative icon SVG elsewhere — including inside a table cell — shouldn't
   // dump its path data into the text). Registered after the GFM rules; an `svg`

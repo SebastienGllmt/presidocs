@@ -221,6 +221,46 @@ test("checkbox list items become GFM task-list items (article-root fallback path
   expect(markdown).toContain("pending");
 });
 
+// A "technical aside" as the post authors it: `<details class="aside">` with a
+// `<summary>` title. Enough filler prose that Readability accepts the article
+// (the real, long-post path); Readability keeps the <details>/<summary> tags.
+const ASIDE_FIXTURE =
+  '<article data-narration-src="/x" role="main"><h1 id="title">Aside Post</h1>' +
+  Array.from(
+    { length: 12 },
+    (_, i) =>
+      `<p>Filler paragraph ${i} with enough real words that Readability treats this as a genuine article body worth keeping in the extracted content.</p>`,
+  ).join("") +
+  '<details id="perf-aside" class="aside">' +
+  "<summary>Technical aside - what <code>k</code> is, precisely (most readers can skip this)</summary>" +
+  "<p>First aside paragraph explaining the technical point in a meaningful number of words.</p>" +
+  "<p>Second aside paragraph continuing the explanation a little further along.</p>" +
+  "</details></article>";
+
+test("a <details> technical aside is preserved as a collapsible block, not flattened", () => {
+  const { markdown } = htmlToMarkdown(ASIDE_FIXTURE);
+  // The structure survives as raw HTML (GitHub & most renderers show it as a
+  // real collapsible) rather than the summary collapsing into a bare paragraph.
+  expect(markdown).toContain("<details>");
+  expect(markdown).toContain("</details>");
+  // Summary title carried through, with inline HTML converted to inline Markdown
+  // (`<code>k</code>` → `` `k` ``).
+  expect(markdown).toContain("<summary>Technical aside - what `k` is, precisely (most readers can skip this)</summary>");
+  // The id is dropped (Markdown twins carry no element ids).
+  expect(markdown).not.toContain("perf-aside");
+  // Body paragraphs land inside the block as Markdown.
+  expect(markdown).toContain("First aside paragraph explaining the technical point");
+  expect(markdown).toContain("Second aside paragraph continuing the explanation");
+});
+
+test("the <details> block leaves the blank line GitHub needs to render the body as Markdown", () => {
+  const { markdown } = htmlToMarkdown(ASIDE_FIXTURE);
+  // The load-bearing detail: a blank line after </summary>. Without it GitHub
+  // renders the body as literal text. (And a blank line before </details>.)
+  expect(markdown).toContain("</summary>\n\nFirst aside paragraph");
+  expect(markdown).toMatch(/\n\n<\/details>/);
+});
+
 test("a too-short post falls back to the article root rather than emitting nothing", () => {
   // One short paragraph: Readability returns null / too little, so the
   // article-root fallback path serializes it instead of yielding an empty body.
