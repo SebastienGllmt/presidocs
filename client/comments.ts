@@ -848,7 +848,8 @@ class CommentSystem {
   // everything's been dealt with; it also calls out unsent drafts via a
   // "(+N draft)" suffix (or "N unsent drafts" when nothing's posted yet)
   // so a half-written-but-never-submitted comment can't masquerade as
-  // done. Clicks cycle through the unresolved threads in document order.
+  // done. Clicks cycle through the unresolved threads and unsent drafts in
+  // document order.
   private renderUnresolvedCount() {
     if (!this.column) return;
     const author = this.isAuthorMode();
@@ -894,18 +895,21 @@ class CommentSystem {
 
     const el = this.unresolvedCountEl;
     if (totalThreads === 0) {
-      // Only unsent drafts exist — nothing has been posted yet.
+      // Only unsent drafts exist — nothing has been posted yet. The cycle
+      // still visits them, so the badge stays clickable.
       el.dataset.state = "drafts";
       el.textContent = `${drafts} unsent draft${drafts === 1 ? "" : "s"}`;
-      el.title = "You have unsent drafts — press “Comment” on a card to post it";
-      el.disabled = true;
+      el.title = "Jump to the next unsent draft";
+      el.disabled = false;
     } else if (count === 0) {
       el.dataset.state = "clear";
       el.textContent = "All comments resolved" + draftNote;
+      // Resolved threads aren't in the cycle, but unsent drafts are — so the
+      // badge stays clickable iff there's still a draft to jump to.
       el.title = drafts > 0
-        ? "No unresolved threads; you also have unsent drafts"
+        ? "No unresolved threads; jump to the next unsent draft"
         : "No unresolved threads on this post";
-      el.disabled = true;
+      el.disabled = drafts === 0;
     } else {
       el.dataset.state = "pending";
       el.textContent =
@@ -915,13 +919,18 @@ class CommentSystem {
     }
   }
 
-  // Step through unresolved threads in document order on each click.
-  // The set is recomputed every call (poll/mutation may have shifted
-  // it) and the cycle index is reset whenever the membership changes
-  // so we never index off the end.
+  // Step through unresolved threads AND unsent drafts in document order on
+  // each click. Drafts are full Thread objects (just not in the CRDT), so they
+  // carry their own highlight + card and slot into the same document-order
+  // walk — including them keeps the cycle honest with the badge, which already
+  // counts drafts in its "(+N draft)" suffix. The set is recomputed every call
+  // (poll/mutation may have shifted it) and the cycle index is reset whenever
+  // the membership changes so we never index off the end.
   private jumpToNextUnresolved() {
-    const ordered = this.snapshot
-      .filter((t) => !this.threadIsResolved(t))
+    const ordered = [
+      ...this.snapshot.filter((t) => !this.threadIsResolved(t)),
+      ...this.drafts,
+    ]
       .map((t) => ({ thread: t, top: this.computeAnchorTop(t) ?? Infinity }))
       .sort((a, b) => a.top - b.top)
       .map((x) => x.thread);

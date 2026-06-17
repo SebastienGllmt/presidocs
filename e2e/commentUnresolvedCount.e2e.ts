@@ -89,6 +89,12 @@ test("[chromium] the badge counts unsent drafts, and draft cards are tagged", as
     expect(await badge(page).count(), "badge appears once there's an unsent draft").toBe(1);
     expect(await badge(page).textContent()).toBe("1 unsent draft");
     expect(await badge(page).getAttribute("data-state")).toBe("drafts");
+    // The cycle includes drafts, so the badge is clickable even when the only
+    // thing to report is an unsent draft (it used to be inert here). Clicking
+    // it jumps to that draft rather than no-opping.
+    expect(await badge(page).isDisabled(), "drafts-only badge is clickable").toBe(false);
+    await badge(page).click();
+    await page.locator('.cmt-card[data-draft="true"]').first().waitFor({ state: "visible", timeout: 5000 });
 
     // Submit it → it becomes a real unresolved thread; the draft note clears.
     await page.locator('.cmt-card[data-draft="true"] .cmt-reply-input').fill("now this one is posted");
