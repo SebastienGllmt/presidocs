@@ -680,6 +680,26 @@ article.narrating > *:not(.narration-active):not(:has(.narration-active)) {
   right: 14px;
 }
 
+/* Clear the always-visible corner × from the seek bar's hit area (horizontal
+   layout only). The card reserves that corner with `padding-right: 44px`
+   above, which insets the in-flow button row — but NOT this bar: it's
+   absolutely positioned against `.shk-player`, so it ignores the padding and
+   at `right: 14px` overshoots into the corner, sliding its hit area under the
+   ×. Both sit at z-index: 1 and the × is appended last, so it wins the overlap
+   — a click near the bar's right end closes the player instead of seeking. The
+   buttons dodge this with z-index: 2; the bar can't (lifting it over the ×
+   would just steal the ×'s own clicks). So inset its right edge by the same
+   44px, aligning it with the content box / button row: the bar spans exactly
+   the content width and the corner is the ×'s alone (~7px clear). No seek
+   range is lost — 100% is still the bar's right edge — only a sliver of click
+   precision at the far right. Must follow the base rule above (equal
+   specificity → source order wins), and is gated to the horizontal layout: in
+   the vertical layout the bar is in-flow above the controls, never near the
+   corner. */
+@media (min-width: 641px) {
+  #narrate-player .shk-bar_wrap { right: 44px; }
+}
+
 /* No cover art is ever provided — get rid of the empty box. */
 #narrate-player .shk-cover { display: none; }
 
