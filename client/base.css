@@ -1104,6 +1104,50 @@
   .figure-id-copy.is-copied { color: #1a7f37; }
   .figure-id-copy.is-copied::after { content: " ✓"; }
 
+  /* Paragraph-id copy affordance — the prose twin of the figure label above
+     (client/figureCopyId.ts → installParagraphIdCopies). Same gutter placement
+     and feedback, but the id is rendered from `data-pid` via ::before rather
+     than a text node, so it stays out of the paragraph's textContent (which the
+     comments layer hashes for thread anchoring). One consequence of ::before:
+     the id can't be drag-selected the way the figure label can — click still
+     copies it. Author/localhost-only, like the figure label: inert without the
+     class. */
+  p.has-paragraph-id-copy { position: relative; }
+
+  .paragraph-id-copy {
+    position: absolute;
+    top: 0;
+    right: 100%;
+    margin-right: 0.4rem;
+    border: 0;
+    background: transparent;
+    padding: 2px 4px;
+    border-radius: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    line-height: 1.3;
+    text-align: right;
+    white-space: nowrap;
+    color: var(--page-fg-muted);
+    cursor: pointer;
+    transition: color 120ms ease, background 120ms ease;
+  }
+  /* The visible id — kept out of textContent so it never reaches the comment
+     hash. ::after carries the green check, identical to the figure label. */
+  .paragraph-id-copy::before { content: attr(data-pid); }
+  .paragraph-id-copy:hover {
+    color: var(--page-fg);
+    background: rgba(31, 35, 40, 0.06);
+  }
+  .paragraph-id-copy:focus-visible {
+    outline: 2px solid var(--page-fg-muted);
+    outline-offset: 2px;
+  }
+  .paragraph-id-copy.is-copied { color: #1a7f37; }
+  .paragraph-id-copy.is-copied::after { content: " ✓"; }
+
   /* On narrow / touch viewports the left gutter clips off-screen where the
      article hugs the edge, so move the (already-visible) label inside the
      figure's top-left corner instead of out in the margin. */
@@ -1112,6 +1156,15 @@
       right: auto;
       left: 4px;
       top: 4px;
+      margin-right: 0;
+    }
+    /* Paragraphs have no empty corner to tuck into, so the inset label would
+       sit over the first line. Drop it to the gutter's edge and let it ride the
+       first line's left — an author-only aid, acceptable on rare touch use. */
+    .paragraph-id-copy {
+      right: auto;
+      left: 0;
+      top: 0;
       margin-right: 0;
     }
   }

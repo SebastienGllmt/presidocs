@@ -10,7 +10,7 @@ import "../happydom.ts";
 
 import { beforeEach, expect, test } from "bun:test";
 
-import { installFigureIdCopies } from "./figureCopyId.ts";
+import { installFigureIdCopies, installParagraphIdCopies } from "./figureCopyId.ts";
 
 beforeEach(() => {
   document.body.innerHTML = "";
@@ -70,4 +70,77 @@ test("installFigureIdCopies is idempotent on a second run", () => {
   // No duplicate label on the second pass — the data-figure-id-copy guard holds.
   expect(figure.querySelectorAll(".figure-id-copy").length).toBe(1);
   expect(figure.dataset.figureIdCopy).toBe("installed");
+});
+
+test("installParagraphIdCopies attaches a label to every p[id]", () => {
+  document.body.innerHTML = `
+    <article data-narration-src="/x">
+      <p id="lede">Lede text.</p>
+      <p id="problem-body">Body text.</p>
+    </article>
+  `;
+  const article = document.querySelector<HTMLElement>("[data-narration-src]")!;
+
+  installParagraphIdCopies(article);
+
+  for (const id of ["lede", "problem-body"]) {
+    const p = article.querySelector<HTMLElement>(`p#${id}`)!;
+    expect(p.classList.contains("has-paragraph-id-copy")).toBe(true);
+    const label = p.querySelector<HTMLButtonElement>("button.paragraph-id-copy")!;
+    expect(label).not.toBeNull();
+    // The id rides on data-pid (rendered via CSS), copies that exact string,
+    // and is announced for assistive tech.
+    expect(label.dataset.pid).toBe(id);
+    expect(label.getAttribute("aria-label")).toBe(`Copy paragraph id ${id}`);
+    expect(label.title).toBe(`Copy paragraph id (${id})`);
+  }
+});
+
+test("installParagraphIdCopies keeps the id out of the paragraph's text", () => {
+  // The whole reason the paragraph label uses data-pid + CSS instead of a text
+  // node: comments.ts hashes block.textContent to anchor threads, so the label
+  // must contribute nothing to it. Lock that in.
+  document.body.innerHTML = `
+    <article data-narration-src="/x">
+      <p id="lede">Lede text.</p>
+    </article>
+  `;
+  const article = document.querySelector<HTMLElement>("[data-narration-src]")!;
+
+  installParagraphIdCopies(article);
+
+  const p = article.querySelector<HTMLElement>("p#lede")!;
+  expect(p.textContent).toBe("Lede text.");
+  expect(p.querySelector<HTMLElement>(".paragraph-id-copy")!.textContent).toBe("");
+});
+
+test("installParagraphIdCopies skips paragraphs without an id", () => {
+  document.body.innerHTML = `
+    <article data-narration-src="/x">
+      <p>No id here.</p>
+    </article>
+  `;
+  const article = document.querySelector<HTMLElement>("[data-narration-src]")!;
+
+  installParagraphIdCopies(article);
+
+  const p = article.querySelector<HTMLElement>("p")!;
+  expect(p.querySelector(".paragraph-id-copy")).toBeNull();
+  expect(p.classList.contains("has-paragraph-id-copy")).toBe(false);
+});
+
+test("installParagraphIdCopies is idempotent on a second run", () => {
+  document.body.innerHTML = `
+    <article data-narration-src="/x">
+      <p id="only">One.</p>
+    </article>
+  `;
+  const article = document.querySelector<HTMLElement>("[data-narration-src]")!;
+
+  installParagraphIdCopies(article);
+  installParagraphIdCopies(article);
+
+  const p = article.querySelector<HTMLElement>("p")!;
+  expect(p.querySelectorAll(".paragraph-id-copy").length).toBe(1);
+  expect(p.dataset.paragraphIdCopy).toBe("installed");
 });
