@@ -261,6 +261,44 @@ test("the <details> block leaves the blank line GitHub needs to render the body 
   expect(markdown).toMatch(/\n\n<\/details>/);
 });
 
+test("a code figure (Shiki-highlighted, as in dist) becomes a fenced block, not a caption", () => {
+  // The form markdown-export actually sees: the build pass has run, so the
+  // figure holds `<code class="shiki-code" data-lang>` with token spans, an
+  // injected @annotate callout line, and a figcaption.
+  const html =
+    '<article data-narration-src="/x"><h1 id="title">T</h1>' +
+    "<p>Lead-in prose that gives the article enough body to extract cleanly and reliably here.</p>" +
+    '<figure id="zswapinput-struct-figure"><pre><code class="shiki-code" data-lang="rust">' +
+    '<span class="line"><span class="shk-x">struct ZswapInput {</span></span>\n' +
+    '<span class="line highlighted"><span class="shk-y">  nullifier: CoinNullifier,</span></span>\n' +
+    '<span class="line twoslash-tag-line twoslash-tag-annotate-line">the spent-tag</span>\n' +
+    '<span class="line"><span class="shk-x">}</span></span>' +
+    "</code></pre><figcaption>The two fields an input carries.</figcaption></figure>" +
+    "<p>Trailing prose so Readability keeps the whole article body in the output.</p></article>";
+  const { markdown } = htmlToMarkdown(html);
+  // A real ```rust fence with the recovered source — the callout text and the
+  // token-span chrome are gone.
+  expect(markdown).toContain("```rust");
+  expect(markdown).toContain("struct ZswapInput {");
+  expect(markdown).toContain("nullifier: CoinNullifier,");
+  expect(markdown).not.toContain("the spent-tag"); // the @annotate callout is not source
+  expect(markdown).not.toContain("shiki-code");
+  expect(markdown).not.toContain('<span');
+  // The caption is kept as a note alongside the fence.
+  expect(markdown).toContain("The two fields an input carries.");
+});
+
+test("a source-form code figure also becomes a fenced block", () => {
+  const html =
+    '<article data-narration-src="/x"><h1 id="title">T</h1>' +
+    "<p>Lead-in prose that gives the article enough body to extract cleanly and reliably here.</p>" +
+    '<figure><pre><code class="language-rust">fn main() { println!("hi") }</code></pre></figure>' +
+    "<p>Trailing prose so Readability keeps the whole article body in the output.</p></article>";
+  const { markdown } = htmlToMarkdown(html);
+  expect(markdown).toContain("```rust");
+  expect(markdown).toContain('fn main() { println!("hi") }');
+});
+
 test("a too-short post falls back to the article root rather than emitting nothing", () => {
   // One short paragraph: Readability returns null / too little, so the
   // article-root fallback path serializes it instead of yielding an empty body.

@@ -1169,3 +1169,110 @@
     }
   }
 }
+
+/* ── Code blocks (Shiki, build-time) ─────────────────────────────────────────
+   Authored `<pre><code class="language-rust">` is highlighted at build time by
+   generate/highlightCode.ts into `<code class="shiki-code">`, with token colours
+   as CLASSES (never inline `style=`, which the prod `style-src 'self'` CSP would
+   strip). Block typography hangs off `code.shiki-code`, so the pass never has to
+   touch the wrapping `<pre>`. In `engine-components` (a later layer) so it beats
+   the inline-code `article code { background }` rule above without a specificity
+   fight. The annotation classes mirror what the SVG struct figures drew by hand
+   (proposal 34): `.highlighted` field-row box, `.tok-create`/`.tok-spend`
+   semantic field colours, and the `@annotate:` `.twoslash-tag-*-line` callouts. */
+@layer engine-components {
+  pre:has(> code.shiki-code) { margin: 1.6rem 0; padding: 0; background: none; overflow: visible; }
+
+  code.shiki-code {
+    display: block;
+    overflow-x: auto;
+    padding: 0.85rem 1.05rem;
+    border: 1px solid #e3e6ea;
+    border-radius: 8px;
+    background: #fff;
+    color: #24292e;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.6;
+    tab-size: 2;
+  }
+
+  /* Each Shiki line is its own row so a line tint (highlight / focus / diff /
+     semantic) bleeds the full block width, not just behind the glyphs. The
+     negative margin + matching padding is the standard Shiki full-bleed trick;
+     position:relative anchors the diff gutter markers. */
+  code.shiki-code .line {
+    display: block;
+    position: relative;
+    margin: 0 -1.05rem;
+    padding: 0 1.05rem;
+  }
+
+  /* Field-row highlight (`// [!code highlight]`) — the purple field box. */
+  code.shiki-code .line.highlighted { background: #efeafb; box-shadow: inset 2px 0 0 #9a82d8; }
+  /* Word highlight (`// [!code word:foo]`). */
+  code.shiki-code .highlighted-word { background: #efeafb; border-radius: 3px; padding: 0 2px; }
+  /* Focus (`// [!code focus]`): dim the rest, restore on hover. */
+  code.shiki-code.has-focused .line:not(.focused) { opacity: 0.4; transition: opacity 160ms ease; }
+  code.shiki-code.has-focused:hover .line:not(.focused) { opacity: 1; }
+  /* Diff (`// [!code ++]` / `// [!code --]`). */
+  code.shiki-code .line.diff { padding-left: 1.55rem; }
+  code.shiki-code .line.diff.add { background: #e6ffec; box-shadow: inset 2px 0 0 #2da44e; }
+  code.shiki-code .line.diff.remove { background: #ffebe9; box-shadow: inset 2px 0 0 #cf222e; }
+  code.shiki-code .line.diff::before { position: absolute; left: 0.5rem; opacity: 0.7; }
+  code.shiki-code .line.diff.add::before { content: "+"; color: #1a7f37; }
+  code.shiki-code .line.diff.remove::before { content: "-"; color: #cf222e; }
+
+  /* Semantic field colours (`// [!code create]` / `[!code spend]`): the SVG
+     figures' green=create / purple=spend pairing. The semantic colour replaces
+     the syntax colour on that line for emphasis. */
+  code.shiki-code .line.tok-create { background: #e6f6ec; box-shadow: inset 2px 0 0 #147a35; }
+  code.shiki-code .line.tok-create [class*="shk-"] { color: #146c30; }
+  code.shiki-code .line.tok-spend { background: #f3effb; box-shadow: inset 2px 0 0 #5a45a8; }
+  code.shiki-code .line.tok-spend [class*="shk-"] { color: #5a45a8; }
+
+  /* `@annotate:` / `@log:` / `@warn:` / `@error:` callouts (vendored customTag).
+     A full-width tinted, left-bordered line carrying the pointer-label text. */
+  code.shiki-code .twoslash-tag-line {
+    display: block;
+    margin: 0.1rem -1.05rem;
+    padding: 0.14rem 1.05rem 0.14rem 0.85rem;
+    border-left: 2px solid;
+    font-size: 0.76rem;
+    font-style: italic;
+    white-space: normal;
+  }
+  code.shiki-code .twoslash-tag-annotate-line { border-color: #9a82d8; background: #f3effb; color: #533f9e; }
+  code.shiki-code .twoslash-tag-log-line { border-color: #54aeff; background: #eef6ff; color: #0a53be; }
+  code.shiki-code .twoslash-tag-warn-line { border-color: #d4a72c; background: #fff8e6; color: #7a5c0c; }
+  code.shiki-code .twoslash-tag-error-line { border-color: #e5534b; background: #fdeceb; color: #b23b3b; }
+
+  /* Overlay pointer labels (`// @note…`) — a non-Shiki annotation floated at the
+     line's right edge, in sans (like the figures' original SVG labels), anchored
+     to its `.line` (position:relative). Colour-matched to the line's semantic
+     tint. pointer-events:none so it never blocks selecting the code. */
+  code.shiki-code .code-anno {
+    position: absolute;
+    right: 0.7rem;
+    top: 50%;
+    transform: translateY(-50%);
+    font-family: var(--font-sans);
+    font-size: 0.7rem;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  code.shiki-code .code-anno-create { color: #146c30; }
+  code.shiki-code .code-anno-spend { color: #5a45a8; }
+  code.shiki-code .code-anno-note { color: #533f9e; }
+
+  /* Token colours — GENERATED from the github-light theme (proposal 34). The
+     class name is keyed to the theme's colour, but the value here is ours to
+     tune for WCAG SC 1.4.3 against the #fff code background; regenerate the class
+     names if the theme changes. */
+  code.shiki-code .shk-1j81fl7 { color: #57606a; } /* comment (darkened from theme #6a737d for AA on the #efeafb highlight tint) */
+  code.shiki-code .shk-1jbe1iq { color: #032f62; } /* string */
+  code.shiki-code .shk-4e5qqp { color: #24292e; } /* text/punctuation */
+  code.shiki-code .shk-cq7i2b { color: #005cc5; } /* constant/number */
+  code.shiki-code .shk-iu4w71 { color: #cf222e; } /* keyword (darkened from theme #d73a49 for AA on the #efeafb highlight tint) */
+  code.shiki-code .shk-os2idh { color: #6f42c1; } /* type/function */
+}

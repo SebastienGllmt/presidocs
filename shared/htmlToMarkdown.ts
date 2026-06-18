@@ -150,6 +150,60 @@ function unwrapElement(el: Element): void {
   parent.removeChild(el);
 }
 
+// True when a `<code>` is a (Shiki-highlighted or source-form) fenced block, as
+// opposed to inline `<code>`. The build pass stamps `shiki-code` + `data-lang`;
+// the source form carries the authored `language-X` class.
+function isCodeBlock(code: Element): boolean {
+  const cls = code.getAttribute("class") ?? "";
+  return cls.includes("shiki-code") || code.hasAttribute("data-lang") || /\blanguage-[\w-]+/.test(cls);
+}
+
+// Build a clean `<pre><code class="language-X">source</code></pre>` from a code
+// element, recovering the source text. The `@annotate:` callout lines the build
+// pass injected (`.twoslash-tag-line`) are NOT source, so they're dropped along
+// with their trailing newline; Turndown then renders the result as a ```X fence.
+function buildCodeFence(doc: Document, code: Element): Element {
+  const lang =
+    code.getAttribute("data-lang") ?? (code.getAttribute("class") ?? "").match(/\blanguage-([\w-]+)/)?.[1] ?? "";
+  // Highlighted form: each source line is a `<span class="line">` (the build
+  // pass strips the inter-line `\n` text nodes, so we rebuild newlines from the
+  // line boundaries) — skipping the injected `@annotate:` callout lines and the
+  // `.code-anno` overlay labels, neither of which is source. Source form (a raw
+  // `language-X` block, no line spans) falls back to plain textContent.
+  const clone = code.cloneNode(true) as Element;
+  for (const overlay of [...clone.querySelectorAll(".code-anno")]) overlay.remove();
+  const lineEls = [...clone.querySelectorAll(".line:not(.twoslash-tag-line)")];
+  const raw = lineEls.length > 0 ? lineEls.map((l) => l.textContent ?? "").join("\n") : (clone.textContent ?? "");
+  const source = raw.replace(/^\n+/, "").replace(/\s+$/, "");
+  const pre = doc.createElement("pre");
+  const inner = doc.createElement("code");
+  if (lang) inner.className = `language-${lang}`;
+  inner.textContent = source;
+  pre.appendChild(inner);
+  return pre;
+}
+
+// The "_Figure: caption_" blockquote note a non-code figure collapses to (and a
+// code/composite figure keeps alongside its fence). Animated figures carry
+// `data-figure-src`; append a link to their source so an AI can fetch the real
+// code. Static figures have none → caption-only.
+function makeFigureNote(doc: Document, figure: Element, figureSrcBase: string | undefined): Element {
+  const caption = figureCaption(figure);
+  const note = doc.createElement("blockquote");
+  note.className = "x-figure-note";
+  const p = doc.createElement("p");
+  const em = doc.createElement("em");
+  em.textContent = caption ? `Figure: ${caption}` : "Figure (omitted).";
+  p.appendChild(em);
+  const srcLink = figureSourceLink(doc, figure, figureSrcBase);
+  if (srcLink) {
+    p.appendChild(doc.createTextNode(" — "));
+    p.appendChild(srcLink);
+  }
+  note.appendChild(p);
+  return note;
+}
+
 // Rename `el` to `tag`, preserving its `id` and moving its children across.
 // linkedom has no `renameNode`, so a rename is create + copy id + adopt
 // children + replace. The `id` is carried through then dropped by Turndown,
@@ -247,22 +301,21 @@ function preClean(doc: Document, root: Element, figureSrcBase?: string): void {
       unwrapElement(figure);
       continue;
     }
-    const caption = figureCaption(figure);
-    const note = doc.createElement("blockquote");
-    note.className = "x-figure-note";
-    const p = doc.createElement("p");
-    const em = doc.createElement("em");
-    em.textContent = caption ? `Figure: ${caption}` : "Figure (omitted).";
-    p.appendChild(em);
-    // Animated figures carry `data-figure-src`; append a link to their source so
-    // an AI can fetch the real code. Static figures have none → caption-only.
-    const srcLink = figureSourceLink(doc, figure, figureSrcBase);
-    if (srcLink) {
-      p.appendChild(doc.createTextNode(" — "));
-      p.appendChild(srcLink);
+    // A code figure — `<figure>…<pre><code>…` — carries source an LLM can use, so
+    // emit a fenced code block (Turndown renders a `language-` `<pre><code>` as a
+    // ```lang fence) rather than collapsing to a caption-only note. The code may
+    // be the Shiki-highlighted form (`shiki-code` + `data-lang`, token spans) —
+    // markdown-export runs over the BUILT, highlighted dist HTML — or the raw
+    // source form; both recover via textContent. We keep the caption note too:
+    // for a composite figure (Pattern C — code + diagram siblings) it describes
+    // the surrounding diagram; for a pure code figure it adds context.
+    const codeEl = figure.querySelector("pre > code");
+    if (codeEl && isCodeBlock(codeEl)) {
+      figure.before(buildCodeFence(doc, codeEl));
+      figure.replaceWith(makeFigureNote(doc, figure, figureSrcBase));
+      continue;
     }
-    note.appendChild(p);
-    figure.replaceWith(note);
+    figure.replaceWith(makeFigureNote(doc, figure, figureSrcBase));
   }
 
   for (const el of [...doc.querySelectorAll(CHROME_SELECTORS)]) {
@@ -344,7 +397,13 @@ export function htmlToMarkdown(html: string, opts: MarkdownOptions = {}): Markdo
   let contentHtml = fallbackHtml;
   let usedReadability = false;
   try {
-    const parsed = new Readability(readabilityDoc, { keepClasses: false }).parse();
+    // `keepClasses: false` strips className everywhere — but a code fence's
+    // `language-X` class is how Turndown labels the fence (` ```rust `), so
+    // preserve those (the build pass only ever emits languages we highlight).
+    const parsed = new Readability(readabilityDoc, {
+      keepClasses: false,
+      classesToPreserve: ["language-rust"],
+    }).parse();
     const parsedTextLen = (parsed?.textContent ?? "").replace(/\s+/g, " ").trim().length;
     if (parsed?.content && parsedTextLen >= fallbackTextLen * 0.5) {
       contentHtml = parsed.content;

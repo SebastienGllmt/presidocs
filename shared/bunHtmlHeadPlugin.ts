@@ -38,6 +38,9 @@ import { injectAiSearch } from "./injectAiSearch.ts";
 import { isPrivateBlog } from "./blogPrivacy.ts";
 import { resolveSourceRepo, sourceUrlForPostPath } from "./sourceRepo.ts";
 import { resolveFeedConfig } from "./feedConfig.ts";
+// Build-time only (this plugin runs in dev + the prod build, never the Worker),
+// so pulling in Shiki here keeps it out of the edge bundle. See highlightCode.ts.
+import { highlightCodeInHtml } from "../generate/highlightCode.ts";
 
 // The above-the-fold Red Hat faces worth preloading: body prose (Text 400),
 // the medium weight (Text 500 — Lighthouse's `cls-culprits-insight` named its
@@ -168,6 +171,11 @@ export function htmlHeadPlugin(
           // blog is private, so neither case injects anything. Runs dev+prod.
           const repo = resolveSourceRepo();
           if (repo) html = injectSourceLink(html, sourceUrlForPostPath(repo, postPath));
+          // Syntax-highlight any `<pre><code class="language-X">` (Shiki, build
+          // time, CSP-safe classes — see generate/highlightCode.ts). Runs in
+          // this dev+prod seam so the highlighted markup is identical in both;
+          // a no-op (and never loads Shiki) on a post with no fenced code.
+          html = await highlightCodeInHtml(html);
         }
         return { contents: html, loader: "html" };
       });
