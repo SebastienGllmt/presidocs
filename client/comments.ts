@@ -80,7 +80,12 @@ import { copyToClipboard } from "./clipboard.ts";
 // The action bar hosts a "Copy link" button alongside "Comment" — see
 // citationLink.ts. `setCommentBarActive` tells the standalone citation button to
 // step aside so a logged-in reader sees one bar, not two competing dark pills.
-import { citationForRange, prewarmCitationGenerator, setCommentBarActive } from "./citationLink.ts";
+import {
+  citationForRange,
+  isInspectableSelectionNode,
+  prewarmCitationGenerator,
+  setCommentBarActive,
+} from "./citationLink.ts";
 
 // Build-time define (Bun.build `define` map) — `undefined` under the fast
 // `bun run dev` server, `"false"` in built/dev:edge/prod. Used only to gate
@@ -2471,6 +2476,12 @@ class CommentSystem {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
     const range = sel.getRangeAt(0);
+    // Some `selectionchange` events anchor in nodes we can't safely touch (e.g.
+    // native-anonymous media/seek-bar content); both `.contains()` below and the
+    // `blockForNode` tree-walk would throw on them. See isInspectableSelectionNode.
+    if (!isInspectableSelectionNode(range.startContainer) || !isInspectableSelectionNode(range.endContainer)) {
+      return null;
+    }
     // Ignore selections originating inside our own UI (column / cards / menu).
     if (this.column?.contains(range.startContainer)) return null;
     if (this.menuEl?.contains(range.startContainer)) return null;

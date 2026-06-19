@@ -108,6 +108,25 @@ export function chooseCitation(opts: {
 
 // ---- DOM wiring -------------------------------------------------------------
 
+// Whether a selection-range container node is one we're allowed to touch.
+// `selectionchange` doesn't only fire on prose: Firefox can anchor a selection
+// in *native-anonymous content* — the internals of a media player's controls or
+// an <input type="range"> thumb (the narration drawer's seek bar) — whose nodes
+// live in a different security principal. Reading any property of such a node
+// (even `.nodeType`) throws "Permission denied to access property", and passing
+// it to `.contains()` throws "Argument 1 does not implement interface Node".
+// `document.contains()` throws on it too, so we probe behind a try/catch and
+// treat a throw — or any node not attached to this document — as "not ours".
+// Genuine in-prose selections are attached and inspectable, so they pass.
+// Exported so the comments layer's `captureSelection` shares the same guard.
+export function isInspectableSelectionNode(node: Node | null | undefined): node is Node {
+  try {
+    return !!node && document.contains(node);
+  } catch {
+    return false;
+  }
+}
+
 // A node is citable if it sits inside the article body and NOT inside a figure
 // or inline SVG — `:~:text=` can't reliably anchor into graphics, and the
 // audio drawer lives outside the article element entirely (so `contains` already
@@ -268,6 +287,12 @@ function citableSelection(article: HTMLElement): { sel: Selection; range: Range 
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
   const range = sel.getRangeAt(0);
+  // Bail before touching the container nodes if either end is a node we can't
+  // safely inspect (e.g. native-anonymous media/seek-bar content). See
+  // isInspectableSelectionNode.
+  if (!isInspectableSelectionNode(range.startContainer) || !isInspectableSelectionNode(range.endContainer)) {
+    return null;
+  }
   if (!isCitableProse(range.startContainer, article) || !isCitableProse(range.endContainer, article)) {
     return null;
   }

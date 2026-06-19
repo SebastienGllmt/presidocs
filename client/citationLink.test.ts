@@ -19,6 +19,7 @@ import {
   directiveFromFragment,
   encodeTextFragmentTerm,
   installCitationLink,
+  isInspectableSelectionNode,
   PASSAGE_LABEL,
   SECTION_LABEL,
 } from "./citationLink.ts";
@@ -112,4 +113,23 @@ test("installCitationLink mounts a hidden, keyboard-reachable button once", () =
   expect(btn.tagName).toBe("BUTTON");
   expect(btn.getAttribute("aria-label")).toBe("Copy a link to the selected text");
   expect(article.dataset.citationLink).toBe("installed");
+});
+
+test("isInspectableSelectionNode: only nodes attached to this document pass", () => {
+  document.body.innerHTML = `<article data-narration-src="/x"><p>body text</p></article>`;
+  const p = document.querySelector("p")!;
+  // An attached element and its text node are inspectable.
+  expect(isInspectableSelectionNode(p)).toBe(true);
+  expect(isInspectableSelectionNode(p.firstChild)).toBe(true);
+
+  // Detached nodes and null/undefined are not — a real visible selection can't
+  // live there, so rejecting them costs nothing.
+  expect(isInspectableSelectionNode(document.createElement("span"))).toBe(false);
+  expect(isInspectableSelectionNode(null)).toBe(false);
+  expect(isInspectableSelectionNode(undefined)).toBe(false);
+
+  // The crux: a node-like object that throws when inspected (as Firefox's
+  // native-anonymous / cross-principal selection nodes do) is swallowed, not
+  // propagated — `document.contains` rejecting a non-Node arg lands in the catch.
+  expect(isInspectableSelectionNode({ nodeType: 1 } as unknown as Node)).toBe(false);
 });
