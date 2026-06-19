@@ -33,8 +33,13 @@ test("installFigureIdCopies attaches a monospace id label to every figure[id]", 
     expect(figure.classList.contains("has-figure-id-copy")).toBe(true);
     const label = figure.querySelector<HTMLButtonElement>("button.figure-id-copy")!;
     expect(label).not.toBeNull();
-    // The label shows the bare id and copies that exact string (title hint).
-    expect(label.textContent).toBe(id);
+    // The label reads "#id" (anchor-style cue, Ctrl+F-findable as "#id"), split
+    // into a non-selectable "#" and the id value — the value is the bare id, so
+    // both a drag-select and the click handler copy `id` without the "#".
+    expect(label.textContent).toBe(`#${id}`);
+    expect(label.querySelector(".id-copy-hash")!.textContent).toBe("#");
+    expect(label.querySelector(".id-copy-value")!.textContent).toBe(id);
+    // The accessible name and tooltip stay clean (no "#").
     expect(label.getAttribute("aria-label")).toBe(`Copy figure id ${id}`);
     expect(label.title).toBe(`Copy figure id (${id})`);
   }

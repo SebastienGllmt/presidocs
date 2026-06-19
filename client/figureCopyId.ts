@@ -51,14 +51,25 @@ function buildLabel(id: string, kind: "figure" | "paragraph"): HTMLButtonElement
   const label = document.createElement("button");
   label.type = "button";
   if (kind === "figure") {
-    // Figures aren't comment blocks: carry the id as a text node so it's also
-    // drag-selectable (CSS gives it `user-select: all`).
+    // Figures aren't comment blocks: carry the id as a real text node so it's
+    // drag-selectable (CSS gives the value `user-select: all`) and Ctrl+F
+    // finds it on the page. A leading "#" makes the label read like an anchor
+    // and lets Ctrl+F match "#id" too; it's a SEPARATE, non-selectable span so
+    // neither a drag-select Ctrl+C nor the click handler (which copies the
+    // bare `id`) ever carries the "#".
     label.className = "figure-id-copy";
-    label.textContent = id;
+    const hash = document.createElement("span");
+    hash.className = "id-copy-hash";
+    hash.textContent = "#";
+    const value = document.createElement("span");
+    value.className = "id-copy-value";
+    value.textContent = id;
+    label.append(hash, value);
   } else {
     // Paragraphs are comment blocks (see header note): keep the id OUT of
     // textContent so comments.ts's per-block hash is undisturbed. The visible
-    // id comes from a CSS `::before` reading this `data-pid`.
+    // id (with a leading "#") comes from a CSS `::before` reading this
+    // `data-pid` — pseudo-content, so it stays invisible to the comment hash.
     label.className = "paragraph-id-copy";
     label.dataset.pid = id;
   }

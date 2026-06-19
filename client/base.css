@@ -1067,7 +1067,7 @@
     position: absolute;
     top: 0;
     right: 100%;
-    margin-right: 0.4rem;
+    margin-right: 0.6rem;
     /* Reset the <button> chrome — a flat, clickable id, not a chip. */
     border: 0;
     background: transparent;
@@ -1082,43 +1082,64 @@
     white-space: nowrap;
     color: var(--page-fg-muted);
     cursor: pointer;
-    /* Always opaque (not hover-revealed). `user-select: all` makes one
-       click/drag select the whole id for a clean Ctrl+C — the same trick the
-       narration drawer's .spoken-name label uses. */
+    /* Dimmed at rest — it's an author aid sharing the margin, not reader
+       content — and brightened to full opacity on hover/focus and the copied
+       confirmation. Always present, never hover-revealed. */
+    opacity: 0.6;
+    transition: color 120ms ease, background 120ms ease, opacity 120ms ease;
+  }
+  /* The id value carries `user-select: all` so one click/drag selects the whole
+     id for a clean Ctrl+C (the narration drawer's .spoken-name trick) — while
+     the leading "#" is non-selectable, so a manual Ctrl+C copies the bare id,
+     matching what the click handler copies. The "#" stays real (not a pseudo-
+     element) so find-in-page matches "#id" across the two inline spans. */
+  .figure-id-copy .id-copy-value {
     -webkit-user-select: all;
     user-select: all;
-    transition: color 120ms ease, background 120ms ease;
+  }
+  .figure-id-copy .id-copy-hash {
+    -webkit-user-select: none;
+    user-select: none;
   }
   /* Hover still brightens + adds a backplate so the label reads as clickable
      (it copies on click); it's just no longer what makes it appear. */
   .figure-id-copy:hover {
     color: var(--page-fg);
     background: rgba(31, 35, 40, 0.06);
+    opacity: 1;
   }
   .figure-id-copy:focus-visible {
     outline: 2px solid var(--page-fg-muted);
     outline-offset: 2px;
+    opacity: 1;
   }
-  /* Copy feedback: keep the id readable and tint it green with a trailing
-     check — identical to the segment-id label's `.is-copied` state. */
-  .figure-id-copy.is-copied { color: #1a7f37; }
-  .figure-id-copy.is-copied::after { content: " ✓"; }
+  /* Copy feedback: tint green at full opacity and prepend a check on the LEFT
+     (a ::before, not a trailing ::after) — so the right-anchored id text holds
+     its position when you click instead of sliding over to make room. */
+  .figure-id-copy.is-copied { color: #1a7f37; opacity: 1; }
+  .figure-id-copy.is-copied::before { content: "✓ "; }
 
   /* Paragraph-id copy affordance — the prose twin of the figure label above
      (client/figureCopyId.ts → installParagraphIdCopies). Same gutter placement
-     and feedback, but the id is rendered from `data-pid` via ::before rather
-     than a text node, so it stays out of the paragraph's textContent (which the
-     comments layer hashes for thread anchoring). One consequence of ::before:
-     the id can't be drag-selected the way the figure label can — click still
+     and feedback, but the id is rendered from `data-pid` via a CSS pseudo-
+     element rather than a text node, so it stays out of the paragraph's
+     textContent (which the comments layer hashes for thread anchoring). One
+     consequence: the id can't be drag-selected the way the figure label can — click still
      copies it. Author/localhost-only, like the figure label: inert without the
      class. */
   p.has-paragraph-id-copy { position: relative; }
 
   .paragraph-id-copy {
     position: absolute;
-    top: 0;
+    /* Drop the label into the paragraph's first text line. `top: 0` would pin
+       it to the content-box top, but the reading text (16px/1.6) pushes its
+       first line down by ~half the 0.6 leading (~0.3rem) — so a top-anchored
+       label floats above the prose. ~0.2rem lands its text on the first line.
+       (The figure label keeps `top: 0`: a figure's box top IS its visual top,
+       no text leading to clear.) */
+    top: 0.2rem;
     right: 100%;
-    margin-right: 0.4rem;
+    margin-right: 0.6rem;
     border: 0;
     background: transparent;
     padding: 2px 4px;
@@ -1132,21 +1153,31 @@
     white-space: nowrap;
     color: var(--page-fg-muted);
     cursor: pointer;
-    transition: color 120ms ease, background 120ms ease;
+    opacity: 0.6;
+    transition: color 120ms ease, background 120ms ease, opacity 120ms ease;
   }
-  /* The visible id — kept out of textContent so it never reaches the comment
-     hash. ::after carries the green check, identical to the figure label. */
-  .paragraph-id-copy::before { content: attr(data-pid); }
+  /* The visible id, with a leading "#" so it reads like an anchor and matches
+     the figure label — rendered as generated content (::after) so it stays out
+     of textContent: never reaching the comment hash, never part of any copy.
+     The copied-check is on the ::before so it lands on the opposite (left) side
+     and the id never shifts. (Consequence of generated content: find-in-page
+     can't match a paragraph id — unlike the figure label's real text — so the
+     "#" here is an anchor-style cue, not a Ctrl+F target.) */
+  .paragraph-id-copy::after { content: "#" attr(data-pid); }
   .paragraph-id-copy:hover {
     color: var(--page-fg);
     background: rgba(31, 35, 40, 0.06);
+    opacity: 1;
   }
   .paragraph-id-copy:focus-visible {
     outline: 2px solid var(--page-fg-muted);
     outline-offset: 2px;
+    opacity: 1;
   }
-  .paragraph-id-copy.is-copied { color: #1a7f37; }
-  .paragraph-id-copy.is-copied::after { content: " ✓"; }
+  /* Leading check on the ::before (opposite the id's ::after) at full opacity,
+     so a click confirms without nudging the id sideways. */
+  .paragraph-id-copy.is-copied { color: #1a7f37; opacity: 1; }
+  .paragraph-id-copy.is-copied::before { content: "✓ "; }
 
   /* On narrow / touch viewports the left gutter clips off-screen where the
      article hugs the edge, so move the (already-visible) label inside the
@@ -1164,7 +1195,8 @@
     .paragraph-id-copy {
       right: auto;
       left: 0;
-      top: 0;
+      /* Same first-line nudge as the desktop rule (see there). */
+      top: 0.2rem;
       margin-right: 0;
     }
   }
