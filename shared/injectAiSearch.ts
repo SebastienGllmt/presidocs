@@ -25,20 +25,12 @@
 // <script src> into a hashed chunk). Idempotent via the `presidocs-ai-search`
 // marker — a second pass is a no-op.
 
+import { escapeHtmlAttr } from "./htmlEscape.ts";
+
 // Relative to the landing entry (contentRoot/index.html); `engine/` is the
 // per-blog symlink to this package, so this resolves to client/aiSearch.ts —
 // the same `./engine/client/<mod>.ts` form index.html uses for analytics.ts.
 const AI_SEARCH_SCRIPT_SRC = "./engine/client/aiSearch.ts";
-
-// HTML text-node escape (between tags).
-function escHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-// HTML double-quoted-attribute escape.
-function escAttr(s: string): string {
-  return escHtml(s).replace(/"/g, "&quot;");
-}
 
 export type AiSearchOptions = {
   /**
@@ -56,7 +48,7 @@ export type AiSearchOptions = {
 // submit buttons, because the destination is cross-origin (see CSP note above).
 export function buildAiSearchHtml(opts: AiSearchOptions = {}): string {
   const siteUrl = opts.siteUrl ?? null;
-  const dataSiteUrl = siteUrl ? ` data-site-url="${escAttr(siteUrl)}"` : "";
+  const dataSiteUrl = siteUrl ? ` data-site-url="${escapeHtmlAttr(siteUrl)}"` : "";
   return (
     `<section class="presidocs-ai-search" aria-labelledby="presidocs-ai-search-title"${dataSiteUrl}>` +
     `<h2 id="presidocs-ai-search-title">Ask this blog</h2>` +

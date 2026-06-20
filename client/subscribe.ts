@@ -38,6 +38,7 @@ import faChevron from "@fortawesome/fontawesome-free/svgs/solid/chevron-down.svg
 import faExternal from "@fortawesome/fontawesome-free/svgs/solid/up-right-from-square.svg" with { type: "text" };
 
 import { copyToClipboard } from "./clipboard.ts";
+import { iconSpan } from "./iconSpan.ts";
 import { stableEpisodePath } from "../shared/stableAudio.ts";
 
 // How long the "Copied!" state stays after a successful copy (matches copy-md).
@@ -199,19 +200,6 @@ export function buildConfigs(
 }
 
 // ---- DOM building -----------------------------------------------------------
-
-function iconSpan(cls: string, svg: string): HTMLSpanElement {
-  const s = document.createElement("span");
-  s.className = cls;
-  s.setAttribute("aria-hidden", "true");
-  s.innerHTML = svg;
-  const el = s.querySelector("svg");
-  if (el) {
-    el.setAttribute("aria-hidden", "true");
-    el.setAttribute("focusable", "false");
-  }
-  return s;
-}
 
 // One menu row. A copy item is a <button>; a link item is an <a> (with a
 // trailing external glyph + target when it opens a new tab).

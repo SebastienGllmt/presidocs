@@ -34,6 +34,8 @@
 //     decoration, exactly like the Cloudflare Analytics beacon, and
 //     keeps the source HTML clean.
 
+import { escapeHtmlAttr, escapeHtmlText } from "./htmlEscape.ts";
+
 export interface FooterOptions {
   /**
    * URL the "Privacy Policy" link points at. Relative or absolute.
@@ -84,14 +86,14 @@ export function injectSiteFooter(html: string, opts: FooterOptions): string {
   // engine's help page, the operator's privacy policy, the content license, and
   // the third-party acknowledgements. Anything unset is simply skipped.
   const links: string[] = [`<a href="/">Home</a>`];
-  if (helpHref) links.push(`<a href="${escapeAttr(helpHref)}">How this blog works</a>`);
-  if (privacyHref) links.push(`<a href="${escapeAttr(privacyHref)}">Privacy Policy</a>`);
+  if (helpHref) links.push(`<a href="${escapeHtmlAttr(helpHref)}">How this blog works</a>`);
+  if (privacyHref) links.push(`<a href="${escapeHtmlAttr(privacyHref)}">Privacy Policy</a>`);
   // rel="license" is the machine-readable hint that this link names the page's
   // license (microformats / RDFa convention).
   if (licenseHref)
-    links.push(`<a href="${escapeAttr(licenseHref)}" rel="license">${escapeText(licenseLabel)}</a>`);
+    links.push(`<a href="${escapeHtmlAttr(licenseHref)}" rel="license">${escapeHtmlText(licenseLabel)}</a>`);
   if (acknowledgementsHref)
-    links.push(`<a href="${escapeAttr(acknowledgementsHref)}">Acknowledgements</a>`);
+    links.push(`<a href="${escapeHtmlAttr(acknowledgementsHref)}">Acknowledgements</a>`);
 
   // With no help, privacy, license, or acknowledgements link there's nothing
   // worth a footer (a lone "Home" link on every page is noise), so no-op — same
@@ -110,21 +112,4 @@ export function injectSiteFooter(html: string, opts: FooterOptions): string {
     },
   });
   return rewriter.transform(html);
-}
-
-// Minimal HTML-attribute escape for the href value. We only emit URLs
-// the operator configured, but defense-in-depth: never trust env vars
-// to be already-escaped.
-function escapeAttr(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-// Escape for element text content (the license-link label). Same as escapeAttr
-// minus the quote (it's not inside an attribute).
-function escapeText(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }

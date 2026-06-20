@@ -28,6 +28,7 @@ import {
   matchesKeyBinding,
   shouldIgnoreKeyboardShortcut,
 } from "./narratorDom.ts";
+import { cancelIdle, scheduleIdle } from "./idleFallback.ts";
 
 // Only narrated posts carry this marker; an opt-out post (`data-narration="none"`)
 // has no `[data-narration-src]`, so it arms nothing and pays nothing here. The
@@ -66,10 +67,7 @@ function onKeydown(e: KeyboardEvent): void {
 function disarm(): void {
   document.removeEventListener("pointerdown", onPointer, POINTER_OPTS);
   document.removeEventListener("keydown", onKeydown, KEY_OPTS);
-  if (idleHandle !== undefined) {
-    if (typeof cancelIdleCallback === "function") cancelIdleCallback(idleHandle);
-    else clearTimeout(idleHandle);
-  }
+  if (idleHandle !== undefined) cancelIdle(idleHandle);
 }
 
 function start(): void {
@@ -89,13 +87,8 @@ function arm(): void {
   document.addEventListener("pointerdown", onPointer, POINTER_OPTS);
   document.addEventListener("keydown", onKeydown, KEY_OPTS);
   // Idle fallback so a passive (never-interacting) reader still gets the dock
-  // mounted and live figure-driving armed — bounded, but long enough not to
-  // pre-empt the engagement triggers on a fast load.
-  if (typeof requestIdleCallback === "function") {
-    idleHandle = requestIdleCallback(start, { timeout: 4000 });
-  } else {
-    idleHandle = setTimeout(start, 2500) as unknown as number;
-  }
+  // mounted and live figure-driving armed.
+  idleHandle = scheduleIdle(start);
 }
 
 if (document.readyState === "loading") {

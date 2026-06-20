@@ -14,6 +14,8 @@
 // selection made *before* the load completes (the gesture that triggered it, or
 // a test's programmatic Range) still raises the action bar.
 
+import { cancelIdle, scheduleIdle } from "./idleFallback.ts";
+
 // Only commentable pages carry an article root; non-article pages pay nothing.
 const ROOT_SELECTOR = "[data-narration-src]";
 
@@ -30,10 +32,7 @@ function start(): void {
   if (started) return;
   started = true;
   for (const t of TRIGGERS) document.removeEventListener(t, start, LISTENER_OPTS);
-  if (idleHandle !== undefined) {
-    if (typeof cancelIdleCallback === "function") cancelIdleCallback(idleHandle);
-    else clearTimeout(idleHandle);
-  }
+  if (idleHandle !== undefined) cancelIdle(idleHandle);
   void import("./comments.ts").then((m) => m.boot());
 }
 
@@ -41,13 +40,8 @@ function arm(): void {
   if (!document.querySelector(ROOT_SELECTOR)) return; // not a commentable page
   for (const t of TRIGGERS) document.addEventListener(t, start, LISTENER_OPTS);
   // Idle fallback so a passive (never-interacting) reader still gets existing
-  // highlights — bounded, but long enough not to pre-empt the engagement
-  // triggers on a fast load. `requestIdleCallback` where available, else a timer.
-  if (typeof requestIdleCallback === "function") {
-    idleHandle = requestIdleCallback(start, { timeout: 4000 });
-  } else {
-    idleHandle = setTimeout(start, 2500) as unknown as number;
-  }
+  // highlights.
+  idleHandle = scheduleIdle(start);
 }
 
 if (document.readyState === "loading") {

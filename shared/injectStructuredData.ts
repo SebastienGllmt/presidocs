@@ -22,6 +22,7 @@
 
 import { parseHTML } from "linkedom";
 import { decodeHtmlEntities } from "./htmlEntities.ts";
+import { escapeHtmlAttr } from "./htmlEscape.ts";
 // Google's own typed Schema.org vocabulary (Apache-2.0). `import type` only, so
 // it is fully erased at compile time — no runtime value, never bundled, never
 // shipped (this whole module is the build-time `dist/` rewrite). It turns every
@@ -173,15 +174,6 @@ export function countArticleWords(html: string): number {
   };
   walk(article);
   return parts.join(" ").split(/\s+/).filter(Boolean).length;
-}
-
-// Escape for use inside a double-quoted HTML attribute.
-function attr(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 // Milliseconds → ISO-8601 duration (e.g. 94096 → "PT1M34S"). Rounded to seconds.
@@ -367,9 +359,9 @@ export function injectStructuredData(
   // ---- Open Graph + Twitter Card meta tags ----
   const tags: string[] = [];
   const meta = (prop: string, content: string, kind: "property" | "name" = "property") =>
-    tags.push(`<meta ${kind}="${prop}" content="${attr(content)}" />`);
+    tags.push(`<meta ${kind}="${prop}" content="${escapeHtmlAttr(content)}" />`);
 
-  tags.push(`<link rel="canonical" href="${attr(url)}" />`);
+  tags.push(`<link rel="canonical" href="${escapeHtmlAttr(url)}" />`);
   // Plain <meta name="description"> for the search-snippet surface. Lighthouse's
   // SEO `meta-description` audit checks this exact tag — og:/twitter:/JSON-LD
   // descriptions don't satisfy it. Emit only when the post didn't author its
@@ -633,7 +625,7 @@ export function injectSiteStructuredData(
   // ---- OG + a fallback meta description ----
   const tags: string[] = [];
   const meta = (prop: string, content: string, kind: "property" | "name" = "property") =>
-    tags.push(`<meta ${kind}="${prop}" content="${attr(content)}" />`);
+    tags.push(`<meta ${kind}="${prop}" content="${escapeHtmlAttr(content)}" />`);
 
   // Only add a meta description if the source doesn't already have one — never
   // duplicate (some crawlers downrank conflicting descriptions).

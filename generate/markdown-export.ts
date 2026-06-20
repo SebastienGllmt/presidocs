@@ -16,10 +16,10 @@
 // Idempotent: re-running overwrites each `.md` with byte-identical output for
 // unchanged input.
 
-import { readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { resolveLicenseConfig } from "../shared/licenseConfig.ts";
+import { postHtmlFiles } from "./audit-posts.ts";
 import {
   htmlToMarkdown,
   renderMarkdownDocument,
@@ -34,20 +34,6 @@ type VersionsFile = Record<string, VersionEntry[]>;
 function distFileToPostPath(distDir: string, file: string): string {
   const rel = relative(distDir, file).split(/[\\/]/).join("/").replace(/\.html$/, "");
   return `/${rel}`;
-}
-
-async function postHtmlFiles(postsDir: string): Promise<string[]> {
-  let entries;
-  try {
-    entries = await readdir(postsDir, { withFileTypes: true });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw err;
-  }
-  return entries
-    .filter((e) => e.isFile() && e.name.endsWith(".html"))
-    .map((e) => join(postsDir, e.name))
-    .sort();
 }
 
 async function main(): Promise<void> {
@@ -123,5 +109,3 @@ if (import.meta.main) {
     process.exit(1);
   });
 }
-
-export { distFileToPostPath, postHtmlFiles };

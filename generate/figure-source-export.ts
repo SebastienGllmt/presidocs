@@ -32,7 +32,7 @@ import { parseHTML } from "linkedom";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { resolveLicenseConfig } from "../shared/licenseConfig.ts";
 import { isValidFigureSrc, spdxHeader } from "../shared/figureSource.ts";
-import { postHtmlFiles } from "./markdown-export.ts";
+import { postHtmlFiles } from "./audit-posts.ts";
 
 // Re-exported from its shared home so existing importers/tests keep their path.
 export { spdxHeader } from "../shared/figureSource.ts";

@@ -22,6 +22,7 @@
 
 import faLink from "@fortawesome/fontawesome-free/svgs/solid/link.svg" with { type: "text" };
 import faCheck from "@fortawesome/fontawesome-free/svgs/solid/check.svg" with { type: "text" };
+import { copyToClipboard } from "./clipboard.ts";
 
 // We deep-link <h2>/<h3>/<h4>. <h1> is the post title — the page URL itself
 // already points at it, so a self-link there is noise. <h5>/<h6> are rare
@@ -103,38 +104,6 @@ function flashCopiedFeedback(anchor: HTMLAnchorElement): void {
     anchor.classList.remove("heading-link-copied");
     activeFeedbackTimer = null;
   }, FEEDBACK_MS);
-}
-
-async function copyToClipboard(text: string): Promise<boolean> {
-  // Async clipboard API is the modern path. It can reject on insecure
-  // origins (http://, file://) or when not yet user-activated; fall through
-  // to the legacy document.execCommand path in that case.
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch {
-      // fall through
-    }
-  }
-  // Legacy fallback: stage text in an off-screen textarea, select, and let
-  // execCommand("copy") fire. Deprecated but still universally supported
-  // and the canonical fallback for the modern clipboard API.
-  try {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.setAttribute("readonly", "");
-    ta.style.position = "fixed";
-    ta.style.top = "-9999px";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(ta);
-    return ok;
-  } catch {
-    return false;
-  }
 }
 
 // Walk the article, give every <h2>/<h3>/<h4> an id (preserving authored ones),

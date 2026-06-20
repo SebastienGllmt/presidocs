@@ -15,6 +15,8 @@
 // visible rendering), so they belong in the post-build sweep, not in the bundler
 // step (the build-only-vs-content-bearing split; see methodology → Build-time HTML strip).
 
+import { escapeHtmlAttr } from "./htmlEscape.ts";
+
 export interface PwaHeadOptions {
   /** = manifest.theme_color. Omitted → no <meta name="theme-color"> emitted. */
   themeColor?: string;
@@ -34,10 +36,10 @@ export function injectPwaHead(html: string, opts: PwaHeadOptions = {}): string {
   let inject =
     `<link class="${MANIFEST_CLASS}" rel="manifest" href="/manifest.webmanifest" />`;
   if (opts.themeColor) {
-    inject += `<meta name="theme-color" content="${escapeAttr(opts.themeColor)}" />`;
+    inject += `<meta name="theme-color" content="${escapeHtmlAttr(opts.themeColor)}" />`;
   }
   if (opts.appleTouchIcon) {
-    inject += `<link rel="apple-touch-icon" href="${escapeAttr(opts.appleTouchIcon)}" />`;
+    inject += `<link rel="apple-touch-icon" href="${escapeHtmlAttr(opts.appleTouchIcon)}" />`;
   }
 
   // Append inside <head>. HTMLRewriter only fires the element handler on the
@@ -45,12 +47,4 @@ export function injectPwaHead(html: string, opts: PwaHeadOptions = {}): string {
   return new HTMLRewriter()
     .on("head", { element(el) { el.append(inject, { html: true }); } })
     .transform(html);
-}
-
-function escapeAttr(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
 }

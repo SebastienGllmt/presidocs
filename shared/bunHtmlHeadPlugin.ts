@@ -35,6 +35,7 @@ import { buildPublicPostVersionsMap } from "./publicPostVersions.ts";
 import { injectPostChrome } from "./articleChromeReserve.ts";
 import { chipsHtmlFromSource, injectFeatureChips } from "../generate/help-page.ts";
 import { injectAiSearch } from "./injectAiSearch.ts";
+import { escapeHtmlAttr } from "./htmlEscape.ts";
 import { isPrivateBlog } from "./blogPrivacy.ts";
 import { resolveSourceRepo, sourceUrlForPostPath } from "./sourceRepo.ts";
 import { resolveFeedConfig } from "./feedConfig.ts";
@@ -91,7 +92,7 @@ export function injectFontPreloads(html: string): string {
 // the repo pointer machine-discoverable in the head, like rel="canonical".
 export function injectSourceLink(html: string, url: string): string {
   if (html.includes('rel="vcs-github"')) return html;
-  const href = url.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+  const href = escapeHtmlAttr(url);
   return new HTMLRewriter()
     .on("head", { element(el) { el.append(`<link rel="vcs-github" href="${href}">`, { html: true }); } })
     .transform(html);

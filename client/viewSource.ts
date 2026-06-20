@@ -15,19 +15,7 @@
 
 import faGithub from "@fortawesome/fontawesome-free/svgs/brands/github.svg" with { type: "text" };
 import faExternal from "@fortawesome/fontawesome-free/svgs/solid/up-right-from-square.svg" with { type: "text" };
-
-function iconSpan(cls: string, svg: string): HTMLSpanElement {
-  const s = document.createElement("span");
-  s.className = cls;
-  s.setAttribute("aria-hidden", "true");
-  s.innerHTML = svg;
-  const el = s.querySelector("svg");
-  if (el) {
-    el.setAttribute("aria-hidden", "true");
-    el.setAttribute("focusable", "false");
-  }
-  return s;
-}
+import { iconSpan } from "./iconSpan.ts";
 
 export function installViewSource(article: HTMLElement): void {
   if (article.querySelector(".view-src")) return; // idempotent

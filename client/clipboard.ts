@@ -1,5 +1,6 @@
-// Shared clipboard helper for the byline-slot copy controls
-// (copyMarkdown.ts, subscribe.ts). The async Clipboard API is the modern
+// Shared clipboard helper for the copy controls across the client layers
+// (copyMarkdown, subscribe, citationLink, figureCopyId, headerLinks). The
+// async Clipboard API is the modern
 // path, but it can reject on insecure origins or before a user activation,
 // so fall through to a hidden-<textarea> + execCommand path. Returns whether
 // the write succeeded so callers can gate their "Copied!" feedback on it.

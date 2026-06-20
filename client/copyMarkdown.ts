@@ -29,6 +29,7 @@ import faChevron from "@fortawesome/fontawesome-free/svgs/solid/chevron-down.svg
 import faExternal from "@fortawesome/fontawesome-free/svgs/solid/up-right-from-square.svg" with { type: "text" };
 
 import { copyToClipboard } from "./clipboard.ts";
+import { iconSpan } from "./iconSpan.ts";
 
 // How long the "Copied!" state (icon swap + label) stays after a successful copy.
 const FEEDBACK_MS = 1600;
@@ -39,19 +40,6 @@ const FEEDBACK_MS = 1600;
 function markdownUrlForCurrentPage(): string {
   const path = location.pathname.replace(/\/+$/, "").replace(/\.html$/, "");
   return `${path}.md`;
-}
-
-function iconSpan(cls: string, svg: string): HTMLSpanElement {
-  const s = document.createElement("span");
-  s.className = cls;
-  s.setAttribute("aria-hidden", "true");
-  s.innerHTML = svg;
-  const el = s.querySelector("svg");
-  if (el) {
-    el.setAttribute("aria-hidden", "true");
-    el.setAttribute("focusable", "false");
-  }
-  return s;
 }
 
 // One menu row: an icon, a title (+ optional trailing glyph), and a sub-line.
