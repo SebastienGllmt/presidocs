@@ -1,6 +1,6 @@
 ---
 name: figure-journey
-description: Create, convert, or audit an animated figure against the FigureJourney contract — the engine standard that makes a figure forward-seekable, deterministically capturable, and driver-controllable so the live narrator and the offline video renderer drive the same animation — and layout-stable so it never shifts the page as it animates. Use when authoring a new animated figure, converting an existing GSAP figure to the contract, or auditing a figure (the 16 authoring rules + the conformance & height gates). Examples - "make this figure narration-drivable", "create or audit a figure", "does my figure pass the FigureJourney contract", "why does my figure freeze when narration drives it", "why does the page jump / content shift as my figure animates".
+description: required figure authoring rules for presidocs.
 user-invocable: true
 ---
 
