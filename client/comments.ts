@@ -49,10 +49,7 @@ import {
   type Identity,
 } from "./identity.ts";
 import { CommentSync } from "./commentsSync.ts";
-import {
-  aggregateOtherReaders,
-  newAggregatorState,
-} from "./commentsAggregator.ts";
+import { aggregateOtherReaders } from "./commentsAggregator.ts";
 import { CommentPolling } from "./commentsPolling.ts";
 import { ResolutionStore } from "./resolutionsStore.ts";
 import type { ResolutionEnvelope } from "./resolutionsApi.ts";
@@ -253,13 +250,6 @@ class CommentSystem {
   // alongside the store so a single mutation triggers persist (in the
   // store) and a server PUT (here). Null when not logged in.
   private sync: CommentSync | null = null;
-
-  // Per-foreign-user known-hash cache used by the aggregator. Hoisted
-  // to a class field (was a local in the original boot block) so the
-  // polling loop can reuse the same state across refreshes — without
-  // it every poll would re-GET every change-object for every reader
-  // instead of just the new ones.
-  private aggState = newAggregatorState();
 
   // Visibility-gated periodic polling. Re-runs hydrate (own user) and
   // the aggregator (author only) on a fixed interval while the tab is
@@ -530,17 +520,15 @@ class CommentSystem {
       // to false, suppressing aggregator + author-resolve + history.
       await this.initDocVersion(postPath);
 
-      // Author-only: also pull every other reader's blob and merge into
-      // the read-only composite so the snapshot includes everyone. Done
-      // after hydrate so the first render still shows the author's own
-      // comments even if a slow reader fan-out is in flight.
+      // Author-only: refresh every other reader's blob in the background.
+      // Fire-and-forget (not awaited) so the first render isn't gated on
+      // the reader fan-out — the store already re-hydrated the persisted
+      // aggregate in `create()`, so that first render shows everyone's
+      // comments and the correct unresolved count from localStorage; this
+      // pass only pulls deltas (and re-renders if any landed). The first
+      // session on a device, with nothing cached, is the one that waits.
       if (this.isAuthorMode()) {
-        aggregateOtherReaders(
-          this.store,
-          postPath,
-          this.identity.userId,
-          this.aggState,
-        )
+        aggregateOtherReaders(this.store, postPath, this.identity.userId)
           .then(() => this.refreshSnapshotAndRender())
           .catch((err) => console.warn("aggregate failed:", err));
       }
@@ -2069,12 +2057,7 @@ class CommentSystem {
     }
     if (this.isAuthorMode()) {
       try {
-        await aggregateOtherReaders(
-          this.store,
-          postPath,
-          this.identity.userId,
-          this.aggState,
-        );
+        await aggregateOtherReaders(this.store, postPath, this.identity.userId);
       } catch (err) {
         console.warn("poll: aggregate failed:", err);
       }

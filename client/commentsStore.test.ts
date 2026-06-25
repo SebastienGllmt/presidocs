@@ -695,15 +695,16 @@ test("deriveOrigins: prod and local replies both attributed, incl. a local reply
   src.addThread("tLocal", ANCHOR_TEXT, 130);
   src.addReply("tLocal", reply("rLocal2", "born here", 140));
   const all = src.getAllLocalChanges();
-  const byHash = new Map(all.map((c) => [c.hash, c.bytes]));
   const entries = all.map((c) => ({
     hash: c.hash,
     ...(prodHashes.has(c.hash) && { origin: "production" }),
   }));
 
-  const { deriveOrigins } = await import("./commentsStore.ts");
+  // The author has this reader's blob aggregated in (the store holds the
+  // bytes); derivation reads them locally — no fetch.
   const main = await makeStore("/posts/p", TEST_USER_ID);
-  await deriveOrigins(entries, main, (h) => Promise.resolve(byHash.get(h) ?? null));
+  main.applyOtherChanges("google:reader-1", all.map((c) => c.bytes));
+  await main.deriveOrigins(entries, "google:reader-1");
 
   expect(main.hasSeededOrigins()).toBe(true);
   expect(main.replyOrigin("rProd")).toBe("production");
@@ -713,29 +714,44 @@ test("deriveOrigins: prod and local replies both attributed, incl. a local reply
   expect(main.replyOrigin("rNever")).toBeNull();
 });
 
-test("deriveOrigins skips an untagged folder entirely — no fetches, no records, gate stays shut", async () => {
+test("deriveOrigins skips an untagged folder entirely — no records, gate stays shut", async () => {
   freshStorage();
   const src = await makeStore("/posts/p", "google:reader-2");
   src.addThread("t1", ANCHOR_TEXT, 100);
   src.addReply("t1", reply("r1", "ordinary", 110));
   const all = src.getAllLocalChanges();
 
-  const { deriveOrigins } = await import("./commentsStore.ts");
   const main = await makeStore("/posts/p", TEST_USER_ID);
-  let fetches = 0;
-  await deriveOrigins(
-    all.map((c) => ({ hash: c.hash })),
-    main,
-    () => {
-      fetches++;
-      return Promise.resolve(null);
-    },
-  );
+  main.applyOtherChanges("google:reader-2", all.map((c) => c.bytes));
+  await main.deriveOrigins(all.map((c) => ({ hash: c.hash })), "google:reader-2");
 
   // No tagged entries → nothing the render gate could ever show, so the
-  // pass costs nothing (critical on prod: own blobs are never browser-
-  // cached, so any fetch here would be a real network hit per boot).
-  expect(fetches).toBe(0);
+  // pass returns before any replay and records nothing.
   expect(main.replyOrigin("r1")).toBeNull();
   expect(main.hasSeededOrigins()).toBe(false);
+});
+
+test("foreign docs persist across reload — aggregate + delta-set survive a fresh create", async () => {
+  freshStorage();
+  // A reader's blob, aggregated into the author's store, then a "reload":
+  // a brand-new CommentStore on the same (post, user) must re-hydrate the
+  // reader's threads from localStorage WITHOUT re-fetching — i.e. its
+  // change hashes are already known.
+  const reader = await CommentStore.create("/posts/persist", "google:reader");
+  reader.addThread("t1", ANCHOR_TEXT, 100);
+  reader.addReply("t1", reply("r1", "hi", 110));
+
+  const author1 = await CommentStore.create("/posts/persist", "google:author");
+  author1.mergeOther("google:reader", reader.exportBytes());
+  expect(author1.snapshot().map((t) => t.id)).toEqual(["t1"]);
+
+  const readerHashes = new Set(reader.getAllLocalChanges().map((c) => c.hash));
+
+  // Reload.
+  const author2 = await CommentStore.create("/posts/persist", "google:author");
+  // The aggregate is back before any network call.
+  expect(author2.snapshot().map((t) => t.id)).toEqual(["t1"]);
+  // And the aggregator's delta check now finds nothing to fetch.
+  const known = author2.foreignChangeHashes("google:reader");
+  for (const h of readerHashes) expect(known.has(h)).toBe(true);
 });

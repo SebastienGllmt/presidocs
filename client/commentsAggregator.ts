@@ -1,26 +1,23 @@
-// Author-only aggregator. For each non-self user with content under
-// this post: LIST their change hashes, GET any we don't already have
-// cached locally, and apply via `store.applyOtherChanges`. Pure
-// set-diff — zero-delta page loads cost just one LIST per user.
+// Author-only aggregator. For each non-self user with content under this
+// post: LIST their change hashes, GET any the store doesn't already have,
+// and apply via `store.applyOtherChanges` — which persists the merged
+// foreign doc to localStorage. The store is the single source of truth for
+// "what we already have", so a reload re-LISTs each user but re-GETs
+// nothing, and the author's boot renders everyone's comments (and the
+// correct unresolved count) from the persisted aggregate before this even
+// runs. The first session on a device still pays the full GET fan-out once.
 //
-// Not real-time: readers' new comments only show up on the next page
-// load. A polling refresh would slot in here without touching the
-// store or the per-user sync loop; deferred to v2.
+// Not real-time: a reader's new comments surface on the next poll / load.
+// A push-based refresh would slot in here without touching the store or the
+// per-user sync loop; deferred to v2.
 
-import { deriveOrigins, type CommentStore } from "./commentsStore.ts";
+import type { CommentStore } from "./commentsStore.ts";
 import { getChange, listChanges, listUsers } from "./commentsApi.ts";
-
-// Per-author cache of which change hashes we've already pulled for
-// each foreign user. Persists for the page lifetime only — survives
-// re-renders but not reloads. On reload we re-LIST each user (which
-// is fine; zero-delta LISTs are cheap).
-type AggregatorState = Map<string, Set<string>>;
 
 export async function aggregateOtherReaders(
   store: CommentStore,
   postPath: string,
   ownUserId: string,
-  state: AggregatorState,
 ): Promise<void> {
   let users: string[];
   try {
@@ -34,12 +31,9 @@ export async function aggregateOtherReaders(
       .filter((u) => u !== ownUserId)
       .map(async (userId) => {
         try {
-          await pullUser(store, postPath, userId, state);
+          await pullUser(store, postPath, userId);
         } catch (err) {
-          console.warn(
-            `aggregate: failed to pull user ${userId}:`,
-            err,
-          );
+          console.warn(`aggregate: failed to pull user ${userId}:`, err);
         }
       }),
   );
@@ -49,38 +43,29 @@ async function pullUser(
   store: CommentStore,
   postPath: string,
   userId: string,
-  state: AggregatorState,
 ): Promise<void> {
   const remote = await listChanges(postPath, userId);
-  const remoteHashes = new Set(remote.map((e) => e.hash));
-  const known = state.get(userId) ?? new Set<string>();
-
-  const toFetch = [...remoteHashes].filter((h) => !known.has(h));
-  if (toFetch.length === 0) {
-    // Zero-delta path: nothing new for this user.
-    return;
+  const known = store.foreignChangeHashes(userId);
+  const toFetch = remote.map((e) => e.hash).filter((h) => !known.has(h));
+  if (toFetch.length > 0) {
+    const fetched = await Promise.all(
+      toFetch.map((h) => getChange(postPath, userId, h)),
+    );
+    store.applyOtherChanges(
+      userId,
+      fetched.filter((b): b is Uint8Array => b !== null),
+    );
   }
-  const fetched = await Promise.all(
-    toFetch.map((h) => getChange(postPath, userId, h)),
-  );
-  const applyBytes = fetched.filter((b): b is Uint8Array => b !== null);
-  store.applyOtherChanges(userId, applyBytes);
 
-  // Origin provenance: derive which of this user's replies are
-  // production-born from the LIST's origin tags (seeded blobs in the dev
-  // store; untagged everywhere else → no-op). Debugging aid only — a
-  // failure must never break the aggregate.
+  // Origin provenance (dev-only debug tags). Derived from bytes the store
+  // already holds — no re-fetch — and memoized per user, so this is free on
+  // a zero-delta poll and a no-op anywhere blobs carry no origin tags
+  // (prod). Runs even when nothing was fetched: the origin sets are
+  // in-memory only, so a reload that re-hydrated the doc from localStorage
+  // still needs them repopulated. A failure must never break the aggregate.
   try {
-    await deriveOrigins(remote, store, (h) => getChange(postPath, userId, h));
+    await store.deriveOrigins(remote, userId);
   } catch (err) {
     console.warn(`aggregate origin derivation failed for ${userId}:`, err);
   }
-
-  // Mark everything we now know exists on the server for this user.
-  for (const h of remoteHashes) known.add(h);
-  state.set(userId, known);
-}
-
-export function newAggregatorState(): AggregatorState {
-  return new Map();
 }

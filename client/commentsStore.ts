@@ -455,6 +455,18 @@ function docKey(postPath: string, userId: string): string {
   return `blog-comments:${postPath}:user:${userId}.amrg`;
 }
 
+// Foreign readers' docs (loaded by the author-side aggregator) persist
+// alongside our own so a reload renders everyone's comments — and the
+// correct unresolved count — before the network aggregation runs. One
+// blob per reader, plus a small index listing which readers we have a
+// blob for (avoids enumerating all of localStorage on boot).
+function otherDocKey(postPath: string, userId: string): string {
+  return `blog-comments:${postPath}:other:${userId}.amrg`;
+}
+function othersIndexKey(postPath: string): string {
+  return `blog-comments:${postPath}:others`;
+}
+
 // ---------- Base64 (binary <-> string for localStorage) ----------
 //
 // localStorage is string-only and Automerge snapshots are Uint8Array.
@@ -515,6 +527,18 @@ export class CommentStore {
     | Array<{ hash: string; bytes: Uint8Array }>
     | null = null;
 
+  // hash -> change-bytes for each foreign reader's doc, derived on demand
+  // and invalidated per user on `applyOtherChanges`. Backs both the
+  // aggregator's delta check (`foreignChangeHashes`) and origin derivation
+  // (which replays the production-tagged subset) — so neither re-fetches
+  // what the store already holds.
+  private readonly foreignBytesCache = new Map<string, Map<string, Uint8Array>>();
+
+  // Memo for origin derivation, keyed by scope ("" = own doc, else the
+  // foreign userId): the signature of the production-tagged hash set last
+  // derived. An unchanged set (the common 60s-poll case) skips the replay.
+  private readonly derivedProdSig = new Map<string, string>();
+
   // Reply ids by birth store, both derived positively (see deriveOrigins):
   // `production` from replaying the production-tagged blobs, `local` as
   // the complement within the full replay — so an id in NEITHER set means
@@ -527,6 +551,7 @@ export class CommentStore {
 
   private constructor(
     private readonly automerge: Automerge,
+    private readonly postPath: string,
     private readonly storageKey: string,
     initial: Doc<CommentDoc>,
   ) {
@@ -537,19 +562,51 @@ export class CommentStore {
     const automerge = await loadAutomerge();
     const key = docKey(postPath, userId);
 
+    let doc: Doc<CommentDoc> | null = null;
     const b64 = localStorage.getItem(key);
     if (b64) {
       try {
-        const doc = automerge.load<CommentDoc>(base64ToBytes(b64));
-        return new CommentStore(automerge, key, doc);
+        doc = automerge.load<CommentDoc>(base64ToBytes(b64));
       } catch (err) {
         console.warn("Failed to load Automerge doc, starting fresh:", err);
       }
     }
-
     // Nothing on disk — load the shared seed (see SEED_BYTES_B64).
-    const empty = automerge.load<CommentDoc>(getSeedBytes(automerge));
-    return new CommentStore(automerge, key, empty);
+    if (!doc) doc = automerge.load<CommentDoc>(getSeedBytes(automerge));
+
+    const store = new CommentStore(automerge, postPath, key, doc);
+    store.loadPersistedOthers();
+    return store;
+  }
+
+  // Re-hydrate the author-side aggregate from localStorage so the first
+  // render already includes every reader's threads. The aggregator then
+  // refreshes only deltas (the persisted docs seed `foreignChangeHashes`,
+  // so a reload re-GETs nothing). A bad blob is dropped, not fatal — the
+  // aggregator will re-pull it.
+  private loadPersistedOthers(): void {
+    const indexRaw = localStorage.getItem(othersIndexKey(this.postPath));
+    if (!indexRaw) return;
+    let userIds: unknown;
+    try {
+      userIds = JSON.parse(indexRaw);
+    } catch {
+      return;
+    }
+    if (!Array.isArray(userIds)) return;
+    for (const userId of userIds) {
+      if (typeof userId !== "string") continue;
+      const b64 = localStorage.getItem(otherDocKey(this.postPath, userId));
+      if (!b64) continue;
+      try {
+        this.others.set(
+          userId,
+          this.automerge.load<CommentDoc>(base64ToBytes(b64)),
+        );
+      } catch (err) {
+        console.warn(`Failed to load foreign comment doc for ${userId}:`, err);
+      }
+    }
   }
 
   // ---------- Reads ----------
@@ -758,19 +815,79 @@ export class CommentStore {
   // from the same seed is what makes the merge in `snapshot()`
   // conflict-free.
   applyOtherChanges(userId: string, changes: Uint8Array[]): void {
-    let otherDoc = this.others.get(userId);
-    if (!otherDoc) {
-      otherDoc = this.automerge.load<CommentDoc>(
-        getSeedBytes(this.automerge),
-      );
-    }
-    if (changes.length > 0) {
-      [otherDoc] = this.automerge.applyChanges(otherDoc, changes);
-    }
+    const existing = this.others.get(userId);
+    // Nothing to apply and nothing already loaded → don't materialize an
+    // empty seed doc for a reader we have no content for.
+    if (!existing && changes.length === 0) return;
+    // Existing doc, no new changes → state is unchanged; skip the
+    // re-persist + cache churn (the zero-delta reload/poll path).
+    if (existing && changes.length === 0) return;
+
+    let otherDoc = existing ?? this.automerge.load<CommentDoc>(
+      getSeedBytes(this.automerge),
+    );
+    [otherDoc] = this.automerge.applyChanges(otherDoc, changes);
     this.others.set(userId, otherDoc);
-    // Only the merged-view cache depends on `others`; local-changes
-    // is computed from `this.doc` alone and stays valid.
+    this.persistOther(userId, otherDoc);
+    // Only the merged-view cache + this user's foreign bytes depend on
+    // `others`; local-changes is computed from `this.doc` alone and
+    // stays valid.
     this.cachedSnapshot = null;
+    this.foreignBytesCache.delete(userId);
+  }
+
+  // Persist one reader's merged doc + record them in the per-post index,
+  // so a later `CommentStore.create` re-hydrates the aggregate. Best-
+  // effort: a storage failure just means the next load re-pulls from R2.
+  private persistOther(userId: string, doc: Doc<CommentDoc>): void {
+    try {
+      const bytes = this.automerge.save(doc);
+      localStorage.setItem(
+        otherDocKey(this.postPath, userId),
+        bytesToBase64(bytes),
+      );
+      const k = othersIndexKey(this.postPath);
+      let ids: string[] = [];
+      const raw = localStorage.getItem(k);
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) ids = parsed.filter((v) => typeof v === "string");
+        } catch {
+          /* corrupt index — rebuild from this user */
+        }
+      }
+      if (!ids.includes(userId)) {
+        ids.push(userId);
+        localStorage.setItem(k, JSON.stringify(ids));
+      }
+    } catch (err) {
+      console.warn(`Failed to persist foreign comment doc for ${userId}:`, err);
+    }
+  }
+
+  // hash -> change-bytes for one reader's doc (cached, invalidated per
+  // user on apply). Drives both the aggregator's delta check and origin
+  // derivation without re-fetching anything from the server.
+  private foreignChangeBytes(userId: string): Map<string, Uint8Array> {
+    const cached = this.foreignBytesCache.get(userId);
+    if (cached) return cached;
+    const map = new Map<string, Uint8Array>();
+    const doc = this.others.get(userId);
+    if (doc) {
+      for (const bytes of this.automerge.getAllChanges(doc)) {
+        map.set(this.automerge.decodeChange(bytes).hash, bytes);
+      }
+    }
+    this.foreignBytesCache.set(userId, map);
+    return map;
+  }
+
+  // Change hashes the store already holds for one reader — the set the
+  // aggregator diffs the server LIST against, so a reload (where the doc
+  // came back from localStorage) re-GETs nothing.
+  foreignChangeHashes(userId: string): Set<string> {
+    return new Set(this.foreignChangeBytes(userId).keys());
   }
 
   // ---------- Origin provenance (which live store a reply was born in) ----------
@@ -814,6 +931,60 @@ export class CommentStore {
     for (const id of local) this.localReplies.add(id);
   }
 
+  // Derive per-reply origin provenance for one scope — our own doc
+  // (`userId === null`) or a single reader's doc — from the server's
+  // per-blob origin tags (the `entries` LIST). Reads bytes the store
+  // ALREADY holds (own changes / the aggregated foreign doc), so it never
+  // hits the network: production reply ids come from replaying just the
+  // production-tagged changes into a throwaway doc; the full reply set
+  // comes straight from the live doc, keeping `local = full − production`
+  // dep-complete (a local reply whose change depends on prod changes still
+  // attributes correctly). Provenance is a fact of the server's data, so
+  // it's re-derived per boot, never persisted (see productionReplies).
+  //
+  // Dev-only by construction: a folder whose blobs carry no origin tags
+  // (prod today, and any never-seeded dev post) returns before doing any
+  // work. Memoized on the production-tag set, so a 60s poll re-deriving an
+  // unchanged folder costs nothing.
+  async deriveOrigins(
+    entries: Array<{ hash: string; origin?: string }>,
+    userId: string | null,
+  ): Promise<void> {
+    const prodHashes = entries
+      .filter((e) => e.origin === "production")
+      .map((e) => e.hash);
+    if (prodHashes.length === 0) return;
+
+    const scope = userId ?? "";
+    const sig = prodHashes.slice().sort().join(",");
+    if (this.derivedProdSig.get(scope) === sig) return;
+
+    const byHash =
+      userId === null
+        ? new Map(this.getAllLocalChanges().map((c) => [c.hash, c.bytes]))
+        : this.foreignChangeBytes(userId);
+    const prodBytes = prodHashes
+      .map((h) => byHash.get(h))
+      .filter((b): b is Uint8Array => b !== undefined);
+    const prodIds = await replayReplyIds(prodBytes);
+    const prod = new Set(prodIds);
+    this.addReplyOrigins(
+      prodIds,
+      this.replyIds(userId).filter((id) => !prod.has(id)),
+    );
+    this.derivedProdSig.set(scope, sig);
+  }
+
+  // Reply ids present in a scope's live doc (own, or one reader's). The
+  // full, dep-complete set origin derivation diffs the production subset
+  // against.
+  private replyIds(userId: string | null): string[] {
+    const doc = userId === null ? this.doc : this.others.get(userId);
+    if (!doc) return [];
+    const js = this.automerge.toJS(doc) as CommentDoc;
+    return Object.keys(js.replies);
+  }
+
   // Returns every change in our doc, paired with its hash. The sync
   // layer uses this to decide what to upload (set-diff against the
   // hashes it knows are already on the server). Hashes are derived
@@ -855,8 +1026,10 @@ export class CommentStore {
 }
 
 // Reply ids present after replaying `blobs` against the shared seed in a
-// throwaway doc. The subset-replay primitive behind deriveOrigins — same
-// idea as the offline loader (authoring/loadUnresolvedThreads.ts).
+// throwaway doc. The production-subset replay primitive behind
+// `CommentStore.deriveOrigins` (production blobs are dep-closed — a
+// production-born change never depends on a localhost-born one — so the
+// subset applies cleanly on its own).
 export async function replayReplyIds(blobs: Uint8Array[]): Promise<string[]> {
   if (blobs.length === 0) return [];
   const automerge = await loadAutomerge();
@@ -864,46 +1037,4 @@ export async function replayReplyIds(blobs: Uint8Array[]): Promise<string[]> {
   [doc] = automerge.applyChanges(doc, blobs);
   const js = automerge.toJS(doc) as CommentDoc;
   return Object.keys(js.replies);
-}
-
-// Derive both origin classes for ONE user's folder and record them:
-// production = replies present when replaying only the production-tagged
-// blobs (dep-closed: a production-born change can never depend on a
-// localhost-born one — comment blobs have no upward path); local = the
-// complement within the FULL replay (the full replay is dep-complete, so
-// a local scaffolding reply whose change depends on seeded prod changes
-// still attributes correctly — replaying the untagged subset alone would
-// drop it to missing deps and mislabel by absence). Both feeders run this
-// per boot (commentsSync for the own doc, the aggregator per foreign
-// user); the GETs are immutable-cached, so the re-fetch is effectively
-// free.
-export async function deriveOrigins(
-  entries: Array<{ hash: string; origin?: string }>,
-  store: CommentStore,
-  get: (hash: string) => Promise<Uint8Array | null>,
-): Promise<void> {
-  // A folder with no tagged blobs derives nothing the render gate could
-  // ever show — and skipping it keeps this pass FREE where it matters:
-  // on prod, the own-doc hydrate fetches nothing extra (own blobs are
-  // never browser-cached — they originated locally and were only ever
-  // PUT), preserving the sync layer's "GET only what's missing" cost
-  // model. Mixed folders (the seeded dev store) pay a handful of
-  // immutable-cached GETs.
-  if (!entries.some((e) => e.origin === "production")) return;
-  const fetched = await Promise.all(
-    entries.map(async (e) => ({ entry: e, bytes: await get(e.hash) })),
-  );
-  const ok = fetched.filter(
-    (f): f is { entry: (typeof entries)[number]; bytes: Uint8Array } =>
-      f.bytes !== null,
-  );
-  const prodIds = await replayReplyIds(
-    ok.filter((f) => f.entry.origin === "production").map((f) => f.bytes),
-  );
-  const allIds = await replayReplyIds(ok.map((f) => f.bytes));
-  const prod = new Set(prodIds);
-  store.addReplyOrigins(
-    prodIds,
-    allIds.filter((id) => !prod.has(id)),
-  );
 }

@@ -262,6 +262,24 @@ async function listPrefix(base: string, prefix: string): Promise<ListEntry[]> {
   return parsed.data;
 }
 
+// Pull loops used to fetch one blob per awaited round-trip; with hundreds of
+// immutable change-objects that was minutes of pure latency. Cap how many
+// fetches are in flight at once.
+const PULL_CONCURRENCY = 24;
+
+// Run `fn` over `items` with at most `limit` in flight.
+// ponytail: fixed-size batches, not a sliding-window pool — one slow blob
+// stalls its batch of `limit`; fine for the uniform small fetches here.
+async function mapLimit<T>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  for (let i = 0; i < items.length; i += limit) {
+    await Promise.all(items.slice(i, i + limit).map(fn));
+  }
+}
+
 async function pull(slug: string): Promise<void> {
   const paths = resolveBlogPaths();
   const postPath = `/posts/${slug}`;
@@ -281,28 +299,35 @@ async function pull(slug: string): Promise<void> {
     let resolutions = 0;
     for (const prefix of [postPrefix(postPath), resolutionPrefix(postPath)]) {
       const entries = await listPrefix(base, prefix);
-      for (const e of entries) {
-        const r = await fetch(`${base}/get?key=${encodeURIComponent(e.key)}`);
-        if (!r.ok) throw new Error(`get ${e.key} failed: ${r.status}`);
-        const bytes = new Uint8Array(await r.arrayBuffer());
-        if (bytes.length !== e.size) {
-          throw new Error(
-            `size mismatch for ${e.key}: got ${bytes.length}, want ${e.size}`,
-          );
-        }
+      await mapLimit(entries, PULL_CONCURRENCY, async (e) => {
+        const isResolution = e.key.startsWith("resolutions/");
         // The R2 key carries a `//` (postPath starts with `/`); the local
         // fsAdapter normalizes that away, so mirror to the normalized path
         // it reads from.
         const dest = join(commentsDir, normalize(e.key));
-        await mkdir(dirname(dest), { recursive: true });
-        await writeFile(dest, bytes);
-        if (e.key.startsWith("resolutions/")) {
+        // Change blobs are content-addressed and immutable, so one already on
+        // disk can't have changed — skip the fetch and just (re)stamp.
+        // Resolutions are keyed by threadId and can be overwritten, so they
+        // always refetch.
+        if (isResolution || !(await Bun.file(dest).exists())) {
+          const r = await fetch(`${base}/get?key=${encodeURIComponent(e.key)}`);
+          if (!r.ok) throw new Error(`get ${e.key} failed: ${r.status}`);
+          const bytes = new Uint8Array(await r.arrayBuffer());
+          if (bytes.length !== e.size) {
+            throw new Error(
+              `size mismatch for ${e.key}: got ${bytes.length}, want ${e.size}`,
+            );
+          }
+          await mkdir(dirname(dest), { recursive: true });
+          await writeFile(dest, bytes);
+        }
+        if (isResolution) {
           resolutions++;
         } else {
           await stampOrigin(dest, "production");
           comments++;
         }
-      }
+      });
     }
     console.error(
       `Pulled ${comments} comment change-object(s) + ${resolutions} resolution(s) into ${commentsDir}.`,
@@ -565,21 +590,32 @@ async function localPull(slug: string, urlArg: string | null): Promise<void> {
     const entries = ChangeList.parse(
       await (await getOk(`/comments?${q({ post: postPath, user })}`)).json(),
     );
-    for (const e of entries) {
-      const r = await getOk(
-        `/comments?${q({ post: postPath, user, change: e.hash })}`,
-      );
-      const bytes = new Uint8Array(await r.arrayBuffer());
-      if (bytes.length !== e.size) {
-        throw new Error(
-          `size mismatch for change ${e.hash}: got ${bytes.length}, want ${e.size}`,
-        );
-      }
+    // Change-objects are content-addressed and immutable, so one already on
+    // disk can't have changed — skip its fetch and just refresh the (cheap)
+    // origin stamp. The rest are fetched with bounded concurrency instead of
+    // one serial round-trip each (844 blobs went from ~2.5 min to seconds).
+    await mapLimit(entries, PULL_CONCURRENCY, async (e) => {
+      const key = changeKey(postPath, user, e.hash);
       // Stamp what the dev store declares (seeded blobs carry `production`
       // provenance); an undeclared blob was born on this dev server.
-      await mirror(changeKey(postPath, user, e.hash), bytes, e.origin ?? "localhost");
+      const stamp = e.origin ?? "localhost";
+      const dest = join(commentsDir, normalize(key));
+      if (await Bun.file(dest).exists()) {
+        await stampOrigin(dest, stamp);
+      } else {
+        const r = await getOk(
+          `/comments?${q({ post: postPath, user, change: e.hash })}`,
+        );
+        const bytes = new Uint8Array(await r.arrayBuffer());
+        if (bytes.length !== e.size) {
+          throw new Error(
+            `size mismatch for change ${e.hash}: got ${bytes.length}, want ${e.size}`,
+          );
+        }
+        await mirror(key, bytes, stamp);
+      }
       comments++;
-    }
+    });
   }
 
   const resolutionEntries = ResolutionList.parse(
