@@ -103,7 +103,7 @@ test("installParagraphIdCopies attaches a label to every p[id]", () => {
 
 test("installParagraphIdCopies keeps the id out of the paragraph's text", () => {
   // The whole reason the paragraph label uses data-pid + CSS instead of a text
-  // node: comments.ts hashes block.textContent to anchor threads, so the label
+  // node: comments/blockIndex.ts hashes block.textContent to anchor threads, so the label
   // must contribute nothing to it. Lock that in.
   document.body.innerHTML = `
     <article data-narration-src="/x">

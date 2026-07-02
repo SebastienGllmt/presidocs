@@ -246,7 +246,7 @@ function escapeHtml(s: string): string {
 
 // Start a regenerate job (one lexeme, all, or in-posts), then poll until it
 // finishes and reload the list. Mirrors the per-segment regenerate flow in
-// narrator.ts.
+// narrator/authorTools.ts.
 async function regenerate(opts: { index?: number; all?: boolean; inPosts?: boolean }) {
   if (busy) return;
   const params: string[] = [];

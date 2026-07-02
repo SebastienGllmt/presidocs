@@ -1,5 +1,5 @@
 // Block-id copy affordance — an author/dev-only debugging aid that mirrors the
-// narration drawer's per-segment id label (narrator.ts → maybeEnableAuthorTools
+// narration drawer's per-segment id label (narrator/authorTools.ts → maybeEnableAuthorTools
 // / addSegmentName). Every `<figure id>` and every `<p id>` in the article body
 // gets a small monospace id label that floats in the left gutter. Clicking it
 // copies the bare id to the clipboard and briefly flips to a green check — the
@@ -11,7 +11,7 @@
 // Figures and paragraphs differ in ONE way, for a reason: a figure is not a
 // commentable block, so its label carries the id as a real text node (which
 // also lets the author drag-select it for a plain Ctrl+C). A `<p>` IS a
-// commentable block, and comments.ts hashes each block's textContent to anchor
+// commentable block, and comments/blockIndex.ts hashes each block's textContent to anchor
 // threads — a text node here would leak the id into that hash and silently
 // break anchoring. So the paragraph label renders its id via a CSS
 // `::before { content: attr(data-pid) }` (see base.css), which textContent
@@ -33,7 +33,7 @@ import { copyWithFeedback } from "./copyFeedback.ts";
 import { fetchPostVersion } from "./postVersion.ts";
 
 // How long the "Copied" feedback (green id + trailing check) stays visible
-// after a successful copy. Matches the segment-id label's window in narrator.ts.
+// after a successful copy. Matches the segment-id label's window in narrator/authorTools.ts.
 const FEEDBACK_MS = 1000;
 
 const copyId = copyWithFeedback("is-copied", FEEDBACK_MS);
@@ -58,7 +58,7 @@ function buildLabel(id: string, kind: "figure" | "paragraph"): HTMLButtonElement
     label.append(hash, value);
   } else {
     // Paragraphs are comment blocks (see header note): keep the id OUT of
-    // textContent so comments.ts's per-block hash is undisturbed. The visible
+    // textContent so comments/blockIndex.ts's per-block hash is undisturbed. The visible
     // id (with a leading "#") comes from a CSS `::before` reading this
     // `data-pid` — pseudo-content, so it stays invisible to the comment hash.
     label.className = "paragraph-id-copy";

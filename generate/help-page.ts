@@ -131,16 +131,28 @@ function keyboardTableText(): string {
   return KEY_BINDINGS.map((b) => `${b.label}: ${b.description}`).join("; ") + ".";
 }
 
-export function buildQuestions(ctx: HelpContext): HelpQuestion[] {
-  const qs: HelpQuestion[] = [];
-  const f = ctx.features;
-  const voice = ctx.authorName ? `${ctx.authorName}'s voice` : "the author's voice";
+// One entry per Q&A section: a `when` gate + the (verbatim) rich HTML body and
+// its plain-text FAQPage twin. `buildQuestions` filters by `when` in document
+// order and renders each, so the prose and the structured data can never
+// disagree about which questions exist (the 4.4 pass-list pattern applied to
+// the Q&A model). Order is the array's order (listen → subscribe → comments →
+// install → privacy).
+type QuestionDef = {
+  id: string;
+  when: (ctx: HelpContext) => boolean;
+  question: string | ((ctx: HelpContext) => string);
+  answerHtml: (ctx: HelpContext) => string;
+  answerText: (ctx: HelpContext) => string;
+};
 
-  if (f.narration) {
-    qs.push({
-      id: "listen",
-      question: "How do I listen to a post?",
-      answerHtml:
+const QUESTION_DEFS: QuestionDef[] = [
+  {
+    id: "listen",
+    when: (ctx) => ctx.features.narration,
+    question: "How do I listen to a post?",
+    answerHtml: (ctx) => {
+      const voice = ctx.authorName ? `${ctx.authorName}'s voice` : "the author's voice";
+      return (
         `<p>Every post can narrate itself in ${escHtml(voice)} while you read. Open a post and ` +
         `press the <strong>Listen</strong> button in the player dock; the spoken track plays and ` +
         `the page highlights the passage being read. A two-level chapter list lets you jump around — ` +
@@ -150,78 +162,88 @@ export function buildQuestions(ctx: HelpContext): HelpQuestion[] {
         `<p>Keyboard shortcuts (when you're not typing in a field):</p>` +
         keyboardTableHtml() +
         `<p>Once you've started a post's narration, it keeps playing from cache even if you lose your ` +
-        `connection — see <a href="#install">installing &amp; offline</a>.</p>`,
-      answerText:
+        `connection — see <a href="#install">installing &amp; offline</a>.</p>`
+      );
+    },
+    answerText: (ctx) => {
+      const voice = ctx.authorName ? `${ctx.authorName}'s voice` : "the author's voice";
+      return (
         `Every post can narrate itself in ${voice} while you read. Open a post and press the Listen ` +
         `button in the player dock; the page highlights the passage being read, and a two-level ` +
-        `chapter list plus your OS media keys control playback. Keyboard shortcuts: ${keyboardTableText()}`,
-    });
-  }
-
-  if (f.atom || f.podcast) {
-    const podcastApps = f.podcast
-      ? `<h3 id="subscribe-apple-podcasts">Apple Podcasts</h3>` +
-        `<p>On macOS: <strong>File → Follow a Show by URL</strong>, then paste ` +
-        `<code>${escHtml(ctx.feeds.podcast!)}</code>. On iOS, Apple Podcasts has no "add by URL" ` +
-        `entry — use <a href="https://podcastsbyurl.com/" rel="noopener">podcastsbyurl.com</a> to add ` +
-        `the same URL.</p>` +
-        `<h3 id="subscribe-pocket-casts">Pocket Casts</h3>` +
-        `<p><strong>Profile → Add Podcast → URL</strong>, then paste <code>${escHtml(ctx.feeds.podcast!)}</code>.</p>` +
-        `<h3 id="subscribe-overcast">Overcast, Castro, AntennaPod</h3>` +
-        `<p>Each has an "Add by URL" option (the exact label varies) — paste <code>${escHtml(ctx.feeds.podcast!)}</code>.</p>` +
-        `<h3 id="subscribe-spotify">Spotify</h3>` +
-        `<p>Spotify doesn't currently let listeners add a podcast by URL; the operator would have to ` +
-        `submit the feed through Spotify for Podcasters first.</p>`
-      : "";
-    const atomLine = f.atom
-      ? `<h3 id="subscribe-articles">Follow new posts as articles</h3>` +
-        `<p>Add the Atom feed ` +
-        `<code>${escHtml(ctx.feeds.atom)}</code> to any feed reader — NetNewsWire, Feedly, ` +
-        `miniflux, Reeder. It tells you when a new post lands and carries the article itself.</p>`
-      : "";
-    // Readers who want posts in THEIR own chat use the same feed via that
-    // platform's RSS integration — self-serve and reader-controlled, but polling
-    // (so not instant). Distinct from the author's instant publish-webhook push,
-    // which only reaches channels the author owns (see methodology → Subscription
-    // feeds for that audience split).
-    const chatLine = f.atom
-      ? `<h3 id="subscribe-chat">Get new posts in your own Slack or Discord</h3>` +
-        `<p>The same feed drops into a chat channel you control. In <strong>Slack</strong>, ` +
-        `run <code>/feed subscribe ${escHtml(ctx.feeds.atom)}</code> in the channel. In ` +
-        `<strong>Discord</strong>, point a third-party RSS bot (such as ` +
-        `<a href="https://monitorss.xyz/" rel="noopener">MonitoRSS</a>) at that same URL. ` +
-        `Both <em>poll</em> the feed, so posts show up on their schedule (Slack checks roughly hourly) ` +
-        `rather than the instant a post goes live.</p>`
-      : "";
-    const podcastIntro = f.podcast
-      ? `<h3 id="subscribe-podcast">Listen in a podcast app</h3>` +
-        `<p>Add the podcast feed ` +
-        `<code>${escHtml(ctx.feeds.podcast!)}</code>. It's an ordinary Apple-Podcasts-compatible ` +
-        `RSS feed, so any podcast app that can add a feed by URL works.</p>`
-      : "";
-    // Real-time push (WebSub) — only when a hub is actually configured, so we
-    // never advertise instant delivery a hub-less deploy can't provide.
-    const realtimeLine = ctx.feeds.hubUrl
-      ? `<h3 id="subscribe-realtime">Real-time updates</h3>` +
-        `<p>These feeds support <a href="https://www.w3.org/TR/websub/" rel="noopener">WebSub</a> — if ` +
-        `your reader does too, it gets new posts pushed within seconds instead of waiting for its next ` +
-        `poll. Nothing to set up; it's announced in the feed automatically.</p>`
-      : "";
-    const realtimeText = ctx.feeds.hubUrl
-      ? `These feeds support WebSub, so a compatible reader gets new posts pushed within seconds instead of polling. `
-      : "";
-    qs.push({
-      id: "subscribe",
-      question: "How do I subscribe or add this to my podcast app?",
-      answerHtml:
+        `chapter list plus your OS media keys control playback. Keyboard shortcuts: ${keyboardTableText()}`
+      );
+    },
+  },
+  {
+    id: "subscribe",
+    when: (ctx) => ctx.features.atom || ctx.features.podcast,
+    question: "How do I subscribe or add this to my podcast app?",
+    answerHtml: (ctx) => {
+      const f = ctx.features;
+      const podcastApps = f.podcast
+        ? `<h3 id="subscribe-apple-podcasts">Apple Podcasts</h3>` +
+          `<p>On macOS: <strong>File → Follow a Show by URL</strong>, then paste ` +
+          `<code>${escHtml(ctx.feeds.podcast!)}</code>. On iOS, Apple Podcasts has no "add by URL" ` +
+          `entry — use <a href="https://podcastsbyurl.com/" rel="noopener">podcastsbyurl.com</a> to add ` +
+          `the same URL.</p>` +
+          `<h3 id="subscribe-pocket-casts">Pocket Casts</h3>` +
+          `<p><strong>Profile → Add Podcast → URL</strong>, then paste <code>${escHtml(ctx.feeds.podcast!)}</code>.</p>` +
+          `<h3 id="subscribe-overcast">Overcast, Castro, AntennaPod</h3>` +
+          `<p>Each has an "Add by URL" option (the exact label varies) — paste <code>${escHtml(ctx.feeds.podcast!)}</code>.</p>` +
+          `<h3 id="subscribe-spotify">Spotify</h3>` +
+          `<p>Spotify doesn't currently let listeners add a podcast by URL; the operator would have to ` +
+          `submit the feed through Spotify for Podcasters first.</p>`
+        : "";
+      const atomLine = f.atom
+        ? `<h3 id="subscribe-articles">Follow new posts as articles</h3>` +
+          `<p>Add the Atom feed ` +
+          `<code>${escHtml(ctx.feeds.atom)}</code> to any feed reader — NetNewsWire, Feedly, ` +
+          `miniflux, Reeder. It tells you when a new post lands and carries the article itself.</p>`
+        : "";
+      // Readers who want posts in THEIR own chat use the same feed via that
+      // platform's RSS integration — self-serve and reader-controlled, but polling
+      // (so not instant). Distinct from the author's instant publish-webhook push,
+      // which only reaches channels the author owns (see methodology → Subscription
+      // feeds for that audience split).
+      const chatLine = f.atom
+        ? `<h3 id="subscribe-chat">Get new posts in your own Slack or Discord</h3>` +
+          `<p>The same feed drops into a chat channel you control. In <strong>Slack</strong>, ` +
+          `run <code>/feed subscribe ${escHtml(ctx.feeds.atom)}</code> in the channel. In ` +
+          `<strong>Discord</strong>, point a third-party RSS bot (such as ` +
+          `<a href="https://monitorss.xyz/" rel="noopener">MonitoRSS</a>) at that same URL. ` +
+          `Both <em>poll</em> the feed, so posts show up on their schedule (Slack checks roughly hourly) ` +
+          `rather than the instant a post goes live.</p>`
+        : "";
+      const podcastIntro = f.podcast
+        ? `<h3 id="subscribe-podcast">Listen in a podcast app</h3>` +
+          `<p>Add the podcast feed ` +
+          `<code>${escHtml(ctx.feeds.podcast!)}</code>. It's an ordinary Apple-Podcasts-compatible ` +
+          `RSS feed, so any podcast app that can add a feed by URL works.</p>`
+        : "";
+      // Real-time push (WebSub) — only when a hub is actually configured, so we
+      // never advertise instant delivery a hub-less deploy can't provide.
+      const realtimeLine = ctx.feeds.hubUrl
+        ? `<h3 id="subscribe-realtime">Real-time updates</h3>` +
+          `<p>These feeds support <a href="https://www.w3.org/TR/websub/" rel="noopener">WebSub</a> — if ` +
+          `your reader does too, it gets new posts pushed within seconds instead of waiting for its next ` +
+          `poll. Nothing to set up; it's announced in the feed automatically.</p>`
+        : "";
+      return (
         atomLine +
         chatLine +
         podcastIntro +
         podcastApps +
         realtimeLine +
         `<p>There's no email list, no signup, and no tracking — subscribing just means adding a URL ` +
-        `to an app you control.</p>`,
-      answerText:
+        `to an app you control.</p>`
+      );
+    },
+    answerText: (ctx) => {
+      const f = ctx.features;
+      const realtimeText = ctx.feeds.hubUrl
+        ? `These feeds support WebSub, so a compatible reader gets new posts pushed within seconds instead of polling. `
+        : "";
+      return (
         (f.atom
           ? `Follow new posts by adding the Atom feed ${ctx.feeds.atom} to any feed reader — or pipe ` +
             `it into your own chat (Slack: /feed subscribe <that URL>; Discord: a third-party RSS bot ` +
@@ -234,78 +256,81 @@ export function buildQuestions(ctx: HelpContext): HelpQuestion[] {
             `Spotify needs the operator to submit through Spotify for Podcasters first. `
           : "") +
         realtimeText +
-        `There's no email list, signup, or tracking — subscribing just means adding a URL to an app you control.`,
-    });
-  }
-
-  if (f.comments) {
-    qs.push({
-      id: "comments",
-      question: "How do comments work, and what happens to mine?",
-      answerHtml:
-        `<p>To comment, sign in with Google or Microsoft, then highlight a passage and attach your ` +
-        `note to it. What each provider shares, and how comments are stored, is covered in the ` +
-        (ctx.privacyHref
-          ? `<a href="${escAttr(ctx.privacyHref)}#comments">privacy policy</a>.</p>`
-          : `privacy policy.</p>`) +
-        `<p><strong>Comments here aren't only for discussion.</strong> The author runs an AI-assisted ` +
-        `tool that takes every open comment thread and proposes a revision to the post — so your ` +
-        `question or correction can become part of the next draft. A comment is a way to improve the ` +
-        `piece, not just to reply to it.</p>`,
-      answerText:
-        `To comment, sign in with Google or Microsoft, then highlight a passage and attach your note. ` +
-        `Comments here aren't only for discussion: the author runs an AI-assisted tool that turns open ` +
-        `comment threads into a proposed revision of the post, so your question or correction can become ` +
-        `part of the next draft.`,
-    });
-  }
-
-  if (f.pwa) {
-    qs.push({
-      id: "install",
-      question: "Can I install this as an app and read offline?",
-      answerHtml:
-        `<p>Yes — this blog is a Progressive Web App. You can install it to your home screen or app ` +
-        `launcher. A post you've opened is cached so you can re-read it offline, and its narration is ` +
-        `cached once you've started playing it — so a talk you've listened to replays without a connection.</p>` +
-        `<p>Installing differs by browser:</p>` +
-        `<ul>` +
-        `<li><strong>Android Chrome:</strong> an "Install app" prompt appears, or use the ⋮ menu → "Install app."</li>` +
-        `<li><strong>Desktop Chrome / Edge:</strong> click the install icon at the right of the address bar.</li>` +
-        `<li><strong>iOS Safari:</strong> tap Share → <strong>Add to Home Screen</strong> (Safari shows no install banner).</li>` +
-        `<li><strong>Desktop Safari:</strong> Share → <strong>Add to Dock</strong>.</li>` +
-        `<li><strong>Firefox:</strong> no install on desktop or Android, but the offline cache still works — you just don't get an icon.</li>` +
-        `</ul>` +
-        `<p>What needs a connection: a post you've never opened, signing in, and loading or posting ` +
-        `comments. Updates roll out automatically on your next visit.</p>`,
-      answerText:
-        `Yes — this blog is a Progressive Web App. Install it to your home screen or app launcher (Android/desktop ` +
-        `Chrome and Edge show an install control; iOS Safari uses Share → Add to Home Screen; desktop Safari uses ` +
-        `Share → Add to Dock; Firefox has no install but still caches offline). A post you've opened is cached for ` +
-        `offline reading, and its narration is cached once you've started playing it. Signing in and loading or posting comments still need a connection.`,
-    });
-  }
-
+        `There's no email list, signup, or tracking — subscribing just means adding a URL to an app you control.`
+      );
+    },
+  },
+  {
+    id: "comments",
+    when: (ctx) => ctx.features.comments,
+    question: "How do comments work, and what happens to mine?",
+    answerHtml: (ctx) =>
+      `<p>To comment, sign in with Google or Microsoft, then highlight a passage and attach your ` +
+      `note to it. What each provider shares, and how comments are stored, is covered in the ` +
+      (ctx.privacyHref
+        ? `<a href="${escAttr(ctx.privacyHref)}#comments">privacy policy</a>.</p>`
+        : `privacy policy.</p>`) +
+      `<p><strong>Comments here aren't only for discussion.</strong> The author runs an AI-assisted ` +
+      `tool that takes every open comment thread and proposes a revision to the post — so your ` +
+      `question or correction can become part of the next draft. A comment is a way to improve the ` +
+      `piece, not just to reply to it.</p>`,
+    answerText: () =>
+      `To comment, sign in with Google or Microsoft, then highlight a passage and attach your note. ` +
+      `Comments here aren't only for discussion: the author runs an AI-assisted tool that turns open ` +
+      `comment threads into a proposed revision of the post, so your question or correction can become ` +
+      `part of the next draft.`,
+  },
+  {
+    id: "install",
+    when: (ctx) => ctx.features.pwa,
+    question: "Can I install this as an app and read offline?",
+    answerHtml: () =>
+      `<p>Yes — this blog is a Progressive Web App. You can install it to your home screen or app ` +
+      `launcher. A post you've opened is cached so you can re-read it offline, and its narration is ` +
+      `cached once you've started playing it — so a talk you've listened to replays without a connection.</p>` +
+      `<p>Installing differs by browser:</p>` +
+      `<ul>` +
+      `<li><strong>Android Chrome:</strong> an "Install app" prompt appears, or use the ⋮ menu → "Install app."</li>` +
+      `<li><strong>Desktop Chrome / Edge:</strong> click the install icon at the right of the address bar.</li>` +
+      `<li><strong>iOS Safari:</strong> tap Share → <strong>Add to Home Screen</strong> (Safari shows no install banner).</li>` +
+      `<li><strong>Desktop Safari:</strong> Share → <strong>Add to Dock</strong>.</li>` +
+      `<li><strong>Firefox:</strong> no install on desktop or Android, but the offline cache still works — you just don't get an icon.</li>` +
+      `</ul>` +
+      `<p>What needs a connection: a post you've never opened, signing in, and loading or posting ` +
+      `comments. Updates roll out automatically on your next visit.</p>`,
+    answerText: () =>
+      `Yes — this blog is a Progressive Web App. Install it to your home screen or app launcher (Android/desktop ` +
+      `Chrome and Edge show an install control; iOS Safari uses Share → Add to Home Screen; desktop Safari uses ` +
+      `Share → Add to Dock; Firefox has no install but still caches offline). A post you've opened is cached for ` +
+      `offline reading, and its narration is cached once you've started playing it. Signing in and loading or posting comments still need a connection.`,
+  },
   // Privacy section always present (even with no policy URL, the engine's
   // data posture is worth a sentence) — but the link only when a policy exists.
-  qs.push({
+  {
     id: "privacy",
+    when: () => true,
     question: "What does this blog collect about me?",
-    answerHtml:
+    answerHtml: (ctx) =>
       `<p>The blog doesn't sell or share your data. Engagement analytics are anonymous and cookieless, ` +
       `and comments require sign-in and store what you write. ` +
       (ctx.privacyHref
         ? `The full details are in the <a href="${escAttr(ctx.privacyHref)}">privacy policy</a>.</p>`
         : `</p>`),
-    answerText:
+    answerText: (ctx) =>
       `The blog doesn't sell or share your data. Engagement analytics are anonymous and cookieless, and ` +
       `comments require sign-in and store what you write.` +
       (ctx.privacyHref ? ` Full details are in the privacy policy.` : ""),
-  });
+  },
+];
 
-  return qs;
+export function buildQuestions(ctx: HelpContext): HelpQuestion[] {
+  return QUESTION_DEFS.filter((q) => q.when(ctx)).map((q) => ({
+    id: q.id,
+    question: typeof q.question === "function" ? q.question(ctx) : q.question,
+    answerHtml: q.answerHtml(ctx),
+    answerText: q.answerText(ctx),
+  }));
 }
-
 // ---- FAQPage JSON-LD --------------------------------------------------------
 //
 // Built from the SAME question array as the prose, so the structured data and

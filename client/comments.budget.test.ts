@@ -24,6 +24,9 @@ test("commentsLoader.ts (the eager entry) has NO static imports of the heavy gra
   // statically import it.
   const heavy = [
     "comments.ts",
+    // Any collaborator module under client/comments/ is part of the heavy graph;
+    // a static import of one from the loader would defeat the split (4.1).
+    "comments/",
     "commentsStore",
     "commentsSync",
     "commentsApi",

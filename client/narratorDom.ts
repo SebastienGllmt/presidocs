@@ -329,6 +329,6 @@ export function shouldIgnoreKeyboardShortcut(
 }
 
 // The drawer lazy-build handshake (narrator ↔ comments) lives in the neutral
-// client/drawerBodyContract.ts — both narrator.ts and comments.ts import it from
+// client/drawerBodyContract.ts — both narrator.ts and comments/blockIndex.ts import it from
 // there, so the comment system no longer reaches into the narrator's DOM module
 // for it.

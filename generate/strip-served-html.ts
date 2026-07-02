@@ -379,98 +379,144 @@ async function main(): Promise<void> {
 
   const landingPath = join(DIST, "index.html");
 
+  // The post-build rewrite as an ordered list of named passes. The ORDER is
+  // load-bearing byte-for-byte: strip first, then the per-post link/landmark
+  // injects, then structured data + feed autodiscovery, then noindex, then the
+  // footer and PWA <head> (both inject AFTER structured data). Each pass sees
+  // the previous pass's output; `when` gates it on the options gathered once
+  // above (so the gate is evaluated per build, not per file). The per-file loop
+  // below folds `after` over the enabled passes — same order, same output as the
+  // former imperative chain. Pass bodies are the prior inline steps verbatim.
+  type Pass = {
+    name: string;
+    when: boolean;
+    apply: (html: string, file: string) => string | Promise<string>;
+  };
+  const passes: Pass[] = [
+    // Strip generation-only tags. Always runs (the reason this step exists).
+    { name: "strip", when: true, apply: (html) => stripServedHtml(html) },
+    // Content-address the narration manifest URL (independent of SITE_URL — the
+    // cache-correctness fix must apply to every deploy). No-op for non-posts and
+    // posts without a hashed manifest.
+    {
+      name: "narration-manifest-src",
+      when: true,
+      apply: (html, file) => rewriteNarrationManifestSrc(html, distFileToPostPath(file)),
+    },
+    // Give the post's <article> the main landmark (axe landmark-one-main).
+    // Independent of SITE_URL — the /posts/ gate scopes it to real posts.
+    {
+      name: "post-main-landmark",
+      when: true,
+      apply: (html, file) => injectPostMainLandmark(html, distFileToPostPath(file)),
+    },
+    // Advertise the post's Markdown twin (built by markdown-export.ts).
+    // Independent of SITE_URL — the .md is emitted on every deploy.
+    {
+      name: "markdown-alt-link",
+      when: true,
+      apply: (html, file) => injectMarkdownAltLink(html, distFileToPostPath(file)),
+    },
+    // Structured data: real posts get BlogPosting; the landing page gets a
+    // WebSite/Blog @graph; everything else short-circuits. Feed autodiscovery
+    // rides in the same SITE_URL-gated pass (it too needs the feeds that only
+    // exist when SITE_URL is set). The branchy body is intentionally one pass.
+    {
+      name: "structured-data + feed links",
+      when: Boolean(siteUrl),
+      apply: async (html, file) => {
+        let after = html;
+        const postPath = distFileToPostPath(file);
+        const history = versions[postPath];
+        if (history && history.length > 0) {
+          const profile = authorMap[postPath];
+          // The generated share card, if share-card.ts produced one (it skips
+          // posts that declare their own og:image). Gated on the file actually
+          // existing so a missing card degrades to "no og:image" rather than a
+          // broken link.
+          const slug = postPath.replace(/^\/posts\//, "");
+          const cardFsPath = join(DIST, "assets", "og", `${slug}.png`);
+          const cardUrl = existsSync(cardFsPath) ? `/assets/og/${slug}.png` : null;
+          const ctx: StructuredDataContext = {
+            siteUrl,
+            postPath,
+            author: profile
+              ? { name: profile.name, links: profile.links, avatarUrl: profile.avatar }
+              : null,
+            publishedAt: history[history.length - 1]!.builtAt,
+            modifiedAt: history[0]!.builtAt,
+            audio: await readAudio(postPath),
+            cardUrl,
+            licenseUrl: contentLicenseUrl,
+          };
+          after = injectStructuredData(after, ctx);
+          // Private: inline this post's byline data so the byline needs no
+          // global (enumerating) map fetch.
+          if (privateBlog && profile) {
+            after = injectBylineData(after, profile, history[0]!.builtAt);
+          }
+        } else if (file === landingPath && !privateBlog) {
+          // (private: the landing is the one guessable URL in the deploy — it
+          // gets no WebSite/Blog graph describing the blog to crawlers; see
+          // methodology → Private blogs.)
+          // The landing-page share card (generate/share-card.ts:_site.png). Gated
+          // on the file actually existing so a deploy without share cards (no
+          // SITE_URL when share-card.ts ran, or no site description) degrades
+          // cleanly to "no og:image" rather than a broken link.
+          const siteCardFsPath = join(DIST, "assets", "og", "_site.png");
+          const siteCardUrl = existsSync(siteCardFsPath) ? "/assets/og/_site.png" : null;
+          const siteCtx: SiteStructuredDataContext = {
+            siteUrl,
+            author: siteAuthor
+              ? { name: siteAuthor.name, links: siteAuthor.links, avatarUrl: siteAuthor.avatar }
+              : null,
+            publisher: sitePublisher,
+            cardUrl: siteCardUrl,
+            licenseUrl: contentLicenseUrl,
+          };
+          after = injectSiteStructuredData(after, siteCtx);
+        }
+        // Feed autodiscovery on every page (landing included), not just posts.
+        // Private blogs emit no feeds (generate/feeds.ts), so advertising them
+        // would be a dead link on every page.
+        if (!privateBlog) after = injectFeedLinks(after, hasPodcast);
+        return after;
+      },
+    },
+    // Private blogs: noindex meta on EVERY page, independent of SITE_URL —
+    // the privacy posture must hold even on a misconfigured build.
+    { name: "noindex", when: privateBlog, apply: (html) => injectNoindexMeta(html) },
+    // Every-page privacy/help/license/acknowledgements footer (injects after
+    // structured data — see the idempotency-race contract with bunFooterPlugin).
+    {
+      name: "site footer",
+      when: Boolean(privacyHref || helpHref || licenseHref || acknowledgementsHref),
+      apply: (html) =>
+        injectSiteFooter(html, {
+          privacyHref,
+          helpHref,
+          licenseHref,
+          licenseLabel,
+          acknowledgementsHref,
+        }),
+    },
+    // PWA <head> (manifest + theme-color + apple-touch-icon), last. `when`
+    // guarantees pwaOpts is non-null here.
+    {
+      name: "pwa-head",
+      when: Boolean(pwaOpts),
+      apply: (html) => injectPwaHead(html, pwaOpts!),
+    },
+  ];
+  const enabledPasses = passes.filter((p) => p.when);
+
   let totalSaved = 0;
   let touched = 0;
   for (const file of files) {
     const before = await readFile(file, "utf8");
-    let after = stripServedHtml(before);
-
-    // Content-address the narration manifest URL (independent of SITE_URL — the
-    // cache-correctness fix must apply to every deploy). No-op for non-posts and
-    // posts without a hashed manifest.
-    after = await rewriteNarrationManifestSrc(after, distFileToPostPath(file));
-
-    // Give the post's <article> the main landmark (axe landmark-one-main).
-    // Independent of SITE_URL — the /posts/ gate scopes it to real posts.
-    after = injectPostMainLandmark(after, distFileToPostPath(file));
-
-    // Advertise the post's Markdown twin (built by markdown-export.ts).
-    // Independent of SITE_URL — the .md is emitted on every deploy.
-    after = injectMarkdownAltLink(after, distFileToPostPath(file));
-
-    // Structured data: real posts get BlogPosting; the landing page gets a
-    // WebSite/Blog @graph; everything else short-circuits.
-    if (siteUrl) {
-      const postPath = distFileToPostPath(file);
-      const history = versions[postPath];
-      if (history && history.length > 0) {
-        const profile = authorMap[postPath];
-        // The generated share card, if share-card.ts produced one (it skips
-        // posts that declare their own og:image). Gated on the file actually
-        // existing so a missing card degrades to "no og:image" rather than a
-        // broken link.
-        const slug = postPath.replace(/^\/posts\//, "");
-        const cardFsPath = join(DIST, "assets", "og", `${slug}.png`);
-        const cardUrl = existsSync(cardFsPath) ? `/assets/og/${slug}.png` : null;
-        const ctx: StructuredDataContext = {
-          siteUrl,
-          postPath,
-          author: profile
-            ? { name: profile.name, links: profile.links, avatarUrl: profile.avatar }
-            : null,
-          publishedAt: history[history.length - 1]!.builtAt,
-          modifiedAt: history[0]!.builtAt,
-          audio: await readAudio(postPath),
-          cardUrl,
-          licenseUrl: contentLicenseUrl,
-        };
-        after = injectStructuredData(after, ctx);
-        // Private: inline this post's byline data so the byline needs no
-        // global (enumerating) map fetch.
-        if (privateBlog && profile) {
-          after = injectBylineData(after, profile, history[0]!.builtAt);
-        }
-      } else if (file === landingPath && !privateBlog) {
-        // (private: the landing is the one guessable URL in the deploy — it
-        // gets no WebSite/Blog graph describing the blog to crawlers; see
-        // methodology → Private blogs.)
-        // The landing-page share card (generate/share-card.ts:_site.png). Gated
-        // on the file actually existing so a deploy without share cards (no
-        // SITE_URL when share-card.ts ran, or no site description) degrades
-        // cleanly to "no og:image" rather than a broken link.
-        const siteCardFsPath = join(DIST, "assets", "og", "_site.png");
-        const siteCardUrl = existsSync(siteCardFsPath) ? "/assets/og/_site.png" : null;
-        const siteCtx: SiteStructuredDataContext = {
-          siteUrl,
-          author: siteAuthor
-            ? { name: siteAuthor.name, links: siteAuthor.links, avatarUrl: siteAuthor.avatar }
-            : null,
-          publisher: sitePublisher,
-          cardUrl: siteCardUrl,
-          licenseUrl: contentLicenseUrl,
-        };
-        after = injectSiteStructuredData(after, siteCtx);
-      }
-      // Feed autodiscovery on every page (landing included), not just posts.
-      // Private blogs emit no feeds (generate/feeds.ts), so advertising them
-      // would be a dead link on every page.
-      if (!privateBlog) after = injectFeedLinks(after, hasPodcast);
-    }
-    // Private blogs: noindex meta on EVERY page, independent of SITE_URL —
-    // the privacy posture must hold even on a misconfigured build.
-    if (privateBlog) after = injectNoindexMeta(after);
-
-    if (privacyHref || helpHref || licenseHref || acknowledgementsHref) {
-      after = injectSiteFooter(after, {
-        privacyHref,
-        helpHref,
-        licenseHref,
-        licenseLabel,
-        acknowledgementsHref,
-      });
-    }
-    if (pwaOpts) {
-      after = injectPwaHead(after, pwaOpts);
+    let after = before;
+    for (const pass of enabledPasses) {
+      after = await pass.apply(after, file);
     }
     if (after === before) continue;
     await writeFile(file, after, "utf8");

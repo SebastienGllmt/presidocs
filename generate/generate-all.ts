@@ -2,9 +2,10 @@
 // with NO post path, generate over every post that actually ships narration.
 //
 // Why spawn one `generate.ts` subprocess per post rather than loop in-process:
-// generate.ts is a single-post top-level script studded with `process.exit()`
-// calls and a per-run TTS/aligner lifecycle (it loads — and `close()`s — a
-// MOSS/Qwen3 worker per invocation). Running each post in its own process is
+// generate.ts is a single-post script (a `main()` behind `import.meta.main`)
+// studded with `process.exit()` calls and a per-run TTS/aligner lifecycle (it
+// loads — and `close()`s — a MOSS/Qwen3 worker per invocation). Running each
+// post in its own process is
 // the same thing the author does by hand today (`generate:prod posts/x.html`),
 // keeps the model lifecycle clean, and isolates a crash/hang in one post from
 // the rest of the batch. The engine stays content-agnostic — it discovers

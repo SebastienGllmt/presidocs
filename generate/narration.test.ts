@@ -5,7 +5,7 @@
 // for readability.
 
 import { test, expect } from "bun:test";
-import { extractNarration, splitChapter, type Segment } from "./narration.ts";
+import { extractNarration, extractPlsBlocks, splitChapter, type Segment } from "./narration.ts";
 import { computeCacheKey, computeTextHash, type TtsCacheIdentity } from "./tts-cache.ts";
 import { type AudioFormat } from "./audio-pipeline.ts";
 
@@ -257,4 +257,35 @@ test("extractNarration reads data-chapter-parent into parentId", () => {
     ["part", undefined],
     ["kid", "part"],
   ]);
+});
+
+// --- extractPlsBlocks -------------------------------------------------------
+// Inline `<script type="application/pls+xml">` lexicon blocks feed the
+// per-post local lexicon (and thus the TTS cache key), so their content must
+// come back byte-for-byte and in document order.
+
+test("extractPlsBlocks pulls inline PLS blocks in document order", () => {
+  const html = `
+    <head>
+      <script type="application/pls+xml"><lexicon><lexeme><grapheme>first</grapheme></lexeme></lexicon></script>
+      <script type="text/narration" data-chapter-id="x">prose <mark name="m"/></script>
+      <script type="application/pls+xml"><lexicon><lexeme><grapheme>second</grapheme></lexeme></lexicon></script>
+    </head>`;
+  const blocks = extractPlsBlocks(html);
+  expect(blocks.length).toBe(2);
+  expect(blocks[0]).toContain("<grapheme>first</grapheme>");
+  expect(blocks[1]).toContain("<grapheme>second</grapheme>");
+});
+
+test("extractPlsBlocks preserves RAWTEXT content without decoding entities", () => {
+  const html = `<script type="application/pls+xml"><lexicon><lexeme><alias>A &amp; B</alias></lexeme></lexicon></script>`;
+  const blocks = extractPlsBlocks(html);
+  expect(blocks.length).toBe(1);
+  // `<script>` content is RAWTEXT: entities are NOT decoded, so `&amp;` stays.
+  expect(blocks[0]).toBe(`<lexicon><lexeme><alias>A &amp; B</alias></lexeme></lexicon>`);
+});
+
+test("extractPlsBlocks returns empty when no inline PLS blocks are present", () => {
+  const html = `<article><script type="text/narration">prose <mark name="m"/></script></article>`;
+  expect(extractPlsBlocks(html)).toEqual([]);
 });

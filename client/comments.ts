@@ -30,21 +30,14 @@ import {
   CommentStore,
   isResolved,
   isDeleted,
-  visibleReplies,
   isTextTarget,
   contextOf,
-  makeTextTarget,
-  makeGraphicTarget,
   textTargetParts,
   graphicTargetId,
-  type Context,
-  type Reply,
-  type Target,
   type Thread,
 } from "./commentsStore.ts";
 import {
   loadIdentity,
-  loginUrl,
   signOut,
   type Identity,
 } from "./identity.ts";
@@ -52,37 +45,29 @@ import { CommentSync } from "./commentsSync.ts";
 import { aggregateOtherReaders } from "./commentsAggregator.ts";
 import { CommentPolling } from "./commentsPolling.ts";
 import { ResolutionStore } from "./resolutionsStore.ts";
-import type { ResolutionEnvelope } from "./resolutionsApi.ts";
-import {
-  fetchPostVersion,
-  getLastSeenVersion,
-  setLastSeenVersion,
-  type PostVersionResponse,
-} from "./postVersion.ts";
-import { DraftsStorage } from "./draftsStorage.ts";
 import { compareSegmentHashes } from "./commentsStale.ts";
+import { scrollBehavior, uid } from "./comments/util.ts";
 import {
-  BLOCK_TAGS,
-  loadHighlightsHidden,
-  normalizeText,
-  saveHighlightsHidden,
-  walkBlocks,
-} from "./commentsDom.ts";
+  anchorNameForText,
+  unwrap,
+  wrapRangeInBlock,
+} from "./comments/highlights.ts";
 import {
-  DRAWER_BODY_WANTED_ATTR,
-  REQUEST_DRAWER_BODY_EVENT,
-  DRAWER_BODY_READY_EVENT,
-} from "./drawerBodyContract.ts";
-import { copyToClipboard } from "./clipboard.ts";
-// The action bar hosts a "Copy link" button alongside "Comment" — see
-// citationLink.ts. `setCommentBarActive` tells the standalone citation button to
-// step aside so a logged-in reader sees one bar, not two competing dark pills.
+  buildAvatar,
+  buildProviderLink,
+  buildPrivacyNotice,
+} from "./comments/identityUi.ts";
 import {
-  citationForRange,
-  isInspectableSelectionNode,
-  prewarmCitationGenerator,
-  setCommentBarActive,
-} from "./citationLink.ts";
+  BlockIndex,
+  requestDrawerBody,
+} from "./comments/blockIndex.ts";
+import { SelectionBar } from "./comments/selectionBar.ts";
+import { DraftManager } from "./comments/draftManager.ts";
+import { VersionBanner } from "./comments/versionBanner.ts";
+import { UnresolvedNav } from "./comments/unresolvedNav.ts";
+import { CardRenderer } from "./comments/cards.ts";
+import { FigureTriggers } from "./comments/figureTriggers.ts";
+import { MobileMenu } from "./comments/mobileMenu.ts";
 
 // Build-time define (Bun.build `define` map) — `undefined` under the fast
 // `bun run dev` server, `"false"` in built/dev:edge/prod. Used only to gate
@@ -90,34 +75,10 @@ import {
 // same pattern. Never true in a shipped bundle.
 declare const __BUN_DEV__: boolean | undefined;
 
-type BlockInfo = {
-  id: string;
-  element: HTMLElement;
-  context: Context;
-  hash: string;
-  text: string;
-};
-
-// A validated article-text selection: the range plus the comment-blocks its
-// ends fall in (same context). Returned by `captureSelection`; feeds both the
-// desktop action bar and the mobile compose flow.
-type SelectionCapture = {
-  range: Range;
-  startBlock: BlockInfo;
-  endBlock: BlockInfo;
-};
-
-// BLOCK_TAGS, normalizeText, walkBlocks are imported from ./commentsDom.ts
-// — extracting them gave the indexer's leaf-tag set, whitespace rule, and
-// document-order walker a place to be tested without instantiating the
-// whole CommentSystem.
-
-// v1: only `<figure>` is a commentable graphic. The authoring convention
-// (per methodology.md) wraps each graphic in a figure with an id, and that
-// lets us attach an HTML button child without worrying about SVG namespace
-// or `<img>` being a void element. Standalone <svg>/<img>/<canvas> would
-// need a wrapper before we could place the trigger; we can add that later.
-const GRAPHIC_ROOT_TAGS = new Set(["FIGURE"]);
+// BLOCK_TAGS, normalizeText, walkBlocks live in ./commentsDom.ts (imported
+// by ./comments/blockIndex.ts) — extracting them gave the indexer's leaf-tag
+// set, whitespace rule, and document-order walker a place to be tested
+// without instantiating the whole CommentSystem.
 
 // Extra gap kept between the lowest card's bottom and the player dock
 // when reserving bottom scroll room, so a bottom card never sits flush
@@ -130,121 +91,45 @@ const BOTTOM_CLEARANCE_PX = 24;
 // bottom-sheet fallback when the anchor's edges are cramped).
 const MOBILE_BREAKPOINT_PX = 1099;
 
-// Honour the OS "reduce motion" preference at the explicit-`smooth`
-// scrollIntoView sites. An explicit `behavior` overrides the
-// `html { scroll-behavior }` rule (and its reduce-motion override) in
-// base.css, so each JS call needs its own guard. Read at call time so a
-// mid-session OS toggle is respected; degrades to "smooth" where matchMedia
-// is unavailable (test/SSR DOM).
-const scrollBehavior = (): ScrollBehavior =>
-  typeof window.matchMedia === "function" &&
-  window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    ? "auto"
-    : "smooth";
+export class CommentSystem {
+  // Collaborator owning the block/graphic index (article + drawer roots) and
+  // the narrator↔comments drawer-body handshake. Constructed inert; the
+  // orchestrator and collaborators read its maps via `this.index` /
+  // `this.sys.index`.
+  readonly index = new BlockIndex();
+  // Selection action bar + the shared selection capture; owns the `pending*`
+  // handoff DraftManager consumes. Constructed inert.
+  readonly selection = new SelectionBar(this);
+  // Draft lifecycle (create / discard / persist / surface) + the per-textarea
+  // body buffers. Constructed inert.
+  readonly draftMgr = new DraftManager(this);
+  // Document-version banner + history disclosure. Constructed inert.
+  readonly version = new VersionBanner(this);
+  // Author-only unresolved-count badge + cycle navigation. Constructed inert.
+  readonly unresolvedNav = new UnresolvedNav(this);
+  // Card rendering (preview + replies + composer/mutation routing). Inert.
+  readonly cards = new CardRenderer(this);
+  // Per-figure comment triggers + indicator badges. Constructed inert.
+  readonly figures = new FigureTriggers(this);
+  // Mobile button + one-menu popover + highlight-toggle. Constructed inert.
+  readonly menu = new MobileMenu(this);
 
-function uid(): string {
-  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-}
-
-// Coerce an arbitrary id into a CSS `<dashed-ident>`-safe tail.
-// Thread ids are already alphanumeric (see `uid`), but block / graphic
-// ids embed `:` and `__` (e.g. `article:__b-3`), which aren't valid in
-// a CSS identifier. The substitution is one-way; uniqueness within our
-// id namespace holds because no two distinct ids differ only in `:`.
-function cssIdent(s: string): string {
-  return s.replace(/[^A-Za-z0-9_-]/g, "_");
-}
-
-function anchorNameForText(threadId: string): string {
-  return `--cmt-${cssIdent(threadId)}`;
-}
-
-function anchorNameForGraphic(graphicId: string): string {
-  return `--cmt-graphic-${cssIdent(graphicId)}`;
-}
-
-async function sha256(s: string): Promise<string> {
-  const buf = new TextEncoder().encode(s);
-  const digest = await crypto.subtle.digest("SHA-256", buf);
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-function offsetInBlock(block: HTMLElement, node: Node, offset: number): number {
-  if (node === block) {
-    let total = 0;
-    for (let i = 0; i < offset && i < block.childNodes.length; i++) {
-      total += (block.childNodes[i]?.textContent ?? "").length;
-    }
-    return total;
-  }
-  let total = 0;
-  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
-  while (walker.nextNode()) {
-    const n = walker.currentNode;
-    if (n === node) return total + offset;
-    total += (n.nodeValue ?? "").length;
-  }
-  return block.textContent?.length ?? 0;
-}
-
-function nodeAtOffset(
-  block: HTMLElement,
-  charOffset: number,
-): { node: Node; offset: number } | null {
-  let remaining = charOffset;
-  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
-  while (walker.nextNode()) {
-    const n = walker.currentNode as Text;
-    const len = n.nodeValue?.length ?? 0;
-    if (remaining <= len) return { node: n, offset: remaining };
-    remaining -= len;
-  }
-  let last: Text | null = null;
-  const w2 = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
-  while (w2.nextNode()) last = w2.currentNode as Text;
-  if (last) return { node: last, offset: last.nodeValue?.length ?? 0 };
-  return null;
-}
-
-function findBlockFor(node: Node): HTMLElement | null {
-  let el: Node | null = node;
-  while (el && el.nodeType !== Node.ELEMENT_NODE) el = el.parentNode;
-  if (!el) return null;
-  return (el as Element).closest<HTMLElement>("[data-comment-block-id]");
-}
-
-function formatRelative(timestamp: number): string {
-  const diff = Date.now() - timestamp;
-  const min = 60_000;
-  if (diff < min) return "just now";
-  if (diff < 60 * min) return `${Math.floor(diff / min)}m ago`;
-  if (diff < 24 * 60 * min) return `${Math.floor(diff / (60 * min))}h ago`;
-  return new Date(timestamp).toLocaleDateString();
-}
-
-class CommentSystem {
-  private articleRoot: HTMLElement | null = null;
-  // `drawerRoot` is set when the narrator drawer is detected. Threads in
-  // the drawer index against this root; if the drawer never appears
-  // (manifest missing) we still work on the article alone.
-  private drawerRoot: HTMLElement | null = null;
+  articleRoot: HTMLElement | null = null;
 
   // Logged-in user, or null when not authenticated. The UI gates every
   // comment-creation path on this being non-null. Loaded once at boot
   // from /auth/me; not refreshed mid-session (an expired cookie at
   // mid-session falls back to "still appears logged in locally," which is
   // harmless given comments only write to localStorage in v1).
-  private identity: Identity | null = null;
+  identity: Identity | null = null;
 
   // The CRDT store owns persistence + merge semantics. `snapshot` is a
   // cached plain-JSON view of the store's threads, refreshed after every
   // mutation. The UI reads from `snapshot`; mutations route through the
   // store. Stays null when not logged in — the store is keyed by user id,
   // so we can't create it until identity is known.
-  private store: CommentStore | null = null;
-  private snapshot: Thread[] = [];
+  store: CommentStore | null = null;
+  snapshot: Thread[] = [];
 
   // Owns the network push/pull for the logged-in user's blob. Lives
   // alongside the store so a single mutation triggers persist (in the
@@ -260,125 +145,51 @@ class CommentSystem {
   // reads. Threads marked as resolved here are filtered out of the
   // render alongside threads with their own resolvedAt timestamp.
   // Hydrate-and-poll like the CommentStore. Null when not logged in.
-  private resolutions: ResolutionStore | null = null;
-
-  // Document-version state. The current SHA-256 of the post HTML
-  // and (for the author) the history of past hashes. Set once on
-  // boot; the "your comments may no longer apply" banner is rendered
-  // when the previously-stored last-seen hash differs from the
-  // server's currentHash.
-  private docVersion: PostVersionResponse | null = null;
-  private previousVersionHash: string | null = null;
-  private versionBannerEl: HTMLElement | null = null;
-  private versionHistoryEl: HTMLElement | null = null;
-  // Author-only at-a-glance unresolved-thread count. Lives in the
-  // column header alongside the version history so the author can see
-  // "are there comments I haven't dealt with yet?" without scrolling
-  // the post. Clicking it cycles through the unresolved threads in
-  // document order. Re-rendered on every renderAll() so polls and
-  // mutations keep it current.
-  private unresolvedCountEl: HTMLButtonElement | null = null;
-  // Index into the document-order list of unresolved threads, used so
-  // repeated clicks on the badge step through them rather than
-  // re-snapping to the same one. Reset whenever the underlying set
-  // shifts (resolved, deleted, …) so we don't index off the end.
-  private unresolvedCycleIndex = 0;
-  private lastUnresolvedIds: string[] = [];
+  resolutions: ResolutionStore | null = null;
 
   // Below the mobile breakpoint, cards render as fixed-position
   // overlays (popovers) rather than as a stacked column. Tracked
   // via a `MediaQueryList` listener so a window resize across the
   // breakpoint flips the layout live.
-  private isMobile = false;
+  isMobile = false;
   // Mobile-only: id of the thread/draft currently displayed as the
   // popover. Null when nothing is open. Switches on highlight /
   // graphic-indicator tap and on draft creation; cleared on
   // tap-outside (driven by the card's native `toggle` event so the
   // platform's light-dismiss and ESC stay in sync with our state).
-  private activeCardId: string | null = null;
-  // Mobile-only: the single small top-right button — the only
-  // comments chrome at rest. Tapping it opens `menuEl`; it pulses while a
-  // selection is held (the "comment on what you selected" cue) and carries a
-  // thread-count badge.
-  private commentsBtn: HTMLButtonElement | null = null;
-  private commentsBtnCount: HTMLElement | null = null;
-  // The one menu popover the button opens — identity / sign-in / compose-entry
-  // / highlight-toggle. Threads and drafts use their own `.cmt-card` popovers
-  // (re-anchored under the button on mobile), so the menu only hosts the
-  // non-thread surfaces; visually they all drop down from the same place.
-  private menuEl: HTMLElement | null = null;
-  // The article-text selection captured at button-press time (pointerdown,
-  // before the tap collapses it), so "Leave comment on selection" targets what
-  // the reader had selected when they reached for the button. Null when the
-  // button was pressed with no live selection. Consumed by `composeFromMenu`.
-  private menuComposeCapture: SelectionCapture | null = null;
-  // Highlight-visibility state, mirrored on `body.cmt-highlights-hidden`.
-  // Toggled from a menu item on mobile (was the FAB's one-tap job).
-  private highlightsHidden = false;
-
+  activeCardId: string | null = null;
   // Desktop-only: id of the thread most recently focused via a
   // highlight or graphic-indicator click. A second consecutive click
   // on the same anchor toggles its card hidden. Reset on explicit
   // Hide/Resolve/Cancel, on clicks that brought a hidden card back
   // (so the user gets one tap to navigate before the next would
   // re-hide), and on focusing a different anchor.
-  private lastFocusedThreadId: string | null = null;
+  lastFocusedThreadId: string | null = null;
 
   // Header in the column showing "Signed in as ..." or the login pane
   // when not authenticated. Rendered once at init, re-rendered on
   // identity change (currently only at boot).
-  private identityHeader: HTMLElement | null = null;
+  identityHeader: HTMLElement | null = null;
   // The fixed top-of-gutter rail that hosts the permanent header surfaces
   // (identity card, version banner, version history, unresolved count). The
   // stack pass treats its occupied band as an obstacle so top-of-article
   // cards cascade below it instead of being occluded by it.
   private railEl: HTMLElement | null = null;
-  // Drafts — a freshly composed thread that the user hasn't submitted
-  // yet. Promoted to the store on first reply, removed on Cancel.
-  // Deliberately not in the CRDT: drafts shouldn't sync to a server
-  // (or to the user's other devices) until the user commits. They DO
-  // persist to localStorage so closing the tab doesn't lose work; see
-  // `draftsStorage` and `draftBodies` below for the per-textarea
-  // body-of-typing buffer that pairs with each draft thread.
-  private drafts: Thread[] = [];
-  // In-progress textarea contents for each draft, keyed by thread id.
-  // Updated on every keystroke (via the `input` event) and persisted
-  // alongside `drafts`. Carries through reloads so the user sees their
-  // half-typed comment when they come back.
-  private draftBodies = new Map<string, string>();
-  // In-progress reply text for SAVED threads, keyed by thread id. The
-  // saved-thread analogue of `draftBodies`: it lets a half-typed reply
-  // survive a `renderAll()` card rebuild (e.g. the user starts a reply,
-  // then opens a NEW comment — which selects article text, blurring the
-  // reply box, so the focus-based capture/restore in `renderAll` can't
-  // rescue it). Restored in `buildComposer`, written on every keystroke,
-  // cleared on submit. Session-only and deliberately NOT in
-  // `draftsStorage`: an unsent reply has no draft thread to belong to,
-  // and persisting it would need a storage-schema change for little gain.
-  private replyBodies = new Map<string, string>();
-  // Persistence handle for `drafts` + `draftBodies`. Null until identity
-  // is loaded — the storage key embeds the userId so we can't construct
-  // it before login, matching how `CommentStore` is scoped.
-  private draftsStorage: DraftsStorage | null = null;
   // Thread ids whose card the user has temporarily hidden via "Cancel".
   // Session-only (deliberately not persisted) — a reload brings every
   // card back, so you can't accidentally lose track of comments by
   // hiding them all and forgetting. Restored by clicking the anchor's
   // highlight (text) or graphic indicator (figures).
-  private hiddenCardIds = new Set<string>();
-
-  private blocksByContext = new Map<Context, BlockInfo[]>();
-  private blocksById = new Map<string, BlockInfo>();
-  private graphicsById = new Map<string, HTMLElement>();
+  hiddenCardIds = new Set<string>();
 
   // The right-margin column hosting all cards. One card per thread/draft.
-  private column: HTMLElement | null = null;
+  column: HTMLElement | null = null;
   // Invisible flow element appended to <body> that grows just enough to
   // give scroll room below the lowest comment card, so a card can always
   // be scrolled clear of the viewport-fixed player dock (see
   // `updateBottomSpacer`). 0 height when not needed.
   private bottomSpacer: HTMLElement | null = null;
-  private cardEls = new Map<string, HTMLElement>();
+  cardEls = new Map<string, HTMLElement>();
   // Block elements we stamped `anchor-name` on as the fallback
   // anchor for stale text threads (whose highlights are gone).
   // Tracked so the next render can clear them before re-stamping —
@@ -386,16 +197,6 @@ class CommentSystem {
   // a stale stamp would otherwise persist after the thread is
   // deleted or revived.
   private staleAnchorBlocks = new Set<HTMLElement>();
-
-  // Floating bar that appears above a text selection: a "Comment" pill and a
-  // sibling "Copy link" pill (the citation deep-link, generated lazily).
-  private actionBar: HTMLDivElement | null = null;
-  private copyLinkBtn: HTMLButtonElement | null = null;
-  private pendingRange: Range | null = null;
-  private pendingStartBlock: BlockInfo | null = null;
-  private pendingEndBlock: BlockInfo | null = null;
-  // Timer that resets the copy-link button's "Copied!" feedback.
-  private citationFeedbackTimer: number | null = null;
 
   // Set while a card is being scrolled-to / pulsed, used to suppress the
   // reposition pass from fighting the smooth-scroll.
@@ -411,8 +212,8 @@ class CommentSystem {
   // `pendingBackgroundRender` rather than tearing down the live textarea (and
   // dropping the pre-commit conversion text with it).
   private lastRenderSignature: string | null = null;
-  private composing = false;
-  private pendingBackgroundRender = false;
+  composing = false;
+  pendingBackgroundRender = false;
 
   async init() {
     this.articleRoot = document.querySelector<HTMLElement>(
@@ -434,10 +235,10 @@ class CommentSystem {
     this.identity = await loadIdentity();
 
     this.mountColumn();
-    this.mountActionBar();
-    this.mountCommentsButton();
-    this.mountMenu();
-    this.installGraphicTriggers();
+    this.selection.mountActionBar();
+    this.menu.mountCommentsButton();
+    this.menu.mountMenu();
+    this.figures.installGraphicTriggers();
     this.renderIdentityHeader();
 
     // Track mobile mode via a MediaQueryList. The `change` event
@@ -451,7 +252,7 @@ class CommentSystem {
       this.isMobile = e.matches;
       if (!this.isMobile) {
         this.setActiveCard(null);
-        this.hideMenu();
+        this.menu.hideMenu();
         document.body.classList.remove("cmt-has-selection");
       }
       // Cards built for the previous breakpoint either have or lack
@@ -482,16 +283,7 @@ class CommentSystem {
       const postPath = window.location.pathname;
       this.store = await CommentStore.create(postPath, this.identity.userId);
 
-      // Drafts persist to localStorage under a (post, user) key so a
-      // half-typed comment survives reloads. Loaded synchronously since
-      // localStorage reads are cheap; the in-memory Thread + body
-      // structures are restored before the first render so the cards
-      // appear immediately rather than popping in after.
-      this.draftsStorage = new DraftsStorage(postPath, this.identity.userId);
-      for (const entry of this.draftsStorage.load()) {
-        this.drafts.push(entry.thread);
-        if (entry.body) this.draftBodies.set(entry.thread.id, entry.body);
-      }
+      this.draftMgr.loadPersisted(postPath, this.identity.userId);
 
       // Wire up the network sync. `onChange` is set BEFORE `hydrate`
       // so a user write that lands during the initial GET also queues
@@ -518,7 +310,7 @@ class CommentSystem {
       // isAuthor` is what every author-only branch downstream gates
       // on. Failures degrade gracefully — `isAuthorMode()` defaults
       // to false, suppressing aggregator + author-resolve + history.
-      await this.initDocVersion(postPath);
+      await this.version.initDocVersion(postPath);
 
       // Author-only: refresh every other reader's blob in the background.
       // Fire-and-forget (not awaited) so the first render isn't gated on
@@ -561,7 +353,7 @@ class CommentSystem {
 
     this.installTestHooks();
 
-    document.addEventListener("selectionchange", () => this.onSelectionChange());
+    document.addEventListener("selectionchange", () => this.selection.onSelectionChange());
     document.addEventListener("click", (e) => this.onAnyClick(e));
     // Because boot is deferred (this module loads lazily on first engagement),
     // the reader may already have a selection when we start (the very gesture
@@ -569,7 +361,7 @@ class CommentSystem {
     // so the action bar appears for
     // a selection that predates our listener. Fully guarded — no-ops unless the
     // selection is genuine and the reader is signed in.
-    this.onSelectionChange();
+    this.selection.onSelectionChange();
     // No scroll listener — CSS Anchor Positioning re-evaluates
     // `anchor()` on every scroll frame in C++, so cards stay aligned
     // to their anchors without JS layout work.
@@ -581,8 +373,8 @@ class CommentSystem {
       // action-bar follows its pending range below.
       this.adjustCardStacking();
       this.updateBottomSpacer();
-      if (this.pendingRange && this.actionBar && !this.actionBar.hidden) {
-        this.showActionBarFor(this.pendingRange);
+      if (this.selection.pendingRange && this.selection.actionBar && !this.selection.actionBar.hidden) {
+        this.selection.showActionBarFor(this.selection.pendingRange);
       }
     });
 
@@ -611,89 +403,17 @@ class CommentSystem {
 
   private async indexArticle() {
     if (!this.articleRoot) return;
-    await this.indexRoot(this.articleRoot, "article");
+    await this.index.indexRoot(this.articleRoot, "article");
   }
 
   // Logged-in only: ask the narrator to build its (deferred) drawer body,
   // wait for it, then index + render so narration comments anchor. Background
   // task — the article comments don't wait on it.
   private async indexDrawerWhenReady(): Promise<void> {
-    const drawer = await this.requestDrawerBody();
+    const drawer = await requestDrawerBody();
     if (!drawer) return; // no drawer (opt-out / non-narrated post) — article-only
-    await this.indexDrawer(drawer);
+    await this.index.indexDrawer(drawer);
     this.renderAll();
-  }
-
-  // Drive the narrator↔comments handshake (narratorDom.ts): resolve the
-  // drawer once its body exists. If it's already built we return immediately;
-  // otherwise we set the sentinel (for a narrator that boots later) AND fire
-  // the request event (for one already booted), then await the ready signal.
-  private requestDrawerBody(): Promise<HTMLElement | null> {
-    const READY = ".narrate-drawer[data-body-ready]";
-    const ready = document.querySelector<HTMLElement>(READY);
-    if (ready) return Promise.resolve(ready);
-
-    document.documentElement.setAttribute(DRAWER_BODY_WANTED_ATTR, "1");
-    document.dispatchEvent(new CustomEvent(REQUEST_DRAWER_BODY_EVENT));
-
-    return new Promise((resolve) => {
-      let settled = false;
-      const finish = (el: HTMLElement | null) => {
-        if (settled) return;
-        settled = true;
-        document.removeEventListener(DRAWER_BODY_READY_EVENT, onReady);
-        clearTimeout(timer);
-        resolve(el);
-      };
-      const onReady = () => finish(document.querySelector<HTMLElement>(READY));
-      document.addEventListener(DRAWER_BODY_READY_EVENT, onReady);
-      // Bound the wait: a narrated post's narrator boots within its
-      // `requestIdleCallback` timeout (~4 s), so this only fully elapses on the
-      // no-drawer case (opt-out / non-narrated), where we fall back to
-      // article-only commenting.
-      const timer = setTimeout(() => finish(document.querySelector<HTMLElement>(READY)), 8000);
-    });
-  }
-
-  private async indexDrawer(drawer: HTMLElement) {
-    this.drawerRoot = drawer;
-    await this.indexRoot(drawer, "narration");
-  }
-
-  private async indexRoot(root: HTMLElement, context: Context) {
-    const blocks: BlockInfo[] = [];
-    let counter = 0;
-    for (const el of walkBlocks(root, BLOCK_TAGS)) {
-      // In the narration drawer the walker stops at the <li> wrapping each
-      // segment (LI is a block tag), but that <li> also holds the play
-      // button whose <time> clock ("0:11") would otherwise leak into the
-      // block's text, hash, offsets, and quote. Re-target to the inner
-      // spoken-text <p> so anchors cover only the spoken words. No-op
-      // outside the drawer — article blocks have no .spoken-text child.
-      const block = el.querySelector<HTMLElement>(".spoken-text") ?? el;
-      const stableId = block.id && block.id.length > 0
-        ? `id:${block.id}`
-        : `${context}:__b-${counter}`;
-      block.dataset.commentBlockId = stableId;
-      block.dataset.commentContext = context;
-      const text = block.textContent ?? "";
-      const hash = await sha256(normalizeText(text));
-      const info: BlockInfo = { id: stableId, element: block, context, hash, text };
-      blocks.push(info);
-      this.blocksById.set(stableId, info);
-      counter++;
-    }
-    let gCounter = 0;
-    for (const el of walkBlocks(root, GRAPHIC_ROOT_TAGS)) {
-      const stableId = el.id && el.id.length > 0
-        ? `id:${el.id}`
-        : `${context}:__g-${gCounter}`;
-      el.dataset.commentGraphicId = stableId;
-      el.dataset.commentContext = context;
-      this.graphicsById.set(stableId, el);
-      gCounter++;
-    }
-    this.blocksByContext.set(context, blocks);
   }
 
   // ===== Document version =====
@@ -704,252 +424,8 @@ class CommentSystem {
   // tag is stripped from served HTML and a DOM-based check would
   // return false). False until docVersion has been fetched; if the
   // fetch fails we stay non-author, which is the safe default.
-  private isAuthorMode(): boolean {
-    return this.docVersion?.isAuthor ?? false;
-  }
-
-  // One-shot at boot: fetch the post's current hash + (author-only)
-  // history, compare to the last hash this user saw, and mount the
-  // banner / history UI accordingly. Failures degrade gracefully —
-  // a missing endpoint or rejected response just means no banner.
-  private async initDocVersion(postPath: string) {
-    const version = await fetchPostVersion(postPath);
-    if (!version) return;
-    this.docVersion = version;
-
-    const lastSeen = getLastSeenVersion(postPath);
-    // Banner only when the user has been here before AND the hash
-    // changed. First-ever visits don't show the banner (there's
-    // nothing to compare against).
-    if (lastSeen && lastSeen !== version.currentHash) {
-      this.previousVersionHash = lastSeen;
-    }
-    // Bump last-seen immediately — the banner gets one render-cycle
-    // of visibility, the user notices, and on next reload it's gone.
-    // Persisting on dismiss-only would risk users missing the
-    // banner if they re-open the page in two tabs.
-    setLastSeenVersion(postPath, version.currentHash);
-
-    this.renderVersionUI();
-  }
-
-  // (Re-)mount the banner + history elements. Idempotent — wipes
-  // and replaces. Cards live in the same column but are CSS-anchor-
-  // positioned to their highlights, so the inserted-after-header
-  // pattern doesn't disturb their layout.
-  private renderVersionUI() {
-    if (!this.column) return;
-    this.versionBannerEl?.remove();
-    this.versionBannerEl = null;
-    this.versionHistoryEl?.remove();
-    this.versionHistoryEl = null;
-
-    let insertAfter: Element | null = this.identityHeader;
-
-    if (this.previousVersionHash && this.docVersion) {
-      const banner = document.createElement("div");
-      banner.className = "cmt-version-banner";
-      banner.setAttribute("role", "status");
-
-      const text = document.createElement("p");
-      text.className = "cmt-version-banner-text";
-      text.textContent =
-        "The post has been updated since your last visit. " +
-        "Some comments may no longer apply.";
-      banner.appendChild(text);
-
-      const dismiss = document.createElement("button");
-      dismiss.type = "button";
-      dismiss.className = "cmt-version-banner-dismiss";
-      dismiss.setAttribute("aria-label", "Dismiss");
-      dismiss.textContent = "×";
-      dismiss.addEventListener("click", (e) => {
-        e.stopPropagation();
-        banner.remove();
-        this.versionBannerEl = null;
-        this.updateBottomSpacer();
-        // The rail just shrank — re-cascade so top cards that were sitting
-        // below the banner reclaim the freed space.
-        this.adjustCardStacking();
-      });
-      banner.appendChild(dismiss);
-
-      insertAfter!.after(banner);
-      insertAfter = banner;
-      this.versionBannerEl = banner;
-    }
-
-    if (this.docVersion?.history && this.docVersion.history.length > 0) {
-      const details = document.createElement("details");
-      details.className = "cmt-version-history";
-      // Expanding / collapsing changes the rail's height, so re-cascade the
-      // cards against the new rail bottom.
-      details.addEventListener("toggle", () => this.adjustCardStacking());
-
-      const summary = document.createElement("summary");
-      summary.className = "cmt-version-history-summary";
-      const count = this.docVersion.history.length;
-      summary.textContent = `Document versions (${count})`;
-      details.appendChild(summary);
-
-      const list = document.createElement("ol");
-      list.className = "cmt-version-history-list";
-      for (const entry of this.docVersion.history) {
-        const li = document.createElement("li");
-        li.className = "cmt-version-history-item";
-        const time = document.createElement("time");
-        time.dateTime = entry.builtAt;
-        time.textContent = new Date(entry.builtAt).toLocaleString();
-        const hash = document.createElement("code");
-        hash.className = "cmt-version-history-hash";
-        hash.textContent = entry.hash.slice(0, 8);
-        hash.title = entry.hash;
-        const isCurrent = entry.hash === this.docVersion.currentHash;
-        if (isCurrent) li.classList.add("cmt-version-history-current");
-        li.appendChild(time);
-        li.appendChild(document.createTextNode(" "));
-        li.appendChild(hash);
-        if (isCurrent) {
-          const tag = document.createElement("span");
-          tag.className = "cmt-version-history-tag";
-          tag.textContent = "current";
-          li.appendChild(document.createTextNode(" "));
-          li.appendChild(tag);
-        }
-        list.appendChild(li);
-      }
-      details.appendChild(list);
-
-      insertAfter!.after(details);
-      this.versionHistoryEl = details;
-    }
-
-    this.updateBottomSpacer();
-    // The banner / history mount here (after the boot-time renderAll, since
-    // initDocVersion awaits a fetch), growing the rail — re-cascade so cards
-    // anchored near the top fall below the now-taller rail.
-    this.adjustCardStacking();
-  }
-
-  // Author-only at-a-glance counter of unresolved threads, mounted in
-  // the column header. The intent is "did I miss any comments?"
-  // surfacing — without it the author has to scroll the whole post to
-  // be sure. Hidden for non-authors and when there's nothing to report
-  // (no saved thread AND no unsent draft — a bare "0 unresolved" on a
-  // fresh post is just noise). When the post has threads we keep it
-  // mounted even at 0 so the author sees explicit confirmation that
-  // everything's been dealt with; it also calls out unsent drafts via a
-  // "(+N draft)" suffix (or "N unsent drafts" when nothing's posted yet)
-  // so a half-written-but-never-submitted comment can't masquerade as
-  // done. Clicks cycle through the unresolved threads and unsent drafts in
-  // document order.
-  private renderUnresolvedCount() {
-    if (!this.column) return;
-    const author = this.isAuthorMode();
-    const totalThreads = this.snapshot.length;
-    const drafts = this.drafts.length;
-    // Show the badge for the author whenever there's something to report: any
-    // saved thread, OR any unsent draft. The draft case surfaces a "you have
-    // unposted comments" nudge even before the first one is published — the
-    // exact trap where a half-written comment that was never submitted looks
-    // done but doesn't count. Nothing at all → no badge (a bare "0 unresolved"
-    // on a fresh post is just noise).
-    if (!author || (totalThreads === 0 && drafts === 0)) {
-      this.unresolvedCountEl?.remove();
-      this.unresolvedCountEl = null;
-      this.lastUnresolvedIds = [];
-      this.unresolvedCycleIndex = 0;
-      return;
-    }
-
-    const unresolved = this.snapshot.filter((t) => !this.threadIsResolved(t));
-    const count = unresolved.length;
-    const draftNote = drafts > 0
-      ? ` (+${drafts} draft${drafts === 1 ? "" : "s"})`
-      : "";
-
-    if (!this.unresolvedCountEl) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "cmt-unresolved-count";
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        this.jumpToNextUnresolved();
-      });
-      // Mount after the version history (when present), else after the
-      // version banner, else after the identity header. Mirrors the
-      // insertion order renderVersionUI uses so the column header reads
-      // top-to-bottom: identity → banner → version history → unresolved.
-      const insertAfter: Element =
-        this.versionHistoryEl ?? this.versionBannerEl ?? this.identityHeader!;
-      insertAfter.after(btn);
-      this.unresolvedCountEl = btn;
-    }
-
-    const el = this.unresolvedCountEl;
-    if (totalThreads === 0) {
-      // Only unsent drafts exist — nothing has been posted yet. The cycle
-      // still visits them, so the badge stays clickable.
-      el.dataset.state = "drafts";
-      el.textContent = `${drafts} unsent draft${drafts === 1 ? "" : "s"}`;
-      el.title = "Jump to the next unsent draft";
-      el.disabled = false;
-    } else if (count === 0) {
-      el.dataset.state = "clear";
-      el.textContent = "All comments resolved" + draftNote;
-      // Resolved threads aren't in the cycle, but unsent drafts are — so the
-      // badge stays clickable iff there's still a draft to jump to.
-      el.title = drafts > 0
-        ? "No unresolved threads; jump to the next unsent draft"
-        : "No unresolved threads on this post";
-      el.disabled = drafts === 0;
-    } else {
-      el.dataset.state = "pending";
-      el.textContent =
-        `${count} unresolved comment${count === 1 ? "" : "s"}` + draftNote;
-      el.title = "Jump to the next unresolved comment";
-      el.disabled = false;
-    }
-  }
-
-  // Step through unresolved threads AND unsent drafts in document order on
-  // each click. Drafts are full Thread objects (just not in the CRDT), so they
-  // carry their own highlight + card and slot into the same document-order
-  // walk — including them keeps the cycle honest with the badge, which already
-  // counts drafts in its "(+N draft)" suffix. The set is recomputed every call
-  // (poll/mutation may have shifted it) and the cycle index is reset whenever
-  // the membership changes so we never index off the end.
-  private jumpToNextUnresolved() {
-    const ordered = [
-      ...this.snapshot.filter((t) => !this.threadIsResolved(t)),
-      ...this.drafts,
-    ]
-      .map((t) => ({ thread: t, top: this.computeAnchorTop(t) ?? Infinity }))
-      .sort((a, b) => a.top - b.top)
-      .map((x) => x.thread);
-    if (ordered.length === 0) return;
-
-    const ids = ordered.map((t) => t.id);
-    const sameSet =
-      ids.length === this.lastUnresolvedIds.length &&
-      ids.every((id, i) => id === this.lastUnresolvedIds[i]);
-    if (!sameSet) {
-      this.lastUnresolvedIds = ids;
-      this.unresolvedCycleIndex = 0;
-    }
-
-    const target = ordered[this.unresolvedCycleIndex % ordered.length]!;
-    this.unresolvedCycleIndex =
-      (this.unresolvedCycleIndex + 1) % ordered.length;
-
-    // Surface the card if the author had previously hidden it, so
-    // clicking the badge always brings them to something visible.
-    if (this.hiddenCardIds.has(target.id)) {
-      this.hiddenCardIds.delete(target.id);
-      this.renderAll();
-    }
-    this.scrollAnchorIntoView(target);
-    this.scrollCardIntoView(target.id);
+  isAuthorMode(): boolean {
+    return this.version.docVersion?.isAuthor ?? false;
   }
 
   // ===== Mobile popover + hide-all FAB =====
@@ -964,7 +440,7 @@ class CommentSystem {
   // API's top-layer rendering; light-dismiss, ESC, and focus return
   // come from the platform. We only own `activeCardId` (for the
   // tap-same-highlight-to-close gesture) and the body class.
-  private setActiveCard(threadId: string | null): void {
+  setActiveCard(threadId: string | null): void {
     if (this.activeCardId) {
       this.cardEls.get(this.activeCardId)?.hidePopover(); // no-op if closed
     }
@@ -986,233 +462,16 @@ class CommentSystem {
     card.querySelector<HTMLTextAreaElement>(".cmt-reply-input")?.focus({ preventScroll: true });
   }
 
-  // ===== Mobile button + menu (methodology → Comments → Responsive) =====
-
-  // The one small top-right button. Mobile-only (CSS hides it ≥1100px, where
-  // the column is the affordance). Tapping it opens the menu; pressing it also
-  // captures the live selection (before the tap collapses it) so the menu can
-  // offer "Leave comment on selection".
-  private mountCommentsButton(): void {
-    // Read the persisted highlight-visibility pref (now toggled from a menu
-    // item) via the pure helper — handles unavailable / throwing storage.
-    this.highlightsHidden = loadHighlightsHidden(
-      typeof localStorage !== "undefined" ? localStorage : null,
-    );
-
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "cmt-comments-btn";
-    btn.setAttribute("aria-label", "Comments");
-    btn.setAttribute("aria-haspopup", "menu");
-    btn.setAttribute("aria-expanded", "false");
-    btn.innerHTML =
-      '<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">' +
-      '<path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H8l-4 4V6a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
-    const count = document.createElement("span");
-    count.className = "cmt-comments-btn-count";
-    count.hidden = true;
-    btn.appendChild(count);
-    // Capture the selection on pointerdown — the EARLIEST point at which the
-    // text the reader selected is still present (the tap that follows collapses
-    // it). Without this the menu would always open with nothing to comment on.
-    btn.addEventListener("pointerdown", () => {
-      this.menuComposeCapture = this.captureSelection();
-    });
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      // Keyboard fallback: pointerdown doesn't fire for Enter/Space activation,
-      // but tabbing to the button doesn't collapse the document selection, so
-      // capture it here if pointerdown didn't (and don't clobber a good touch
-      // capture, which the collapsing tap would have turned into null).
-      if (!this.menuComposeCapture) this.menuComposeCapture = this.captureSelection();
-      this.toggleMenu();
-    });
-    document.body.appendChild(btn);
-    this.commentsBtn = btn;
-    this.commentsBtnCount = count;
-    this.applyHighlightsHidden();
-  }
-
-  private mountMenu(): void {
-    const menu = document.createElement("div");
-    menu.className = "cmt-menu";
-    menu.setAttribute("role", "menu");
-    menu.setAttribute("aria-label", "Comments");
-    menu.popover = "auto";
-    // Anchor under the button (see the mobile `:popover-open` rule).
-    menu.style.setProperty("position-anchor", "--cmt-comments-btn");
-    // Keep the button's aria-expanded in sync with platform-driven dismissal
-    // (light-dismiss / ESC) as well as our own toggle.
-    menu.addEventListener("toggle", (e) => {
-      const open = (e as ToggleEvent).newState === "open";
-      this.commentsBtn?.setAttribute("aria-expanded", String(open));
-      if (!open) this.menuComposeCapture = null;
-    });
-    document.body.appendChild(menu);
-    this.menuEl = menu;
-  }
-
-  private toggleMenu(): void {
-    const menu = this.menuEl;
-    if (!menu) return;
-    if (menu.matches(":popover-open")) {
-      menu.hidePopover();
-      return;
-    }
-    this.renderMenu();
-    menu.showPopover();
-  }
-
-  private hideMenu(): void {
-    if (this.menuEl?.matches(":popover-open")) this.menuEl.hidePopover();
-  }
-
-  // Populate the menu for the current identity + captured selection. Modes:
-  //  - signed out → sign-in only (provider buttons + privacy notice). We do NOT
-  //    show a "Leave comment on selection" entry here: it could only route to
-  //    the sign-in that's already shown (we can't pre-pick the account), so it
-  //    would be a redundant second control. The pitch reflects the intent
-  //    instead ("Sign in to leave your comment…").
-  //  - signed in  → "Signed in as X" + sign out + highlight toggle, plus a
-  //    primary "Leave comment on selection" entry when a selection was captured.
-  private renderMenu(): void {
-    const m = this.menuEl;
-    if (!m) return;
-    m.innerHTML = "";
-
-    // Compose-entry first when the reader pressed the button mid-selection —
-    // signed-in only (see the mode note above).
-    if (this.identity && this.menuComposeCapture) {
-      const compose = document.createElement("button");
-      compose.type = "button";
-      compose.className = "cmt-menu-item cmt-menu-item-primary";
-      compose.setAttribute("role", "menuitem");
-      compose.innerHTML =
-        '<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">' +
-        '<path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H8l-4 4V6a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>' +
-        "<span>Leave comment on selection</span>";
-      compose.addEventListener("click", () => this.composeFromMenu());
-      m.appendChild(compose);
-      const snippet = document.createElement("span");
-      snippet.className = "cmt-menu-snippet";
-      snippet.textContent = `“${this.menuComposeCapture.range.toString().trim().slice(0, 80)}”`;
-      m.appendChild(snippet);
-      m.appendChild(document.createElement("hr"));
-    }
-
-    if (this.identity) {
-      const row = document.createElement("div");
-      row.className = "cmt-menu-identity";
-      row.appendChild(this.buildAvatar(this.identity.picture, this.identity.name ?? this.identity.email));
-      const name = document.createElement("span");
-      name.className = "cmt-menu-name";
-      name.textContent = this.identity.name ?? this.identity.email;
-      name.title = this.identity.email;
-      row.appendChild(name);
-      m.appendChild(row);
-
-      if (!this.menuComposeCapture) {
-        const hint = document.createElement("p");
-        hint.className = "cmt-menu-hint";
-        hint.textContent = "Select text in the article, then tap this button to comment on it.";
-        m.appendChild(hint);
-      }
-
-      m.appendChild(document.createElement("hr"));
-
-      // Highlight-visibility toggle (folded in from the old FAB).
-      const toggle = document.createElement("button");
-      toggle.type = "button";
-      toggle.className = "cmt-menu-item";
-      toggle.setAttribute("role", "menuitemcheckbox");
-      toggle.setAttribute("aria-checked", String(!this.highlightsHidden));
-      toggle.textContent = this.highlightsHidden
-        ? "Show comment highlights"
-        : "Hide comment highlights";
-      toggle.addEventListener("click", () => {
-        this.setHighlightsHidden(!this.highlightsHidden);
-        this.renderMenu();
-      });
-      m.appendChild(toggle);
-
-      const out = document.createElement("button");
-      out.type = "button";
-      out.className = "cmt-menu-item";
-      out.setAttribute("role", "menuitem");
-      out.textContent = "Sign out";
-      out.addEventListener("click", () => signOut());
-      m.appendChild(out);
-    } else {
-      const pitch = document.createElement("p");
-      pitch.className = "cmt-identity-pitch";
-      pitch.textContent = this.menuComposeCapture
-        ? "Sign in to leave your comment — so I can reply by email."
-        : "Sign in to comment — so I can reply by email.";
-      m.appendChild(pitch);
-      const buttons = document.createElement("div");
-      buttons.className = "cmt-identity-providers";
-      buttons.appendChild(this.buildProviderLink("google", "Sign in with Google"));
-      buttons.appendChild(this.buildProviderLink("microsoft", "Sign in with Microsoft"));
-      m.appendChild(buttons);
-      m.appendChild(this.buildPrivacyNotice());
-    }
-  }
-
-  // "Leave comment on selection" tapped. Promote the captured selection to the
-  // pending range and open a draft, exactly as the desktop action bar does. The
-  // entry is signed-in only (renderMenu), so `!identity` is just a guard.
-  private composeFromMenu(): void {
-    const cap = this.menuComposeCapture;
-    if (!cap || !this.identity) return;
-    this.pendingRange = cap.range;
-    this.pendingStartBlock = cap.startBlock;
-    this.pendingEndBlock = cap.endBlock;
-    this.menuComposeCapture = null;
-    this.hideMenu();
-    this.addDraftForSelection();
-  }
-
-  // Mobile: set the thread-count badge on the button. No-op visual on desktop
-  // (the button is hidden there).
-  private updateCommentsBtnCount(n: number): void {
-    const el = this.commentsBtnCount;
-    if (!el) return;
-    el.textContent = String(n);
-    el.hidden = n <= 0;
-  }
-
   // Point a card at the right anchor for the current layout: desktop anchors to
   // its own highlight/graphic (`top: anchor(top)`); mobile anchors under the
   // button so it drops down as part of the one menu surface.
-  private applyCardAnchor(card: HTMLElement): void {
+  applyCardAnchor(card: HTMLElement): void {
     if (this.isMobile) {
       card.style.setProperty("position-anchor", "--cmt-comments-btn");
     } else {
       const own = card.dataset.anchorName;
       if (own) card.style.setProperty("position-anchor", own);
     }
-  }
-
-  private setHighlightsHidden(hidden: boolean): void {
-    this.highlightsHidden = hidden;
-    if (typeof localStorage !== "undefined") {
-      // Persist via the pure helper. The fire-and-forget API matches the
-      // capture-controls pattern in narrator.ts: in-memory state is
-      // authoritative for the live session; storage is the next-page-load
-      // contract.
-      saveHighlightsHidden(localStorage, hidden);
-    }
-    this.applyHighlightsHidden();
-    // Dismiss any popover when hiding — otherwise the overlay
-    // remains on top of the dimmed article, which looks broken.
-    if (hidden && this.activeCardId) this.setActiveCard(null);
-  }
-
-  private applyHighlightsHidden(): void {
-    document.body.classList.toggle(
-      "cmt-highlights-hidden",
-      this.highlightsHidden,
-    );
   }
 
   // ===== Column =====
@@ -1286,7 +545,7 @@ class CommentSystem {
     h.appendChild(dismiss);
 
     if (this.identity) {
-      const avatar = this.buildAvatar(this.identity.picture, this.identity.name ?? this.identity.email);
+      const avatar = buildAvatar(this.identity.picture, this.identity.name ?? this.identity.email);
       const name = document.createElement("span");
       name.className = "cmt-identity-name";
       name.textContent = this.identity.name ?? this.identity.email;
@@ -1309,71 +568,19 @@ class CommentSystem {
       label.textContent = "Sign in to comment — so I can reply by email.";
       const buttons = document.createElement("div");
       buttons.className = "cmt-identity-providers";
-      buttons.appendChild(this.buildProviderLink("google", "Sign in with Google"));
-      buttons.appendChild(this.buildProviderLink("microsoft", "Sign in with Microsoft"));
+      buttons.appendChild(buildProviderLink("google", "Sign in with Google"));
+      buttons.appendChild(buildProviderLink("microsoft", "Sign in with Microsoft"));
       h.appendChild(label);
       h.appendChild(buttons);
-      h.appendChild(this.buildPrivacyNotice());
+      h.appendChild(buildPrivacyNotice());
     }
-  }
-
-  private buildProviderLink(provider: "google" | "microsoft", label: string): HTMLAnchorElement {
-    const a = document.createElement("a");
-    a.className = `cmt-identity-provider cmt-identity-provider-${provider}`;
-    a.href = loginUrl(provider);
-    a.textContent = label;
-    return a;
-  }
-
-  // Just-in-time privacy notice rendered directly under the login
-  // buttons. GDPR Art. 13 wants the legal basis (consent) and a
-  // pointer to the full notice at the point of collection — exactly
-  // here, where the user is about to OAuth in and have their name +
-  // email + provider id recorded. The full Privacy Policy lives at
-  // /privacy; we link to it rather than reproduce it inline. We
-  // intentionally use textContent for the body so the link is the
-  // only HTML node (no innerHTML splicing of attacker-influenced
-  // strings — same posture as every other interpolation point in
-  // this file).
-  private buildPrivacyNotice(): HTMLElement {
-    const wrap = document.createElement("p");
-    wrap.className = "cmt-identity-privacy";
-    wrap.appendChild(document.createTextNode(
-      "Signing in records your name, email, and a provider account ID alongside your comments. See the ",
-    ));
-    const a = document.createElement("a");
-    a.href = "/privacy";
-    a.textContent = "Privacy Policy";
-    wrap.appendChild(a);
-    wrap.appendChild(document.createTextNode("."));
-    return wrap;
-  }
-
-  // Small round avatar. Falls back to a colored initial if no picture
-  // URL (Microsoft accounts often don't return one); also falls back if
-  // the image errors at load.
-  private buildAvatar(picture: string | null, name: string): HTMLElement {
-    const wrap = document.createElement("span");
-    wrap.className = "cmt-avatar";
-    wrap.setAttribute("aria-hidden", "true");
-    const initial = (name.trim()[0] ?? "?").toUpperCase();
-    wrap.dataset.initial = initial;
-    if (picture) {
-      const img = document.createElement("img");
-      img.src = picture;
-      img.alt = "";
-      img.referrerPolicy = "no-referrer";
-      img.addEventListener("error", () => img.remove());
-      wrap.appendChild(img);
-    }
-    return wrap;
   }
 
   // Combined resolved check: either the thread carries its own
   // resolvedAt (self-resolve via CommentStore) OR the per-post
   // resolutions store has an entry (author-resolve). Author wins
   // any tie at the display layer; both states equivalently hide.
-  private threadIsResolved(thread: Thread): boolean {
+  threadIsResolved(thread: Thread): boolean {
     if (isResolved(thread)) return true;
     if (this.resolutions?.isResolved(thread.id)) return true;
     return false;
@@ -1382,7 +589,7 @@ class CommentSystem {
   // Master render: redraws cards, highlights, and indicators from scratch.
   // Cheap enough at our scale (a handful of threads per post) that we
   // don't bother diffing.
-  private renderAll() {
+  renderAll() {
     if (!this.column) return;
 
     // Capture the composer the user is actively typing in, if any. This
@@ -1405,9 +612,9 @@ class CommentSystem {
     // fresh draft is never resolved and never stale (its hashes were just
     // captured), so it passes both guards.
     document.querySelectorAll<HTMLElement>(".cmt-highlight").forEach((s) =>
-      this.unwrap(s),
+      unwrap(s),
     );
-    for (const thread of [...this.snapshot, ...this.drafts]) {
+    for (const thread of [...this.snapshot, ...this.draftMgr.drafts]) {
       if (this.threadIsResolved(thread)) continue;
       if (isTextTarget(thread.target) && !this.threadIsStale(thread)) {
         this.highlightTextThread(thread);
@@ -1456,7 +663,7 @@ class CommentSystem {
       if (!this.threadIsStale(thread)) continue;
       if (anchoredThreads.has(thread.id)) continue;
       const firstSeg = textTargetParts(thread.target).blocks[0];
-      const block = firstSeg ? this.blocksById.get(firstSeg.id) : undefined;
+      const block = firstSeg ? this.index.blocksById.get(firstSeg.id) : undefined;
       if (!block) continue;
       const name = anchorNameForText(thread.id);
       const existing = block.element.style.getPropertyValue("anchor-name");
@@ -1480,13 +687,13 @@ class CommentSystem {
     // — also a child of the column — survives each render pass.
     for (const card of this.cardEls.values()) card.remove();
     this.cardEls.clear();
-    const all: Thread[] = [...this.snapshot, ...this.drafts];
+    const all: Thread[] = [...this.snapshot, ...this.draftMgr.drafts];
     for (const thread of all) {
       if (this.threadIsResolved(thread)) continue;
       const isStale = isTextTarget(thread.target)
         && this.threadIsStale(thread);
       if (this.hiddenCardIds.has(thread.id) && !isStale) continue;
-      const card = this.buildCard(thread);
+      const card = this.cards.buildCard(thread);
       this.column.appendChild(card);
       this.cardEls.set(thread.id, card);
     }
@@ -1518,9 +725,9 @@ class CommentSystem {
       this.lastFocusedThreadId = null;
     }
 
-    this.updateGraphicIndicators();
-    this.renderUnresolvedCount();
-    this.updateCommentsBtnCount(
+    this.figures.updateGraphicIndicators();
+    this.unresolvedNav.renderUnresolvedCount();
+    this.menu.updateCommentsBtnCount(
       this.snapshot.filter((t) => !this.threadIsResolved(t)).length,
     );
     this.adjustCardStacking();
@@ -1583,465 +790,6 @@ class CommentSystem {
     }
   }
 
-  // Build a single card. Cards reflect both saved threads and unsubmitted
-  // drafts; we distinguish them via `data-draft="true"` so CSS can frame
-  // drafts distinctly and so the composer's Cancel button can do the
-  // right thing (discard the draft entirely vs. just clear the reply box).
-  private buildCard(thread: Thread): HTMLElement {
-    const isDraft = this.drafts.includes(thread);
-    const isText = isTextTarget(thread.target);
-    const isStale = !isDraft && isText && this.threadIsStale(thread);
-
-    const isNarration = contextOf(thread.target) === "narration";
-
-    const card = document.createElement("article");
-    card.className = "cmt-card";
-    card.dataset.threadId = thread.id;
-    card.dataset.kind = isText ? "text" : "graphic";
-    // Lets CSS tint narration comments distinctly from article ones.
-    card.dataset.context = isNarration ? "narration" : "article";
-    if (isDraft) card.dataset.draft = "true";
-    if (isStale) card.dataset.stale = "true";
-    // Bind the card to its CSS anchor. Text threads anchor to their
-    // first highlight span (stamped in `renderAll` after wrapping);
-    // narration threads anchor to the article element their segment
-    // maps to (stamped here, since `narrationArticleAnchor` is the
-    // resolver); graphic threads anchor to the graphic root
-    // (stamped in `installGraphicTriggers`). The desktop CSS uses
-    // this anchor for `top: anchor(top)`. We stash it on the card and
-    // apply it via `applyCardAnchor`, which on MOBILE re-points the card
-    // under the comments button instead (the one-menu dropdown).
-    if (isTextTarget(thread.target)) {
-      const anchorName = anchorNameForText(thread.id);
-      card.dataset.anchorName = anchorName;
-      if (isNarration) {
-        const articleAnchor = this.narrationArticleAnchor(thread);
-        articleAnchor?.style.setProperty("anchor-name", anchorName);
-      }
-    } else {
-      card.dataset.anchorName = anchorNameForGraphic(graphicTargetId(thread.target));
-    }
-    this.applyCardAnchor(card);
-    // Mobile: render as a native popover so the platform handles
-    // top-layer placement, light-dismiss, ESC, and focus return.
-    // Desktop leaves the attribute off so the card sits inline in
-    // the column. The MQL handler flips this on viewport-cross.
-    if (this.isMobile) card.popover = "auto";
-    // The platform fires `toggle` whenever the popover state flips
-    // (programmatic show/hide, light-dismiss, ESC). Sync our
-    // `activeCardId` to the "closed" half so a platform-driven
-    // close doesn't strand us thinking the popover is still open.
-    // The `activeCardId === thread.id` guard makes a switch
-    // (close A → open B) a no-op for A's toggle, since by the time
-    // A's queued event fires we've already moved activeCardId to B.
-    card.addEventListener("toggle", (e) => {
-      const ev = e as ToggleEvent;
-      if (ev.newState === "closed" && this.activeCardId === thread.id) {
-        this.activeCardId = null;
-      }
-    });
-
-    // --- Anchor preview ---
-    const preview = document.createElement("div");
-    preview.className = "cmt-anchor-preview";
-    if (isTextTarget(thread.target)) {
-      const quote = document.createElement("span");
-      quote.className = "cmt-quote-text";
-      quote.textContent = textTargetParts(thread.target).quote;
-      preview.appendChild(quote);
-      if (isStale) {
-        const tag = document.createElement("span");
-        tag.className = "cmt-stale-tag";
-        tag.textContent = "outdated";
-        preview.appendChild(tag);
-      }
-      // Narration comments get an explicit speaker button to jump the
-      // player to (and play) the segment they sit on — a deliberate
-      // press, so reading the comment never starts audio by accident.
-      // The button doubles as the visual marker that this is a comment
-      // on the spoken track rather than the article.
-      if (isNarration) {
-        const speaker = document.createElement("button");
-        speaker.type = "button";
-        speaker.className = "cmt-play-narration";
-        speaker.title = "Play this part of the narration";
-        speaker.setAttribute("aria-label", "Play this part of the narration");
-        speaker.innerHTML =
-          '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
-          '<path d="M4 9v6h4l5 5V4L8 9H4z" fill="currentColor"/>' +
-          '<path d="M16 8.5a4 4 0 0 1 0 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' +
-          "</svg>";
-        speaker.addEventListener("click", (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          this.playThreadAudio(thread);
-        });
-        preview.appendChild(speaker);
-      }
-    } else {
-      const span = document.createElement("span");
-      span.className = "cmt-quote-text";
-      span.textContent = "Comment on graphic";
-      preview.appendChild(span);
-    }
-    card.appendChild(preview);
-
-    // --- Existing replies (excluding tombstoned deletes) ---
-    const liveReplies = visibleReplies(thread);
-    if (liveReplies.length > 0) {
-      const list = document.createElement("ol");
-      list.className = "cmt-reply-list";
-      for (const reply of liveReplies) {
-        list.appendChild(this.buildReplyLi(reply, thread));
-      }
-      card.appendChild(list);
-    }
-
-    // --- Composer ---
-    card.appendChild(this.buildComposer(thread, isDraft, isStale));
-
-    // Clicking anywhere on a card sets it as "active" so we can highlight
-    // its anchor in the article. Doesn't capture clicks on buttons / the
-    // textarea (those have their own handlers).
-    card.addEventListener("click", (e) => {
-      // Ignore clicks on interactive children — they bubble here but we
-      // don't want to steal focus from textarea/buttons.
-      const t = e.target as HTMLElement | null;
-      if (t && t.closest("button, textarea")) return;
-      this.scrollAnchorIntoView(thread);
-    });
-
-    return card;
-  }
-
-  private buildReplyLi(reply: Reply, thread: Thread): HTMLLIElement {
-    const li = document.createElement("li");
-    li.className = "cmt-reply";
-
-    const meta = document.createElement("div");
-    meta.className = "cmt-reply-meta";
-    const authorWrap = document.createElement("span");
-    authorWrap.className = "cmt-reply-author-wrap";
-    // Email is stored in the CRDT but deliberately not rendered to other
-    // readers — only the blog author (future feature) needs it. Avatar +
-    // name is the public face of each reply.
-    const displayName = reply.authorName || reply.authorEmail || "Unknown";
-    authorWrap.appendChild(this.buildAvatar(reply.authorPicture ?? null, displayName));
-    const author = document.createElement("span");
-    author.className = "cmt-reply-author";
-    author.textContent = displayName;
-    authorWrap.appendChild(author);
-    const time = document.createElement("time");
-    time.className = "cmt-reply-time";
-    time.dateTime = new Date(reply.createdAt).toISOString();
-    time.textContent = formatRelative(reply.createdAt);
-    // The delete × lives inside the meta row (last item), so the row's
-    // flex alignment keeps it on the same baseline as the author/time —
-    // no magic top offset to track the font's line metrics.
-    const del = document.createElement("button");
-    del.type = "button";
-    del.className = "cmt-reply-delete";
-    del.setAttribute("aria-label", "Delete this comment");
-    del.innerHTML =
-      '<svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true">' +
-      '<path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
-    del.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.deleteReply(thread, reply.id);
-    });
-    meta.appendChild(authorWrap);
-    meta.appendChild(time);
-    // Origin provenance tag (debugging aid, author-only like the thread-id
-    // chip). Per REPLY, not per thread — origin is a per-blob fact and one
-    // thread can mix origins (a prod-born thread carrying the author's
-    // localhost scaffolding replies). Gated on `hasSeededOrigins`: tags
-    // render only where origins MIX, and then EVERY derived reply gets one
-    // ("prod" or "local") so a missing label is never ambiguous shorthand
-    // for local — it means derivation didn't cover the reply. One rule, no
-    // environment branch: a single-origin store (prod) never opens the
-    // gate, because its blobs carry no metadata.
-    if (this.isAuthorMode() && this.store?.hasSeededOrigins()) {
-      const origin = this.store.replyOrigin(reply.id);
-      if (origin) {
-        const originTag = document.createElement("span");
-        originTag.className = `cmt-origin-tag cmt-origin-tag--${origin === "production" ? "prod" : "local"}`;
-        // Short display label; the title carries the full story.
-        originTag.textContent = origin === "production" ? "prod" : "local";
-        originTag.title =
-          origin === "production"
-            ? "This reply was born in the production comment store (seeded here for local authoring)"
-            : "This reply was born in this dev server's local store";
-        meta.appendChild(originTag);
-      }
-    }
-    meta.appendChild(del);
-    li.appendChild(meta);
-
-    const text = document.createElement("p");
-    text.className = "cmt-reply-text";
-    text.textContent = reply.body;
-    li.appendChild(text);
-
-    return li;
-  }
-
-  private buildComposer(thread: Thread, isDraft: boolean, isStale: boolean): HTMLElement {
-    const composer = document.createElement("div");
-    composer.className = "cmt-composer";
-
-    const ta = document.createElement("textarea");
-    ta.className = "cmt-reply-input";
-    ta.rows = isDraft ? 3 : 2;
-    ta.placeholder = isDraft ? "Comment…" : "Reply…";
-    // Restore any persisted in-progress body for this draft so a reload
-    // (or a re-render from a poll tick) doesn't blank what the user was
-    // typing. Saved threads always start with an empty reply field —
-    // bodies are only persisted for unsubmitted drafts.
-    if (isDraft) {
-      const saved = this.draftBodies.get(thread.id);
-      if (saved) ta.value = saved;
-      // Persist every keystroke. The localStorage write is cheap and
-      // synchronous; debouncing would only matter at thousand-keystroke
-      // scales which we won't hit on a comment composer.
-      ta.addEventListener("input", () => {
-        this.draftBodies.set(thread.id, ta.value);
-        this.persistDrafts();
-      });
-    } else {
-      // Replies to saved threads get the same render-surviving buffer, but
-      // in-memory only (see `replyBodies`). Without it, opening a new
-      // comment mid-reply rebuilds this card with an empty box and the
-      // typed reply is lost — the focus-based capture/restore can't help
-      // because making the selection already blurred this textarea.
-      const saved = this.replyBodies.get(thread.id);
-      if (saved) ta.value = saved;
-      ta.addEventListener("input", () => {
-        if (ta.value) this.replyBodies.set(thread.id, ta.value);
-        else this.replyBodies.delete(thread.id);
-      });
-    }
-    // Stop card-click bubbling from inside the textarea (would re-trigger
-    // anchor scrolling on every click while typing).
-    ta.addEventListener("click", (e) => e.stopPropagation());
-    // Track IME composition so a background render doesn't tear this textarea
-    // down mid-conversion (the uncommitted pre-edit text isn't in `.value`
-    // and would be lost). A render requested while composing is deferred and
-    // flushed here on `compositionend`. Matters most for CJK input.
-    ta.addEventListener("compositionstart", () => {
-      this.composing = true;
-    });
-    ta.addEventListener("compositionend", () => {
-      this.composing = false;
-      if (this.pendingBackgroundRender) {
-        this.pendingBackgroundRender = false;
-        this.backgroundRender();
-      }
-    });
-    composer.appendChild(ta);
-
-    const row = document.createElement("div");
-    row.className = "cmt-reply-row";
-
-    // Left edge of the action row. For a DRAFT it holds a "Draft" status tag
-    // — the unposted state has to be unmistakable (a draft never enters the
-    // CRDT, so a comment typed but never submitted silently doesn't count),
-    // and a draft has no thread id yet, so this slot is otherwise empty. For a
-    // SAVED thread (author only) it instead surfaces the thread id so the
-    // author can correlate the card with the `id=<threadId>` lines
-    // /process-comments prints (and `resolve-threads` accepts); readers never
-    // see it. Both pin left via `margin-right:auto` so the action buttons stay
-    // grouped on the right.
-    if (isDraft) {
-      const tag = document.createElement("span");
-      tag.className = "cmt-draft-tag";
-      tag.textContent = "Draft";
-      tag.title = "Not posted yet — press “Comment” to publish it";
-      row.appendChild(tag);
-    } else if (this.isAuthorMode()) {
-      const id = document.createElement("button");
-      id.type = "button";
-      id.className = "cmt-thread-id";
-      id.textContent = thread.id;
-      id.title = "Thread ID (click to copy) — matches the id= lines in /process-comments";
-      id.addEventListener("click", (e) => {
-        e.stopPropagation();
-        void navigator.clipboard
-          ?.writeText(thread.id)
-          .then(() => {
-            const prev = id.textContent;
-            id.textContent = "copied";
-            window.setTimeout(() => {
-              id.textContent = prev;
-            }, 1000);
-          })
-          .catch(() => {});
-      });
-      row.appendChild(id);
-    }
-
-    // Drafts can't be recovered (no anchor highlight to click), so Cancel
-    // discards. Non-stale saved threads keep their highlight, so Cancel
-    // just hides the card. STALE saved threads have no recovery
-    // affordance (the highlight is no longer drawn) — we omit the button
-    // entirely rather than offer a Hide that traps the comment.
-    if (isDraft || !isStale) {
-      const cancel = document.createElement("button");
-      cancel.type = "button";
-      cancel.className = "cmt-reply-cancel";
-      cancel.textContent = isDraft ? "Cancel" : "Hide";
-      cancel.title = isDraft
-        ? "Discard this draft"
-        : "Hide this card (click the highlight to bring it back)";
-      cancel.addEventListener("click", (e) => {
-        e.stopPropagation();
-        if (isDraft) {
-          this.discardDraft(thread.id);
-        } else {
-          this.hiddenCardIds.add(thread.id);
-          this.renderAll();
-        }
-      });
-      row.appendChild(cancel);
-    }
-
-    // Resolve — decisive, permanent dismiss. Available on every saved
-    // thread (including stale, where it's often *the* right action).
-    // Routing splits into two paths:
-    //   - Own thread (we're the original commenter): write the
-    //     resolution into our CommentDoc (`store.resolveThread`).
-    //   - Foreign thread (we're the post author resolving a reader's
-    //     comment): write a per-post resolution entry — only the
-    //     author can do this, and only the post author's session is
-    //     authorized server-side. Visible to both the author and the
-    //     original commenter on next poll.
-    // Hidden entirely for non-author readers on foreign threads
-    // because they can't see foreign threads in the first place; the
-    // condition still guards against unauthorized clicks just in
-    // case.
-    const ownThread = !isDraft && this.store?.ownsThread(thread.id);
-    const canAuthorResolve =
-      !isDraft && !ownThread && !!this.identity && this.isAuthorMode();
-    if (!isDraft && (ownThread || canAuthorResolve)) {
-      const resolve = document.createElement("button");
-      resolve.type = "button";
-      resolve.className = "cmt-reply-resolve";
-      resolve.textContent = "Resolve";
-      resolve.title = ownThread
-        ? "Resolve this thread — hides it permanently and queues a delete to sync to the server"
-        : "Resolve this commenter's thread — marks it resolved for them too";
-      resolve.addEventListener("click", (e) => {
-        e.stopPropagation();
-        if (!this.store) return;
-        // Also drop any session-only "hide" mark so the thread isn't
-        // stuck in the hidden set forever after being resolved.
-        this.hiddenCardIds.delete(thread.id);
-        if (ownThread) {
-          this.store.resolveThread(thread.id, Date.now());
-          this.refreshSnapshotAndRender();
-        } else if (this.resolutions && this.identity) {
-          const envelope: ResolutionEnvelope = {
-            threadId: thread.id,
-            resolvedAt: Date.now(),
-            resolverId: this.identity.userId,
-            resolverName: this.identity.name ?? this.identity.email,
-          };
-          // Fire-and-forget; the store's onChange hook re-renders
-          // when the local cache updates (after the PUT lands).
-          // Errors are logged inside the store.
-          this.resolutions
-            .resolve(envelope)
-            .catch((err) => console.warn("author resolve failed:", err));
-        }
-      });
-      row.appendChild(resolve);
-    }
-
-    const submit = document.createElement("button");
-    submit.type = "button";
-    submit.className = "cmt-reply-submit";
-    submit.textContent = isDraft ? "Comment" : "Reply";
-    const doSubmit = () => {
-      if (!this.store || !this.identity) return;
-      const body = ta.value.trim();
-      if (!body) return;
-      const reply: Reply = {
-        id: uid(),
-        body,
-        createdAt: Date.now(),
-        authorId: this.identity.userId,
-        authorName: this.identity.name ?? this.identity.email,
-        authorEmail: this.identity.email,
-        ...(this.identity.picture && { authorPicture: this.identity.picture }),
-      };
-      if (isDraft) {
-        // Promote draft → persisted thread. Single Automerge change
-        // would be tidier here, but the public store API has separate
-        // ops; we accept two ops for the v1 case since it's a fresh
-        // thread no one else has touched yet.
-        this.store.addThread(thread.id, thread.target, thread.createdAt);
-        this.store.addReply(thread.id, reply);
-        this.drafts = this.drafts.filter((t) => t.id !== thread.id);
-        this.draftBodies.delete(thread.id);
-        this.persistDrafts();
-      } else {
-        this.store.addReply(thread.id, reply);
-        // Drop the in-progress buffer so the post-submit re-render doesn't
-        // refill the reply box with the text we just sent.
-        this.replyBodies.delete(thread.id);
-      }
-      ta.value = "";
-      this.refreshSnapshotAndRender();
-    };
-    submit.addEventListener("click", (e) => {
-      e.stopPropagation();
-      doSubmit();
-    });
-    ta.addEventListener("keydown", (e) => {
-      // While an IME composition is active, Enter/Esc belong to the
-      // converter (commit a candidate / cancel the conversion), not to us —
-      // acting on them would submit or discard mid-conversion. `isComposing`
-      // is the platform's own signal for this. Critical for CJK input.
-      if (e.isComposing) return;
-      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-        e.preventDefault();
-        doSubmit();
-        return;
-      }
-      // Esc on an untouched new comment discards it — the light-dismiss
-      // users expect from the mobile popover, extended to the desktop
-      // column card (which isn't a popover, so Esc would otherwise do
-      // nothing). Gated on an empty box so we never throw away typed
-      // work — once there's text, Esc is inert and the draft stays.
-      // Draft-only: a reply's dismiss is "Hide" (recoverable), not a
-      // discard, so Esc there shouldn't destroy the card. `preventDefault`
-      // keeps the native popover from also light-dismissing underneath us.
-      if (e.key === "Escape" && isDraft && !ta.value.trim()) {
-        e.preventDefault();
-        this.discardDraft(thread.id);
-      }
-    });
-
-    row.appendChild(submit);
-    composer.appendChild(row);
-    return composer;
-  }
-
-  private deleteReply(thread: Thread, replyId: string) {
-    if (!this.store) return;
-    const reply = thread.replies.find((r) => r.id === replyId);
-    if (!reply || isDeleted(reply)) return;
-    // Tombstoning + the auto-resolve-on-last-delete bundling is all
-    // handled atomically inside CommentStore.deleteReply so future
-    // server sync sees one coherent CRDT change per user action.
-    this.store.deleteReply(thread.id, replyId, Date.now());
-    // The store auto-resolves the thread if this was the last visible
-    // reply; clear the session-only "hide" mark in the same step so a
-    // previously-hidden, now-resolved thread doesn't leave a dangling
-    // entry in the set.
-    this.hiddenCardIds.delete(thread.id);
-    this.refreshSnapshotAndRender();
-  }
-
   // One polling tick: pull any changes the server has accumulated
   // since last time and re-render if anything moved. The polling
   // controller calls this; the per-store hydrate + aggregate calls
@@ -2087,7 +835,7 @@ class CommentSystem {
   //      comparison" the poll comment promises.
   // Either guard leaving work undone is safe: the next genuine change (or the
   // deferred run on `compositionend`) renders it.
-  private backgroundRender(): void {
+  backgroundRender(): void {
     if (!this.store) return;
     if (this.composing) {
       this.pendingBackgroundRender = true;
@@ -2110,10 +858,10 @@ class CommentSystem {
   private computeRenderSignature(): string {
     const parts: string[] = [
       this.isAuthorMode() ? "a1" : "a0",
-      this.previousVersionHash ? "v1" : "v0",
+      this.version.previousVersionHash ? "v1" : "v0",
     ];
-    for (const thread of [...this.snapshot, ...this.drafts]) {
-      const isDraft = this.drafts.includes(thread);
+    for (const thread of [...this.snapshot, ...this.draftMgr.drafts]) {
+      const isDraft = this.draftMgr.drafts.includes(thread);
       const flags =
         (isDraft ? "d" : "") +
         (this.threadIsResolved(thread) ? "r" : "") +
@@ -2145,13 +893,13 @@ class CommentSystem {
 
   // Re-pull the JSON snapshot from the store and re-render. Called after
   // every mutation so the UI always reflects current doc state.
-  private refreshSnapshotAndRender() {
+  refreshSnapshotAndRender() {
     if (!this.store) return;
     this.snapshot = this.store.snapshot();
     this.renderAll();
   }
 
-  // Player dock height (px) published by narrator.ts as the
+  // Player dock height (px) published by narrator/dockControls.ts as the
   // `--narrate-dock-height` custom property, or 0 if absent.
   private dockHeightPx(): number {
     const raw = getComputedStyle(document.documentElement)
@@ -2170,7 +918,7 @@ class CommentSystem {
   // mobile popover rule. Scroll-tracking, cross-element flipping,
   // anchor resolution all happen in the layout engine. This pass only
   // reads the resulting geometry to size the spacer.
-  private updateBottomSpacer() {
+  updateBottomSpacer() {
     if (!this.column || !this.bottomSpacer) return;
     // Mobile is popover-based; cards render in the top layer when
     // open and don't extend the document flow. No spacer needed.
@@ -2213,7 +961,7 @@ class CommentSystem {
   // scrollY=0 (the resting reference) — we deliberately do NOT add `scrollY` to
   // it. That keeps the seed scroll-invariant, just like the cards' own
   // positions, so the pass stays a per-render / per-resize job.
-  private adjustCardStacking(): void {
+  adjustCardStacking(): void {
     const cards = [...this.cardEls.values()];
     // Mobile cards are top-layer popovers (one at a time) — never stacked in
     // flow, and the rail is hidden there. Clear any offset a prior desktop
@@ -2285,17 +1033,17 @@ class CommentSystem {
   // happens) — those cards fall back to bottom-stacking. If a segment ever
   // maps to several article elements (not possible today: one mark, one
   // id), this returns the first one in document order.
-  private narrationArticleAnchor(thread: Thread): HTMLElement | null {
+  narrationArticleAnchor(thread: Thread): HTMLElement | null {
     if (!this.articleRoot || !isTextTarget(thread.target)) return null;
     const firstBlockId = textTargetParts(thread.target).blocks[0]?.id;
-    const block = firstBlockId ? this.blocksById.get(firstBlockId) : undefined;
+    const block = firstBlockId ? this.index.blocksById.get(firstBlockId) : undefined;
     const markName = block?.element
       .closest<HTMLElement>(".spoken-segment")?.dataset.mark;
     if (!markName) return null;
     return this.articleRoot.querySelector<HTMLElement>(`#${CSS.escape(markName)}`);
   }
 
-  private computeAnchorTop(thread: Thread): number | null {
+  computeAnchorTop(thread: Thread): number | null {
     if (isTextTarget(thread.target)) {
       // Narration comments align to the article position their segment
       // refers to (see narrationArticleAnchor). No paired article element
@@ -2312,11 +1060,11 @@ class CommentSystem {
       );
       if (hl) return hl.getBoundingClientRect().top + window.scrollY;
       const firstSeg = textTargetParts(thread.target).blocks[0];
-      const block = firstSeg ? this.blocksById.get(firstSeg.id) : undefined;
+      const block = firstSeg ? this.index.blocksById.get(firstSeg.id) : undefined;
       if (block) return block.element.getBoundingClientRect().top + window.scrollY;
       return null;
     }
-    const el = this.graphicsById.get(graphicTargetId(thread.target));
+    const el = this.index.graphicsById.get(graphicTargetId(thread.target));
     if (el) return el.getBoundingClientRect().top + window.scrollY;
     return null;
   }
@@ -2327,10 +1075,10 @@ class CommentSystem {
   // comment system already reads. Triggered only by the explicit speaker
   // button on a narration card — never by a plain card click, so reading
   // a comment can't accidentally start audio.
-  private playThreadAudio(thread: Thread) {
+  playThreadAudio(thread: Thread) {
     if (!isTextTarget(thread.target)) return;
     const firstSeg = textTargetParts(thread.target).blocks[0];
-    const block = firstSeg ? this.blocksById.get(firstSeg.id) : undefined;
+    const block = firstSeg ? this.index.blocksById.get(firstSeg.id) : undefined;
     const seg = block?.element.closest<HTMLElement>(".spoken-segment");
     seg?.querySelector<HTMLButtonElement>(".spoken-play")?.click();
   }
@@ -2340,14 +1088,14 @@ class CommentSystem {
   // narration comment that's the article element its segment refers to
   // (where the card is now positioned) — playback is on the separate
   // speaker button, so this gesture only navigates, never plays.
-  private scrollAnchorIntoView(thread: Thread) {
+  scrollAnchorIntoView(thread: Thread) {
     let target: HTMLElement | null = null;
     if (isTextTarget(thread.target)) {
       if (contextOf(thread.target) === "narration") {
         // Jump to the referred article element; fall back to the drawer
         // block if the mark has no paired article element.
         const firstSeg = textTargetParts(thread.target).blocks[0];
-        const block = firstSeg ? this.blocksById.get(firstSeg.id) : undefined;
+        const block = firstSeg ? this.index.blocksById.get(firstSeg.id) : undefined;
         target = this.narrationArticleAnchor(thread) ?? block?.element ?? null;
       } else {
         target = document.querySelector<HTMLElement>(
@@ -2355,12 +1103,12 @@ class CommentSystem {
         );
         if (!target) {
           const firstSeg = textTargetParts(thread.target).blocks[0];
-          const block = firstSeg ? this.blocksById.get(firstSeg.id) : undefined;
+          const block = firstSeg ? this.index.blocksById.get(firstSeg.id) : undefined;
           target = block?.element ?? null;
         }
       }
     } else {
-      target = this.graphicsById.get(graphicTargetId(thread.target)) ?? null;
+      target = this.index.graphicsById.get(graphicTargetId(thread.target)) ?? null;
     }
     if (!target) return;
     target.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
@@ -2374,7 +1122,7 @@ class CommentSystem {
 
   // Scroll the column so the given thread's card is visible, and pulse
   // it. Used when the user clicks on a highlight in the article.
-  private scrollCardIntoView(threadId: string) {
+  scrollCardIntoView(threadId: string) {
     const card = this.cardEls.get(threadId);
     if (!card) return;
     card.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
@@ -2386,391 +1134,16 @@ class CommentSystem {
     }, 1200);
   }
 
-  // ===== Selection → action bar =====
-
-  private mountActionBar() {
-    const bar = document.createElement("div");
-    bar.className = "cmt-action-bar";
-    bar.hidden = true;
-    bar.innerHTML =
-      '<button type="button" class="cmt-action-btn cmt-action-comment">' +
-      '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
-      '<path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H8l-4 4V6a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>' +
-      "<span>Comment</span></button>" +
-      // Citation deep-link, shown alongside Comment from the moment the bar
-      // appears (the icon mirrors the standalone button's quote-mark; see
-      // citationLink.ts). The link is generated on click, not speculatively.
-      '<button type="button" class="cmt-action-btn cmt-action-copylink" ' +
-      'aria-label="Copy a link to the selected text" title="Copy a link to the selected text">' +
-      '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
-      '<path d="M9.5 13.5a3 3 0 0 0 4.5.3l2.5-2.5a3 3 0 0 0-4.3-4.3l-1.2 1.2M14.5 10.5a3 3 0 0 0-4.5-.3L7.5 12.7a3 3 0 0 0 4.3 4.3l1.2-1.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
-      '<span class="cmt-action-copylink-label">Copy link</span></button>';
-    // mousedown (not click) so the selection isn't lost to a focus event
-    // before we capture it.
-    const commentBtn = bar.querySelector<HTMLButtonElement>(".cmt-action-comment")!;
-    commentBtn.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      this.addDraftForSelection();
-    });
-    const copyBtn = bar.querySelector<HTMLButtonElement>(".cmt-action-copylink")!;
-    copyBtn.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      void this.copyCitationFromBar();
-    });
-    this.copyLinkBtn = copyBtn;
-    document.body.appendChild(bar);
-    this.actionBar = bar;
-  }
-
-  // Generate the citation link for the current selection and copy it. Done on
-  // CLICK, not speculatively per selection — so nothing expensive runs on the
-  // (continuous) selectionchange path, and "Copy link" shows alongside "Comment"
-  // from the start instead of popping in after a generation. The generator chunk
-  // is pre-warmed when the bar appears (see showActionBarFor), so this await is
-  // just the synchronous generateFragment; the clipboard write stays well within
-  // the gesture's transient-activation window either way.
-  private async copyCitationFromBar() {
-    const copyBtn = this.copyLinkBtn;
-    const range = this.pendingRange;
-    if (!copyBtn || !range || !this.articleRoot) return;
-    const choice = await citationForRange(range.cloneRange(), this.articleRoot);
-    // citationForRange returns a section fallback for almost any selection;
-    // the clean page URL is only a last resort (selection before any heading).
-    const href = choice?.href ?? `${location.origin}${location.pathname}`;
-    const ok = await copyToClipboard(href);
-    if (!ok) return;
-    const label = copyBtn.querySelector(".cmt-action-copylink-label");
-    if (label) label.textContent = "Copied!";
-    copyBtn.classList.add("cmt-action-copied");
-    if (this.citationFeedbackTimer !== null) window.clearTimeout(this.citationFeedbackTimer);
-    this.citationFeedbackTimer = window.setTimeout(() => {
-      if (label) label.textContent = "Copy link";
-      copyBtn.classList.remove("cmt-action-copied");
-      this.citationFeedbackTimer = null;
-    }, 1200);
-  }
-
-  // Validate the current selection as a commentable article-text range. Pure
-  // (no identity / no side effects) so it can drive both the desktop action
-  // bar and the mobile button-press compose capture. Returns null unless the
-  // selection is non-empty, lands outside our own UI, and both ends sit in
-  // comment-blocks of the same context.
-  private captureSelection(): SelectionCapture | null {
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
-    const range = sel.getRangeAt(0);
-    // Some `selectionchange` events anchor in nodes we can't safely touch (e.g.
-    // native-anonymous media/seek-bar content); both `.contains()` below and the
-    // `blockForNode` tree-walk would throw on them. See isInspectableSelectionNode.
-    if (!isInspectableSelectionNode(range.startContainer) || !isInspectableSelectionNode(range.endContainer)) {
-      return null;
-    }
-    // Ignore selections originating inside our own UI (column / cards / menu).
-    if (this.column?.contains(range.startContainer)) return null;
-    if (this.menuEl?.contains(range.startContainer)) return null;
-    const startBlock = this.blockForNode(range.startContainer);
-    const endBlock = this.blockForNode(range.endContainer);
-    if (!startBlock || !endBlock || startBlock.context !== endBlock.context) {
-      return null;
-    }
-    const rect = range.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) return null;
-    return { range: range.cloneRange(), startBlock, endBlock };
-  }
-
-  private onSelectionChange() {
-    const capture = this.captureSelection();
-
-    // Mobile: no floating action bar — the corner button is the
-    // entry point. Just reflect whether there's something to comment on so the
-    // button can pulse ("comment on what you selected"). The actual range is
-    // grabbed at button-press time (pointerdown), since reaching for the button
-    // collapses this selection. Shown logged-out too — the menu routes to
-    // sign-in (JIT). The body class drives the pulse cue (CSS, reduced-motion
-    // aware).
-    if (this.isMobile) {
-      document.body.classList.toggle("cmt-has-selection", !!capture);
-      return;
-    }
-
-    // Desktop: no commenting without login — keep the action bar suppressed so
-    // text selection doesn't promise a feature the user can't use (the column
-    // header carries the sign-in affordance).
-    if (!this.identity || !capture) {
-      this.hideActionBar();
-      return;
-    }
-    this.pendingRange = capture.range;
-    this.pendingStartBlock = capture.startBlock;
-    this.pendingEndBlock = capture.endBlock;
-    this.showActionBarFor(capture.range);
-  }
-
-  private blockForNode(node: Node): BlockInfo | null {
-    const block = findBlockFor(node);
-    if (!block) return null;
-    const id = block.dataset.commentBlockId;
-    if (!id) return null;
-    return this.blocksById.get(id) ?? null;
-  }
-
-  private showActionBarFor(range: Range) {
-    if (!this.actionBar) return;
-    const rect = range.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) {
-      this.hideActionBar();
-      return;
-    }
-    this.actionBar.hidden = false;
-    // Tell the standalone citation button to step aside — this bar now hosts the
-    // "Copy link" action — and pre-warm the generator chunk so the on-click copy
-    // is instant (generation itself happens on click, not here).
-    setCommentBarActive(true);
-    prewarmCitationGenerator();
-    this.positionActionBar(range);
-  }
-
-  // Centre the bar above the selection. Re-run when the bar's width changes
-  // (e.g. the "Copy link" button appears after async generation) so it stays
-  // centred. Absolute coords keep it anchored as the page scrolls.
-  private positionActionBar(range: Range) {
-    if (!this.actionBar || this.actionBar.hidden) return;
-    const rect = range.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) return;
-    const barW = this.actionBar.offsetWidth || 110;
-    const barH = this.actionBar.offsetHeight || 32;
-    const top = window.scrollY + rect.top - barH - 8;
-    let left = window.scrollX + rect.left + rect.width / 2 - barW / 2;
-    left = Math.max(
-      8,
-      Math.min(left, window.scrollX + window.innerWidth - barW - 8),
-    );
-    this.actionBar.style.top = `${top}px`;
-    this.actionBar.style.left = `${left}px`;
-  }
-
-  private hideActionBar() {
-    if (this.actionBar) this.actionBar.hidden = true;
-    // Release the standalone citation button to act again, and clear any
-    // lingering "Copied!" feedback so the next selection's bar starts clean.
-    setCommentBarActive(false);
-    if (this.citationFeedbackTimer !== null) {
-      window.clearTimeout(this.citationFeedbackTimer);
-      this.citationFeedbackTimer = null;
-    }
-    if (this.copyLinkBtn) {
-      this.copyLinkBtn.classList.remove("cmt-action-copied");
-      const label = this.copyLinkBtn.querySelector(".cmt-action-copylink-label");
-      if (label) label.textContent = "Copy link";
-    }
-    this.pendingRange = null;
-    this.pendingStartBlock = null;
-    this.pendingEndBlock = null;
-  }
-
-  // ===== Compose new drafts =====
-
-  // Serialize the current drafts + per-draft textarea bodies to
-  // localStorage. Called after any mutation that adds, removes, or
-  // edits a draft. The bodies map is filtered through the current
-  // `drafts` array so a stray entry for a removed thread can't leak.
-  // Discard an unsubmitted draft entirely — drop the thread, its
-  // in-progress body, and persist the removal, then re-render. Shared by
-  // the composer's "Cancel" button and the Esc-on-empty light-dismiss.
-  private discardDraft(threadId: string): void {
-    this.drafts = this.drafts.filter((t) => t.id !== threadId);
-    this.draftBodies.delete(threadId);
-    this.persistDrafts();
-    // If this draft was the open mobile popover, close it properly —
-    // `preventDefault` on the Esc keydown suppresses the platform's own
-    // light-dismiss, so without this `activeCardId` would linger as open.
-    if (this.activeCardId === threadId) this.setActiveCard(null);
-    this.renderAll();
-  }
-
-  private persistDrafts(): void {
-    if (!this.draftsStorage) return;
-    const entries = this.drafts.map((thread) => ({
-      thread,
-      body: this.draftBodies.get(thread.id) ?? "",
-    }));
-    this.draftsStorage.save(entries);
-  }
-
-  // Triggered by the "Comment" action-bar button after a text selection.
-  // Captures the selection into a WA text target, creates an empty draft, and
-  // adds a card for it in the column (auto-focused for typing).
-  private addDraftForSelection() {
-    if (!this.pendingRange || !this.pendingStartBlock || !this.pendingEndBlock) {
-      return;
-    }
-    if (this.pendingStartBlock.context !== this.pendingEndBlock.context) return;
-
-    const blocks = this.blocksByContext.get(this.pendingStartBlock.context) ?? [];
-    const startIdx = blocks.indexOf(this.pendingStartBlock);
-    const endIdx = blocks.indexOf(this.pendingEndBlock);
-    if (startIdx === -1 || endIdx === -1) return;
-    const [a, b] = startIdx <= endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
-    const touched = blocks.slice(a, b + 1);
-
-    // Direction matters: the selection may be created in reverse, in
-    // which case startContainer/endContainer is the *visual* end. The
-    // anchor needs to store the forward-document order regardless.
-    const rangeForwards = startIdx <= endIdx;
-    const startBlock = rangeForwards ? this.pendingStartBlock : this.pendingEndBlock;
-    const endBlock = rangeForwards ? this.pendingEndBlock : this.pendingStartBlock;
-    const startNode = rangeForwards
-      ? this.pendingRange.startContainer
-      : this.pendingRange.endContainer;
-    const startNodeOffset = rangeForwards
-      ? this.pendingRange.startOffset
-      : this.pendingRange.endOffset;
-    const endNode = rangeForwards
-      ? this.pendingRange.endContainer
-      : this.pendingRange.startContainer;
-    const endNodeOffset = rangeForwards
-      ? this.pendingRange.endOffset
-      : this.pendingRange.startOffset;
-
-    const startOffset = offsetInBlock(startBlock.element, startNode, startNodeOffset);
-    const endOffset = offsetInBlock(endBlock.element, endNode, endNodeOffset);
-
-    // Build the quote from the anchored blocks' own text + offsets, not
-    // from `range.toString()`. Across drawer segments the raw range would
-    // splice in the next segment's play-button clock ("0:11") that sits
-    // between the two <p>s in document order; slicing each block's clean
-    // text avoids that and is the precise per-block anchored text anyway.
-    const blockText = (b: BlockInfo) => b.element.textContent ?? "";
-    const quote = touched.length === 1
-      ? blockText(touched[0]!).slice(startOffset, endOffset)
-      : [
-          blockText(touched[0]!).slice(startOffset),
-          ...touched.slice(1, -1).map(blockText),
-          blockText(touched[touched.length - 1]!).slice(0, endOffset),
-        ].join(" ");
-
-    // Surrounding context for the TextQuoteSelector. We don't fuzzy
-    // re-anchor today (the stale-anchor flow orphans + flags instead),
-    // but storing prefix/suffix is cheap (~32 chars each) and keeps the
-    // selector spec-meaningful + leaves the door open to fuzzy matching
-    // later without another CRDT migration.
-    const CTX = 32;
-    const startText = startBlock.element.textContent ?? "";
-    const endText = endBlock.element.textContent ?? "";
-    const prefix = startText.slice(Math.max(0, startOffset - CTX), startOffset);
-    const suffix = endText.slice(endOffset, endOffset + CTX);
-
-    // Narration comments automatically pick up the audio time range of
-    // the segment(s) they touch, from the generated mark timings the
-    // narrator stamps onto each drawer segment (`data-time-ms`). Article
-    // and graphic comments have no audio time and get nothing.
-    const audioRange = this.pendingStartBlock.context === "narration"
-      ? this.computeNarrationAudioRange(touched)
-      : undefined;
-
-    const target = makeTextTarget({
-      context: this.pendingStartBlock.context,
-      blocks: touched.map((blk) => ({ id: blk.id, hash: blk.hash })),
-      startOffset,
-      endOffset,
-      quote,
-      prefix,
-      suffix,
-      ...(audioRange ? { audioRange } : {}),
-    });
-
-    const draft: Thread = {
-      id: uid(),
-      target,
-      replies: [],
-      createdAt: Date.now(),
-    };
-    this.drafts.push(draft);
-    this.persistDrafts();
-    this.hideActionBar();
-    this.renderAll();
-    this.surfaceDraft(draft.id);
-  }
-
-  // Derive the audio time range [first segment start, next segment start)
-  // for a narration selection, from the `data-time-ms` the narrator
-  // stamps on each drawer segment (sourced from the generated manifest).
-  // Returns null if the timings aren't present (e.g. audio not generated,
-  // or the touched blocks aren't inside spoken segments). `endMs: null`
-  // means the selection reaches the final segment and so runs open-ended
-  // to the end of the audio.
-  private computeNarrationAudioRange(
-    touched: BlockInfo[],
-  ): { startMs: number; endMs: number | null } | null {
-    if (!this.drawerRoot || touched.length === 0) return null;
-    // `walkBlocks` indexes the `<li>` wrapping each segment (LI is a
-    // block tag and the walker stops there), so `.spoken-segment` is a
-    // *descendant* of the commented block — look down. `closest` is kept
-    // as a fallback in case a future layout nests the block inside the
-    // segment instead.
-    const segOf = (el: HTMLElement): HTMLElement | null =>
-      el.querySelector<HTMLElement>(".spoken-segment[data-time-ms]")
-        ?? el.closest<HTMLElement>(".spoken-segment");
-    const firstSeg = segOf(touched[0]!.element);
-    const lastSeg = segOf(touched[touched.length - 1]!.element);
-    if (!firstSeg || !lastSeg) return null;
-    const startMs = Number(firstSeg.dataset.timeMs);
-    if (!Number.isFinite(startMs)) return null;
-    // Document order == time order (marks are sorted), so the segment
-    // immediately after the last touched one bounds the range.
-    const segs = Array.from(
-      this.drawerRoot.querySelectorAll<HTMLElement>(".spoken-segment[data-time-ms]"),
-    );
-    const nextSeg = segs[segs.indexOf(lastSeg) + 1];
-    const endMs = nextSeg ? Number(nextSeg.dataset.timeMs) : NaN;
-    return { startMs, endMs: Number.isFinite(endMs) ? endMs : null };
-  }
-
-  // Triggered by clicking the "+" comment button on a figure.
-  private addDraftForGraphic(graphicEl: HTMLElement) {
-    const id = graphicEl.dataset.commentGraphicId;
-    const ctx = (graphicEl.dataset.commentContext as Context) ?? "article";
-    if (!id) return;
-    const draft: Thread = {
-      id: uid(),
-      target: makeGraphicTarget(ctx, id),
-      replies: [],
-      createdAt: Date.now(),
-    };
-    this.drafts.push(draft);
-    this.persistDrafts();
-    this.renderAll();
-    this.surfaceDraft(draft.id);
-  }
-
-  // After creating a draft, get it in front of the user. On desktop
-  // that means scrolling its column card into view; on mobile it
-  // means promoting it to the active popover.
-  private surfaceDraft(threadId: string) {
-    if (this.isMobile) {
-      this.setActiveCard(threadId);
-      return;
-    }
-    const card = this.cardEls.get(threadId);
-    if (!card) return;
-    card.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
-    const ta = card.querySelector<HTMLTextAreaElement>(".cmt-reply-input");
-    // `preventScroll`: the card is already brought into view by the line
-    // above; without this, focus() does its own scroll-into-view and can
-    // fight/override that (and yank to the top if the card hasn't anchored).
-    ta?.focus({ preventScroll: true });
-  }
-
   // ===== Stale detection =====
 
-  private threadIsStale(thread: Thread): boolean {
+  threadIsStale(thread: Thread): boolean {
     if (!isTextTarget(thread.target)) return false;
     // Pure check — see commentsStale.ts. The Map is supplied as-is; the
     // helper only reads `.hash` from each value so the BlockInfo's other
     // fields are irrelevant here.
     return compareSegmentHashes(
       textTargetParts(thread.target).blocks,
-      this.blocksById,
+      this.index.blocksById,
     );
   }
 
@@ -2783,181 +1156,14 @@ class CommentSystem {
     for (let i = 0; i < segs.length; i++) {
       const seg = segs[i];
       if (!seg) continue;
-      const block = this.blocksById.get(seg.id);
+      const block = this.index.blocksById.get(seg.id);
       if (!block) return;
       const isFirst = i === 0;
       const isLast = i === segs.length - 1;
       const fullLen = block.element.textContent?.length ?? 0;
       const start = isFirst ? parts.startOffset : 0;
       const end = isLast ? parts.endOffset : fullLen;
-      this.wrapRangeInBlock(block.element, start, end, thread.id);
-    }
-  }
-
-  private wrapRangeInBlock(
-    block: HTMLElement,
-    start: number,
-    end: number,
-    threadId: string,
-  ) {
-    if (start >= end) return;
-    const s = nodeAtOffset(block, start);
-    const e = nodeAtOffset(block, end);
-    if (!s || !e) return;
-    const range = document.createRange();
-    try {
-      range.setStart(s.node, s.offset);
-      range.setEnd(e.node, e.offset);
-    } catch {
-      return;
-    }
-    this.wrapRange(range, threadId);
-  }
-
-  private wrapRange(range: Range, threadId: string) {
-    const anchorEl =
-      range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
-        ? (range.commonAncestorContainer as Element)
-        : range.commonAncestorContainer.parentElement;
-    if (!anchorEl) return;
-    const walker = document.createTreeWalker(anchorEl, NodeFilter.SHOW_TEXT);
-    const textNodes: Text[] = [];
-    while (walker.nextNode()) {
-      const n = walker.currentNode as Text;
-      if (range.intersectsNode(n)) textNodes.push(n);
-    }
-    if (textNodes.length === 0) return;
-    for (const node of textNodes) {
-      let target: Text = node;
-      const nodeLen = target.nodeValue?.length ?? 0;
-      const isStart = node === range.startContainer;
-      const isEnd = node === range.endContainer;
-      const startInNode = isStart ? range.startOffset : 0;
-      const endInNode = isEnd ? range.endOffset : nodeLen;
-      if (startInNode >= endInNode) continue;
-      if (endInNode < nodeLen) target.splitText(endInNode);
-      if (startInNode > 0) target = target.splitText(startInNode);
-      const span = document.createElement("span");
-      span.className = "cmt-highlight";
-      span.dataset.threadId = threadId;
-      target.parentNode!.insertBefore(span, target);
-      span.appendChild(target);
-    }
-  }
-
-  private unwrap(span: HTMLElement) {
-    const parent = span.parentNode;
-    if (!parent) return;
-    while (span.firstChild) parent.insertBefore(span.firstChild, span);
-    parent.removeChild(span);
-    parent.normalize();
-  }
-
-  // ===== Graphics: hover trigger =====
-
-  private installGraphicTriggers() {
-    for (const [gid, el] of this.graphicsById) {
-      // Stamp the graphic root as a CSS anchor so cards on this
-      // graphic can `position-anchor` to it without JS layout math.
-      el.style.setProperty("anchor-name", anchorNameForGraphic(gid));
-
-      // The "+" button (visible on hover) → creates a new draft. Only
-      // mounted when logged in; without identity the comment-creation
-      // path is fully closed off (mirrors the action-bar gate above).
-      let btn: HTMLButtonElement | null = null;
-      if (this.identity) {
-        btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "cmt-graphic-btn";
-        btn.setAttribute("aria-label", "Comment on this graphic");
-        btn.innerHTML =
-          '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
-          '<path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H8l-4 4V6a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
-        btn.addEventListener("click", (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          this.addDraftForGraphic(el);
-        });
-      }
-
-      // Indicator badge (always visible when >0 threads on this graphic).
-      // Click = unhide any hidden cards for the graphic, then scroll to
-      // the first one. Mirrors the "click the highlight to bring text
-      // threads back" affordance.
-      const ind = document.createElement("button");
-      ind.type = "button";
-      ind.className = "cmt-graphic-indicator";
-      ind.hidden = true; // updateGraphicIndicators() shows it when threads exist
-      ind.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const gid = el.dataset.commentGraphicId;
-        if (!gid) return;
-        const matching = this.snapshot.filter(
-          (t) => !this.threadIsResolved(t)
-            && !isTextTarget(t.target)
-            && graphicTargetId(t.target) === gid,
-        );
-        let didUnhide = false;
-        for (const t of matching) {
-          if (this.hiddenCardIds.has(t.id)) {
-            this.hiddenCardIds.delete(t.id);
-            didUnhide = true;
-          }
-        }
-        if (didUnhide) this.renderAll();
-        const first = matching[0];
-        if (!first) return;
-        if (this.isMobile) {
-          // Same toggle behavior as the text-highlight tap: a second
-          // tap on the same indicator closes the popover.
-          if (this.activeCardId === first.id) {
-            this.setActiveCard(null);
-          } else {
-            this.setActiveCard(first.id);
-          }
-        } else {
-          // Desktop toggle (mirrors the highlight-click path):
-          // navigate on first click, hide on the second.
-          if (didUnhide) {
-            this.scrollCardIntoView(first.id);
-            this.lastFocusedThreadId = first.id;
-          } else if (this.lastFocusedThreadId === first.id) {
-            this.hiddenCardIds.add(first.id);
-            this.lastFocusedThreadId = null;
-            this.renderAll();
-          } else {
-            this.scrollCardIntoView(first.id);
-            this.lastFocusedThreadId = first.id;
-          }
-        }
-      });
-
-      const cs = getComputedStyle(el);
-      if (cs.position === "static") el.style.position = "relative";
-      if (btn) el.appendChild(btn);
-      el.appendChild(ind);
-    }
-  }
-
-  // Keep each graphic's indicator badge in sync with the thread count.
-  // Called from renderAll so it stays correct after submits / deletes.
-  private updateGraphicIndicators() {
-    for (const [gid, el] of this.graphicsById) {
-      const count = this.snapshot.filter(
-        (t) => !this.threadIsResolved(t)
-          && !isTextTarget(t.target)
-          && graphicTargetId(t.target) === gid,
-      ).length;
-      const ind = el.querySelector<HTMLElement>(".cmt-graphic-indicator");
-      if (!ind) continue;
-      if (count > 0) {
-        ind.textContent = String(count);
-        ind.title = `${count} comment${count === 1 ? "" : "s"} on this graphic`;
-        ind.hidden = false;
-      } else {
-        ind.hidden = true;
-      }
+      wrapRangeInBlock(block.element, start, end, thread.id);
     }
   }
 
