@@ -1,5 +1,7 @@
-// Private-blog tier (methodology → Private blogs): drives the
-// PRIVATE fixture (`templates/private-content-repo`, BLOG_PRIVATE=1) through
+// Private-blog tier (methodology → Private blogs): drives the PRIVATE fixture
+// — the SAME public template materialized with the private overlay
+// (`e2e/fixture-content/private-blog/`), `BLOG_PRIVATE=1`, and the structural
+// `--private` build/deploy scripts (harness materializeFixture, D3) — through
 // a full `bun run build` — which includes `audit-private.ts`, so a green boot
 // here already proves the build-time half of the privacy ledger — and then
 // asserts the RUNTIME half against the built worker under `wrangler dev`:
