@@ -11,7 +11,7 @@ test("flags two elements sharing an id (the table case)", () => {
   const html = `<table id="t1"></table><p>x</p><table id="t1"></table>`;
   expect(duplicateIds(html)).toEqual(["t1"]);
   expect(auditSourceIds(html).map((v) => v.rule)).toEqual(["no-dup-id"]);
-  expect(auditSourceIds(html)[0].detail).toContain('id="t1"');
+  expect(auditSourceIds(html)[0]!.detail).toContain('id="t1"');
 });
 
 test("reports each duplicated id once, sorted, even with 3+ collisions", () => {
