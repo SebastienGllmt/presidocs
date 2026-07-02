@@ -156,6 +156,34 @@ export function extractNarration(html: string): NarrationExtract {
   return { disabled, chapters };
 }
 
+// Inline PLS lexicon blocks, in document order. A separate HTMLRewriter
+// pass from extractNarration — the handlers are independent and a build-
+// time double parse of one post is free; sharing one pass would couple
+// the narration filter (generate-all) to PLS plumbing it never needs.
+export function extractPlsBlocks(html: string): string[] {
+  const inlinePlsBlocks: string[] = [];
+  let pendingPlsBuf: string[] | null = null;
+
+  new HTMLRewriter()
+    .on('script[type="application/pls+xml"]', {
+      element(el) {
+        pendingPlsBuf = [];
+        el.onEndTag(() => {
+          if (pendingPlsBuf) {
+            inlinePlsBlocks.push(pendingPlsBuf.join(""));
+            pendingPlsBuf = null;
+          }
+        });
+      },
+      text(t) {
+        pendingPlsBuf?.push(t.text);
+      },
+    })
+    .transform(html);
+
+  return inlinePlsBlocks;
+}
+
 export function splitChapter(content: string): Segment[] {
   const out: Segment[] = [];
   let currentMark: string | null = null;
