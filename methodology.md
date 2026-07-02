@@ -597,7 +597,7 @@ None built, none blocking: configurable aspect (16:9 long cut); a real teaser mo
 
 ## Comments
 
-Code: `client/comments.ts`.
+Code: `client/comments.ts` (orchestrator) + `client/comments/*.ts` (selection bar, block index, cards, drafts, version banner, unresolved nav, figure triggers, mobile menu).
 
 Google-Docs-style threads anchored to selections in the article body, selections in the spoken-script drawer, or whole graphics. Every thread (and every in-progress draft) renders as its own card in a right-side margin column that scrolls with the article.
 

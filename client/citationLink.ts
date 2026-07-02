@@ -7,7 +7,7 @@
 //
 // Two affordances already exist and this fills the gap between them:
 //   - headerLinks.ts copies a `#id` link — granularity is the *section*.
-//   - comments.ts captures an exact passage (quote + prefix/suffix) — but it
+//   - comments/selectionBar.ts captures an exact passage (quote + prefix/suffix) — but it
 //     is login-gated and produces a private CRDT annotation, not a URL.
 // This works for everyone (logged-out included — the common case), produces a
 // plain URL, and ships nothing to the reader who *opens* the link: text-fragment
