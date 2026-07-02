@@ -44,7 +44,6 @@ import {
 } from "./commentsStore.ts";
 import {
   loadIdentity,
-  loginUrl,
   signOut,
   type Identity,
 } from "./identity.ts";
@@ -62,17 +61,9 @@ import {
 import { DraftsStorage } from "./draftsStorage.ts";
 import { compareSegmentHashes } from "./commentsStale.ts";
 import {
-  BLOCK_TAGS,
   loadHighlightsHidden,
-  normalizeText,
   saveHighlightsHidden,
-  walkBlocks,
 } from "./commentsDom.ts";
-import {
-  DRAWER_BODY_WANTED_ATTR,
-  REQUEST_DRAWER_BODY_EVENT,
-  DRAWER_BODY_READY_EVENT,
-} from "./drawerBodyContract.ts";
 import { copyToClipboard } from "./clipboard.ts";
 // The action bar hosts a "Copy link" button alongside "Comment" — see
 // citationLink.ts. `setCommentBarActive` tells the standalone citation button to
@@ -83,20 +74,31 @@ import {
   prewarmCitationGenerator,
   setCommentBarActive,
 } from "./citationLink.ts";
+import { scrollBehavior, uid } from "./comments/util.ts";
+import {
+  anchorNameForText,
+  anchorNameForGraphic,
+  findBlockFor,
+  offsetInBlock,
+  unwrap,
+  wrapRangeInBlock,
+} from "./comments/highlights.ts";
+import {
+  buildAvatar,
+  buildProviderLink,
+  buildPrivacyNotice,
+} from "./comments/identityUi.ts";
+import {
+  BlockIndex,
+  requestDrawerBody,
+  type BlockInfo,
+} from "./comments/blockIndex.ts";
 
 // Build-time define (Bun.build `define` map) — `undefined` under the fast
 // `bun run dev` server, `"false"` in built/dev:edge/prod. Used only to gate
 // the dev-only e2e test seam (`installTestHooks`); see swRegister.ts for the
 // same pattern. Never true in a shipped bundle.
 declare const __BUN_DEV__: boolean | undefined;
-
-type BlockInfo = {
-  id: string;
-  element: HTMLElement;
-  context: Context;
-  hash: string;
-  text: string;
-};
 
 // A validated article-text selection: the range plus the comment-blocks its
 // ends fall in (same context). Returned by `captureSelection`; feeds both the
@@ -112,13 +114,6 @@ type SelectionCapture = {
 // document-order walker a place to be tested without instantiating the
 // whole CommentSystem.
 
-// v1: only `<figure>` is a commentable graphic. The authoring convention
-// (per methodology.md) wraps each graphic in a figure with an id, and that
-// lets us attach an HTML button child without worrying about SVG namespace
-// or `<img>` being a void element. Standalone <svg>/<img>/<canvas> would
-// need a wrapper before we could place the trigger; we can add that later.
-const GRAPHIC_ROOT_TAGS = new Set(["FIGURE"]);
-
 // Extra gap kept between the lowest card's bottom and the player dock
 // when reserving bottom scroll room, so a bottom card never sits flush
 // against the dock.
@@ -130,91 +125,6 @@ const BOTTOM_CLEARANCE_PX = 24;
 // bottom-sheet fallback when the anchor's edges are cramped).
 const MOBILE_BREAKPOINT_PX = 1099;
 
-// Honour the OS "reduce motion" preference at the explicit-`smooth`
-// scrollIntoView sites. An explicit `behavior` overrides the
-// `html { scroll-behavior }` rule (and its reduce-motion override) in
-// base.css, so each JS call needs its own guard. Read at call time so a
-// mid-session OS toggle is respected; degrades to "smooth" where matchMedia
-// is unavailable (test/SSR DOM).
-const scrollBehavior = (): ScrollBehavior =>
-  typeof window.matchMedia === "function" &&
-  window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    ? "auto"
-    : "smooth";
-
-function uid(): string {
-  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-}
-
-// Coerce an arbitrary id into a CSS `<dashed-ident>`-safe tail.
-// Thread ids are already alphanumeric (see `uid`), but block / graphic
-// ids embed `:` and `__` (e.g. `article:__b-3`), which aren't valid in
-// a CSS identifier. The substitution is one-way; uniqueness within our
-// id namespace holds because no two distinct ids differ only in `:`.
-function cssIdent(s: string): string {
-  return s.replace(/[^A-Za-z0-9_-]/g, "_");
-}
-
-function anchorNameForText(threadId: string): string {
-  return `--cmt-${cssIdent(threadId)}`;
-}
-
-function anchorNameForGraphic(graphicId: string): string {
-  return `--cmt-graphic-${cssIdent(graphicId)}`;
-}
-
-async function sha256(s: string): Promise<string> {
-  const buf = new TextEncoder().encode(s);
-  const digest = await crypto.subtle.digest("SHA-256", buf);
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-function offsetInBlock(block: HTMLElement, node: Node, offset: number): number {
-  if (node === block) {
-    let total = 0;
-    for (let i = 0; i < offset && i < block.childNodes.length; i++) {
-      total += (block.childNodes[i]?.textContent ?? "").length;
-    }
-    return total;
-  }
-  let total = 0;
-  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
-  while (walker.nextNode()) {
-    const n = walker.currentNode;
-    if (n === node) return total + offset;
-    total += (n.nodeValue ?? "").length;
-  }
-  return block.textContent?.length ?? 0;
-}
-
-function nodeAtOffset(
-  block: HTMLElement,
-  charOffset: number,
-): { node: Node; offset: number } | null {
-  let remaining = charOffset;
-  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
-  while (walker.nextNode()) {
-    const n = walker.currentNode as Text;
-    const len = n.nodeValue?.length ?? 0;
-    if (remaining <= len) return { node: n, offset: remaining };
-    remaining -= len;
-  }
-  let last: Text | null = null;
-  const w2 = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
-  while (w2.nextNode()) last = w2.currentNode as Text;
-  if (last) return { node: last, offset: last.nodeValue?.length ?? 0 };
-  return null;
-}
-
-function findBlockFor(node: Node): HTMLElement | null {
-  let el: Node | null = node;
-  while (el && el.nodeType !== Node.ELEMENT_NODE) el = el.parentNode;
-  if (!el) return null;
-  return (el as Element).closest<HTMLElement>("[data-comment-block-id]");
-}
-
 function formatRelative(timestamp: number): string {
   const diff = Date.now() - timestamp;
   const min = 60_000;
@@ -224,12 +134,14 @@ function formatRelative(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString();
 }
 
-class CommentSystem {
+export class CommentSystem {
+  // Collaborator owning the block/graphic index (article + drawer roots) and
+  // the narrator↔comments drawer-body handshake. Constructed inert; the
+  // orchestrator and collaborators read its maps via `this.index` /
+  // `this.sys.index`.
+  readonly index = new BlockIndex();
+
   private articleRoot: HTMLElement | null = null;
-  // `drawerRoot` is set when the narrator drawer is detected. Threads in
-  // the drawer index against this root; if the drawer never appears
-  // (manifest missing) we still work on the article alone.
-  private drawerRoot: HTMLElement | null = null;
 
   // Logged-in user, or null when not authenticated. The UI gates every
   // comment-creation path on this being non-null. Loaded once at boot
@@ -366,10 +278,6 @@ class CommentSystem {
   // hiding them all and forgetting. Restored by clicking the anchor's
   // highlight (text) or graphic indicator (figures).
   private hiddenCardIds = new Set<string>();
-
-  private blocksByContext = new Map<Context, BlockInfo[]>();
-  private blocksById = new Map<string, BlockInfo>();
-  private graphicsById = new Map<string, HTMLElement>();
 
   // The right-margin column hosting all cards. One card per thread/draft.
   private column: HTMLElement | null = null;
@@ -611,89 +519,17 @@ class CommentSystem {
 
   private async indexArticle() {
     if (!this.articleRoot) return;
-    await this.indexRoot(this.articleRoot, "article");
+    await this.index.indexRoot(this.articleRoot, "article");
   }
 
   // Logged-in only: ask the narrator to build its (deferred) drawer body,
   // wait for it, then index + render so narration comments anchor. Background
   // task — the article comments don't wait on it.
   private async indexDrawerWhenReady(): Promise<void> {
-    const drawer = await this.requestDrawerBody();
+    const drawer = await requestDrawerBody();
     if (!drawer) return; // no drawer (opt-out / non-narrated post) — article-only
-    await this.indexDrawer(drawer);
+    await this.index.indexDrawer(drawer);
     this.renderAll();
-  }
-
-  // Drive the narrator↔comments handshake (narratorDom.ts): resolve the
-  // drawer once its body exists. If it's already built we return immediately;
-  // otherwise we set the sentinel (for a narrator that boots later) AND fire
-  // the request event (for one already booted), then await the ready signal.
-  private requestDrawerBody(): Promise<HTMLElement | null> {
-    const READY = ".narrate-drawer[data-body-ready]";
-    const ready = document.querySelector<HTMLElement>(READY);
-    if (ready) return Promise.resolve(ready);
-
-    document.documentElement.setAttribute(DRAWER_BODY_WANTED_ATTR, "1");
-    document.dispatchEvent(new CustomEvent(REQUEST_DRAWER_BODY_EVENT));
-
-    return new Promise((resolve) => {
-      let settled = false;
-      const finish = (el: HTMLElement | null) => {
-        if (settled) return;
-        settled = true;
-        document.removeEventListener(DRAWER_BODY_READY_EVENT, onReady);
-        clearTimeout(timer);
-        resolve(el);
-      };
-      const onReady = () => finish(document.querySelector<HTMLElement>(READY));
-      document.addEventListener(DRAWER_BODY_READY_EVENT, onReady);
-      // Bound the wait: a narrated post's narrator boots within its
-      // `requestIdleCallback` timeout (~4 s), so this only fully elapses on the
-      // no-drawer case (opt-out / non-narrated), where we fall back to
-      // article-only commenting.
-      const timer = setTimeout(() => finish(document.querySelector<HTMLElement>(READY)), 8000);
-    });
-  }
-
-  private async indexDrawer(drawer: HTMLElement) {
-    this.drawerRoot = drawer;
-    await this.indexRoot(drawer, "narration");
-  }
-
-  private async indexRoot(root: HTMLElement, context: Context) {
-    const blocks: BlockInfo[] = [];
-    let counter = 0;
-    for (const el of walkBlocks(root, BLOCK_TAGS)) {
-      // In the narration drawer the walker stops at the <li> wrapping each
-      // segment (LI is a block tag), but that <li> also holds the play
-      // button whose <time> clock ("0:11") would otherwise leak into the
-      // block's text, hash, offsets, and quote. Re-target to the inner
-      // spoken-text <p> so anchors cover only the spoken words. No-op
-      // outside the drawer — article blocks have no .spoken-text child.
-      const block = el.querySelector<HTMLElement>(".spoken-text") ?? el;
-      const stableId = block.id && block.id.length > 0
-        ? `id:${block.id}`
-        : `${context}:__b-${counter}`;
-      block.dataset.commentBlockId = stableId;
-      block.dataset.commentContext = context;
-      const text = block.textContent ?? "";
-      const hash = await sha256(normalizeText(text));
-      const info: BlockInfo = { id: stableId, element: block, context, hash, text };
-      blocks.push(info);
-      this.blocksById.set(stableId, info);
-      counter++;
-    }
-    let gCounter = 0;
-    for (const el of walkBlocks(root, GRAPHIC_ROOT_TAGS)) {
-      const stableId = el.id && el.id.length > 0
-        ? `id:${el.id}`
-        : `${context}:__g-${gCounter}`;
-      el.dataset.commentGraphicId = stableId;
-      el.dataset.commentContext = context;
-      this.graphicsById.set(stableId, el);
-      gCounter++;
-    }
-    this.blocksByContext.set(context, blocks);
   }
 
   // ===== Document version =====
@@ -1103,7 +939,7 @@ class CommentSystem {
     if (this.identity) {
       const row = document.createElement("div");
       row.className = "cmt-menu-identity";
-      row.appendChild(this.buildAvatar(this.identity.picture, this.identity.name ?? this.identity.email));
+      row.appendChild(buildAvatar(this.identity.picture, this.identity.name ?? this.identity.email));
       const name = document.createElement("span");
       name.className = "cmt-menu-name";
       name.textContent = this.identity.name ?? this.identity.email;
@@ -1151,10 +987,10 @@ class CommentSystem {
       m.appendChild(pitch);
       const buttons = document.createElement("div");
       buttons.className = "cmt-identity-providers";
-      buttons.appendChild(this.buildProviderLink("google", "Sign in with Google"));
-      buttons.appendChild(this.buildProviderLink("microsoft", "Sign in with Microsoft"));
+      buttons.appendChild(buildProviderLink("google", "Sign in with Google"));
+      buttons.appendChild(buildProviderLink("microsoft", "Sign in with Microsoft"));
       m.appendChild(buttons);
-      m.appendChild(this.buildPrivacyNotice());
+      m.appendChild(buildPrivacyNotice());
     }
   }
 
@@ -1286,7 +1122,7 @@ class CommentSystem {
     h.appendChild(dismiss);
 
     if (this.identity) {
-      const avatar = this.buildAvatar(this.identity.picture, this.identity.name ?? this.identity.email);
+      const avatar = buildAvatar(this.identity.picture, this.identity.name ?? this.identity.email);
       const name = document.createElement("span");
       name.className = "cmt-identity-name";
       name.textContent = this.identity.name ?? this.identity.email;
@@ -1309,64 +1145,12 @@ class CommentSystem {
       label.textContent = "Sign in to comment — so I can reply by email.";
       const buttons = document.createElement("div");
       buttons.className = "cmt-identity-providers";
-      buttons.appendChild(this.buildProviderLink("google", "Sign in with Google"));
-      buttons.appendChild(this.buildProviderLink("microsoft", "Sign in with Microsoft"));
+      buttons.appendChild(buildProviderLink("google", "Sign in with Google"));
+      buttons.appendChild(buildProviderLink("microsoft", "Sign in with Microsoft"));
       h.appendChild(label);
       h.appendChild(buttons);
-      h.appendChild(this.buildPrivacyNotice());
+      h.appendChild(buildPrivacyNotice());
     }
-  }
-
-  private buildProviderLink(provider: "google" | "microsoft", label: string): HTMLAnchorElement {
-    const a = document.createElement("a");
-    a.className = `cmt-identity-provider cmt-identity-provider-${provider}`;
-    a.href = loginUrl(provider);
-    a.textContent = label;
-    return a;
-  }
-
-  // Just-in-time privacy notice rendered directly under the login
-  // buttons. GDPR Art. 13 wants the legal basis (consent) and a
-  // pointer to the full notice at the point of collection — exactly
-  // here, where the user is about to OAuth in and have their name +
-  // email + provider id recorded. The full Privacy Policy lives at
-  // /privacy; we link to it rather than reproduce it inline. We
-  // intentionally use textContent for the body so the link is the
-  // only HTML node (no innerHTML splicing of attacker-influenced
-  // strings — same posture as every other interpolation point in
-  // this file).
-  private buildPrivacyNotice(): HTMLElement {
-    const wrap = document.createElement("p");
-    wrap.className = "cmt-identity-privacy";
-    wrap.appendChild(document.createTextNode(
-      "Signing in records your name, email, and a provider account ID alongside your comments. See the ",
-    ));
-    const a = document.createElement("a");
-    a.href = "/privacy";
-    a.textContent = "Privacy Policy";
-    wrap.appendChild(a);
-    wrap.appendChild(document.createTextNode("."));
-    return wrap;
-  }
-
-  // Small round avatar. Falls back to a colored initial if no picture
-  // URL (Microsoft accounts often don't return one); also falls back if
-  // the image errors at load.
-  private buildAvatar(picture: string | null, name: string): HTMLElement {
-    const wrap = document.createElement("span");
-    wrap.className = "cmt-avatar";
-    wrap.setAttribute("aria-hidden", "true");
-    const initial = (name.trim()[0] ?? "?").toUpperCase();
-    wrap.dataset.initial = initial;
-    if (picture) {
-      const img = document.createElement("img");
-      img.src = picture;
-      img.alt = "";
-      img.referrerPolicy = "no-referrer";
-      img.addEventListener("error", () => img.remove());
-      wrap.appendChild(img);
-    }
-    return wrap;
   }
 
   // Combined resolved check: either the thread carries its own
@@ -1405,7 +1189,7 @@ class CommentSystem {
     // fresh draft is never resolved and never stale (its hashes were just
     // captured), so it passes both guards.
     document.querySelectorAll<HTMLElement>(".cmt-highlight").forEach((s) =>
-      this.unwrap(s),
+      unwrap(s),
     );
     for (const thread of [...this.snapshot, ...this.drafts]) {
       if (this.threadIsResolved(thread)) continue;
@@ -1456,7 +1240,7 @@ class CommentSystem {
       if (!this.threadIsStale(thread)) continue;
       if (anchoredThreads.has(thread.id)) continue;
       const firstSeg = textTargetParts(thread.target).blocks[0];
-      const block = firstSeg ? this.blocksById.get(firstSeg.id) : undefined;
+      const block = firstSeg ? this.index.blocksById.get(firstSeg.id) : undefined;
       if (!block) continue;
       const name = anchorNameForText(thread.id);
       const existing = block.element.style.getPropertyValue("anchor-name");
@@ -1726,7 +1510,7 @@ class CommentSystem {
     // readers — only the blog author (future feature) needs it. Avatar +
     // name is the public face of each reply.
     const displayName = reply.authorName || reply.authorEmail || "Unknown";
-    authorWrap.appendChild(this.buildAvatar(reply.authorPicture ?? null, displayName));
+    authorWrap.appendChild(buildAvatar(reply.authorPicture ?? null, displayName));
     const author = document.createElement("span");
     author.className = "cmt-reply-author";
     author.textContent = displayName;
@@ -2288,7 +2072,7 @@ class CommentSystem {
   private narrationArticleAnchor(thread: Thread): HTMLElement | null {
     if (!this.articleRoot || !isTextTarget(thread.target)) return null;
     const firstBlockId = textTargetParts(thread.target).blocks[0]?.id;
-    const block = firstBlockId ? this.blocksById.get(firstBlockId) : undefined;
+    const block = firstBlockId ? this.index.blocksById.get(firstBlockId) : undefined;
     const markName = block?.element
       .closest<HTMLElement>(".spoken-segment")?.dataset.mark;
     if (!markName) return null;
@@ -2312,11 +2096,11 @@ class CommentSystem {
       );
       if (hl) return hl.getBoundingClientRect().top + window.scrollY;
       const firstSeg = textTargetParts(thread.target).blocks[0];
-      const block = firstSeg ? this.blocksById.get(firstSeg.id) : undefined;
+      const block = firstSeg ? this.index.blocksById.get(firstSeg.id) : undefined;
       if (block) return block.element.getBoundingClientRect().top + window.scrollY;
       return null;
     }
-    const el = this.graphicsById.get(graphicTargetId(thread.target));
+    const el = this.index.graphicsById.get(graphicTargetId(thread.target));
     if (el) return el.getBoundingClientRect().top + window.scrollY;
     return null;
   }
@@ -2330,7 +2114,7 @@ class CommentSystem {
   private playThreadAudio(thread: Thread) {
     if (!isTextTarget(thread.target)) return;
     const firstSeg = textTargetParts(thread.target).blocks[0];
-    const block = firstSeg ? this.blocksById.get(firstSeg.id) : undefined;
+    const block = firstSeg ? this.index.blocksById.get(firstSeg.id) : undefined;
     const seg = block?.element.closest<HTMLElement>(".spoken-segment");
     seg?.querySelector<HTMLButtonElement>(".spoken-play")?.click();
   }
@@ -2347,7 +2131,7 @@ class CommentSystem {
         // Jump to the referred article element; fall back to the drawer
         // block if the mark has no paired article element.
         const firstSeg = textTargetParts(thread.target).blocks[0];
-        const block = firstSeg ? this.blocksById.get(firstSeg.id) : undefined;
+        const block = firstSeg ? this.index.blocksById.get(firstSeg.id) : undefined;
         target = this.narrationArticleAnchor(thread) ?? block?.element ?? null;
       } else {
         target = document.querySelector<HTMLElement>(
@@ -2355,12 +2139,12 @@ class CommentSystem {
         );
         if (!target) {
           const firstSeg = textTargetParts(thread.target).blocks[0];
-          const block = firstSeg ? this.blocksById.get(firstSeg.id) : undefined;
+          const block = firstSeg ? this.index.blocksById.get(firstSeg.id) : undefined;
           target = block?.element ?? null;
         }
       }
     } else {
-      target = this.graphicsById.get(graphicTargetId(thread.target)) ?? null;
+      target = this.index.graphicsById.get(graphicTargetId(thread.target)) ?? null;
     }
     if (!target) return;
     target.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
@@ -2511,7 +2295,7 @@ class CommentSystem {
     if (!block) return null;
     const id = block.dataset.commentBlockId;
     if (!id) return null;
-    return this.blocksById.get(id) ?? null;
+    return this.index.blocksById.get(id) ?? null;
   }
 
   private showActionBarFor(range: Range) {
@@ -2606,7 +2390,7 @@ class CommentSystem {
     }
     if (this.pendingStartBlock.context !== this.pendingEndBlock.context) return;
 
-    const blocks = this.blocksByContext.get(this.pendingStartBlock.context) ?? [];
+    const blocks = this.index.blocksByContext.get(this.pendingStartBlock.context) ?? [];
     const startIdx = blocks.indexOf(this.pendingStartBlock);
     const endIdx = blocks.indexOf(this.pendingEndBlock);
     if (startIdx === -1 || endIdx === -1) return;
@@ -2702,7 +2486,7 @@ class CommentSystem {
   private computeNarrationAudioRange(
     touched: BlockInfo[],
   ): { startMs: number; endMs: number | null } | null {
-    if (!this.drawerRoot || touched.length === 0) return null;
+    if (!this.index.drawerRoot || touched.length === 0) return null;
     // `walkBlocks` indexes the `<li>` wrapping each segment (LI is a
     // block tag and the walker stops there), so `.spoken-segment` is a
     // *descendant* of the commented block — look down. `closest` is kept
@@ -2719,7 +2503,7 @@ class CommentSystem {
     // Document order == time order (marks are sorted), so the segment
     // immediately after the last touched one bounds the range.
     const segs = Array.from(
-      this.drawerRoot.querySelectorAll<HTMLElement>(".spoken-segment[data-time-ms]"),
+      this.index.drawerRoot.querySelectorAll<HTMLElement>(".spoken-segment[data-time-ms]"),
     );
     const nextSeg = segs[segs.indexOf(lastSeg) + 1];
     const endMs = nextSeg ? Number(nextSeg.dataset.timeMs) : NaN;
@@ -2770,7 +2554,7 @@ class CommentSystem {
     // fields are irrelevant here.
     return compareSegmentHashes(
       textTargetParts(thread.target).blocks,
-      this.blocksById,
+      this.index.blocksById,
     );
   }
 
@@ -2783,80 +2567,21 @@ class CommentSystem {
     for (let i = 0; i < segs.length; i++) {
       const seg = segs[i];
       if (!seg) continue;
-      const block = this.blocksById.get(seg.id);
+      const block = this.index.blocksById.get(seg.id);
       if (!block) return;
       const isFirst = i === 0;
       const isLast = i === segs.length - 1;
       const fullLen = block.element.textContent?.length ?? 0;
       const start = isFirst ? parts.startOffset : 0;
       const end = isLast ? parts.endOffset : fullLen;
-      this.wrapRangeInBlock(block.element, start, end, thread.id);
+      wrapRangeInBlock(block.element, start, end, thread.id);
     }
-  }
-
-  private wrapRangeInBlock(
-    block: HTMLElement,
-    start: number,
-    end: number,
-    threadId: string,
-  ) {
-    if (start >= end) return;
-    const s = nodeAtOffset(block, start);
-    const e = nodeAtOffset(block, end);
-    if (!s || !e) return;
-    const range = document.createRange();
-    try {
-      range.setStart(s.node, s.offset);
-      range.setEnd(e.node, e.offset);
-    } catch {
-      return;
-    }
-    this.wrapRange(range, threadId);
-  }
-
-  private wrapRange(range: Range, threadId: string) {
-    const anchorEl =
-      range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
-        ? (range.commonAncestorContainer as Element)
-        : range.commonAncestorContainer.parentElement;
-    if (!anchorEl) return;
-    const walker = document.createTreeWalker(anchorEl, NodeFilter.SHOW_TEXT);
-    const textNodes: Text[] = [];
-    while (walker.nextNode()) {
-      const n = walker.currentNode as Text;
-      if (range.intersectsNode(n)) textNodes.push(n);
-    }
-    if (textNodes.length === 0) return;
-    for (const node of textNodes) {
-      let target: Text = node;
-      const nodeLen = target.nodeValue?.length ?? 0;
-      const isStart = node === range.startContainer;
-      const isEnd = node === range.endContainer;
-      const startInNode = isStart ? range.startOffset : 0;
-      const endInNode = isEnd ? range.endOffset : nodeLen;
-      if (startInNode >= endInNode) continue;
-      if (endInNode < nodeLen) target.splitText(endInNode);
-      if (startInNode > 0) target = target.splitText(startInNode);
-      const span = document.createElement("span");
-      span.className = "cmt-highlight";
-      span.dataset.threadId = threadId;
-      target.parentNode!.insertBefore(span, target);
-      span.appendChild(target);
-    }
-  }
-
-  private unwrap(span: HTMLElement) {
-    const parent = span.parentNode;
-    if (!parent) return;
-    while (span.firstChild) parent.insertBefore(span.firstChild, span);
-    parent.removeChild(span);
-    parent.normalize();
   }
 
   // ===== Graphics: hover trigger =====
 
   private installGraphicTriggers() {
-    for (const [gid, el] of this.graphicsById) {
+    for (const [gid, el] of this.index.graphicsById) {
       // Stamp the graphic root as a CSS anchor so cards on this
       // graphic can `position-anchor` to it without JS layout math.
       el.style.setProperty("anchor-name", anchorNameForGraphic(gid));
@@ -2943,7 +2668,7 @@ class CommentSystem {
   // Keep each graphic's indicator badge in sync with the thread count.
   // Called from renderAll so it stays correct after submits / deletes.
   private updateGraphicIndicators() {
-    for (const [gid, el] of this.graphicsById) {
+    for (const [gid, el] of this.index.graphicsById) {
       const count = this.snapshot.filter(
         (t) => !this.threadIsResolved(t)
           && !isTextTarget(t.target)
