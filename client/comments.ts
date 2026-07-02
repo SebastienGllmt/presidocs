@@ -33,13 +33,9 @@ import {
   visibleReplies,
   isTextTarget,
   contextOf,
-  makeTextTarget,
-  makeGraphicTarget,
   textTargetParts,
   graphicTargetId,
-  type Context,
   type Reply,
-  type Target,
   type Thread,
 } from "./commentsStore.ts";
 import {
@@ -58,28 +54,15 @@ import {
   setLastSeenVersion,
   type PostVersionResponse,
 } from "./postVersion.ts";
-import { DraftsStorage } from "./draftsStorage.ts";
 import { compareSegmentHashes } from "./commentsStale.ts";
 import {
   loadHighlightsHidden,
   saveHighlightsHidden,
 } from "./commentsDom.ts";
-import { copyToClipboard } from "./clipboard.ts";
-// The action bar hosts a "Copy link" button alongside "Comment" — see
-// citationLink.ts. `setCommentBarActive` tells the standalone citation button to
-// step aside so a logged-in reader sees one bar, not two competing dark pills.
-import {
-  citationForRange,
-  isInspectableSelectionNode,
-  prewarmCitationGenerator,
-  setCommentBarActive,
-} from "./citationLink.ts";
 import { scrollBehavior, uid } from "./comments/util.ts";
 import {
   anchorNameForText,
   anchorNameForGraphic,
-  findBlockFor,
-  offsetInBlock,
   unwrap,
   wrapRangeInBlock,
 } from "./comments/highlights.ts";
@@ -91,23 +74,15 @@ import {
 import {
   BlockIndex,
   requestDrawerBody,
-  type BlockInfo,
 } from "./comments/blockIndex.ts";
+import { SelectionBar, type SelectionCapture } from "./comments/selectionBar.ts";
+import { DraftManager } from "./comments/draftManager.ts";
 
 // Build-time define (Bun.build `define` map) — `undefined` under the fast
 // `bun run dev` server, `"false"` in built/dev:edge/prod. Used only to gate
 // the dev-only e2e test seam (`installTestHooks`); see swRegister.ts for the
 // same pattern. Never true in a shipped bundle.
 declare const __BUN_DEV__: boolean | undefined;
-
-// A validated article-text selection: the range plus the comment-blocks its
-// ends fall in (same context). Returned by `captureSelection`; feeds both the
-// desktop action bar and the mobile compose flow.
-type SelectionCapture = {
-  range: Range;
-  startBlock: BlockInfo;
-  endBlock: BlockInfo;
-};
 
 // BLOCK_TAGS, normalizeText, walkBlocks are imported from ./commentsDom.ts
 // — extracting them gave the indexer's leaf-tag set, whitespace rule, and
@@ -140,15 +115,21 @@ export class CommentSystem {
   // orchestrator and collaborators read its maps via `this.index` /
   // `this.sys.index`.
   readonly index = new BlockIndex();
+  // Selection action bar + the shared selection capture; owns the `pending*`
+  // handoff DraftManager consumes. Constructed inert.
+  readonly selection = new SelectionBar(this);
+  // Draft lifecycle (create / discard / persist / surface) + the per-textarea
+  // body buffers. Constructed inert.
+  readonly draftMgr = new DraftManager(this);
 
-  private articleRoot: HTMLElement | null = null;
+  articleRoot: HTMLElement | null = null;
 
   // Logged-in user, or null when not authenticated. The UI gates every
   // comment-creation path on this being non-null. Loaded once at boot
   // from /auth/me; not refreshed mid-session (an expired cookie at
   // mid-session falls back to "still appears logged in locally," which is
   // harmless given comments only write to localStorage in v1).
-  private identity: Identity | null = null;
+  identity: Identity | null = null;
 
   // The CRDT store owns persistence + merge semantics. `snapshot` is a
   // cached plain-JSON view of the store's threads, refreshed after every
@@ -201,13 +182,13 @@ export class CommentSystem {
   // overlays (popovers) rather than as a stacked column. Tracked
   // via a `MediaQueryList` listener so a window resize across the
   // breakpoint flips the layout live.
-  private isMobile = false;
+  isMobile = false;
   // Mobile-only: id of the thread/draft currently displayed as the
   // popover. Null when nothing is open. Switches on highlight /
   // graphic-indicator tap and on draft creation; cleared on
   // tap-outside (driven by the card's native `toggle` event so the
   // platform's light-dismiss and ESC stay in sync with our state).
-  private activeCardId: string | null = null;
+  activeCardId: string | null = null;
   // Mobile-only: the single small top-right button — the only
   // comments chrome at rest. Tapping it opens `menuEl`; it pulses while a
   // selection is held (the "comment on what you selected" cue) and carries a
@@ -218,7 +199,7 @@ export class CommentSystem {
   // / highlight-toggle. Threads and drafts use their own `.cmt-card` popovers
   // (re-anchored under the button on mobile), so the menu only hosts the
   // non-thread surfaces; visually they all drop down from the same place.
-  private menuEl: HTMLElement | null = null;
+  menuEl: HTMLElement | null = null;
   // The article-text selection captured at button-press time (pointerdown,
   // before the tap collapses it), so "Leave comment on selection" targets what
   // the reader had selected when they reached for the button. Null when the
@@ -245,33 +226,6 @@ export class CommentSystem {
   // stack pass treats its occupied band as an obstacle so top-of-article
   // cards cascade below it instead of being occluded by it.
   private railEl: HTMLElement | null = null;
-  // Drafts — a freshly composed thread that the user hasn't submitted
-  // yet. Promoted to the store on first reply, removed on Cancel.
-  // Deliberately not in the CRDT: drafts shouldn't sync to a server
-  // (or to the user's other devices) until the user commits. They DO
-  // persist to localStorage so closing the tab doesn't lose work; see
-  // `draftsStorage` and `draftBodies` below for the per-textarea
-  // body-of-typing buffer that pairs with each draft thread.
-  private drafts: Thread[] = [];
-  // In-progress textarea contents for each draft, keyed by thread id.
-  // Updated on every keystroke (via the `input` event) and persisted
-  // alongside `drafts`. Carries through reloads so the user sees their
-  // half-typed comment when they come back.
-  private draftBodies = new Map<string, string>();
-  // In-progress reply text for SAVED threads, keyed by thread id. The
-  // saved-thread analogue of `draftBodies`: it lets a half-typed reply
-  // survive a `renderAll()` card rebuild (e.g. the user starts a reply,
-  // then opens a NEW comment — which selects article text, blurring the
-  // reply box, so the focus-based capture/restore in `renderAll` can't
-  // rescue it). Restored in `buildComposer`, written on every keystroke,
-  // cleared on submit. Session-only and deliberately NOT in
-  // `draftsStorage`: an unsent reply has no draft thread to belong to,
-  // and persisting it would need a storage-schema change for little gain.
-  private replyBodies = new Map<string, string>();
-  // Persistence handle for `drafts` + `draftBodies`. Null until identity
-  // is loaded — the storage key embeds the userId so we can't construct
-  // it before login, matching how `CommentStore` is scoped.
-  private draftsStorage: DraftsStorage | null = null;
   // Thread ids whose card the user has temporarily hidden via "Cancel".
   // Session-only (deliberately not persisted) — a reload brings every
   // card back, so you can't accidentally lose track of comments by
@@ -280,13 +234,13 @@ export class CommentSystem {
   private hiddenCardIds = new Set<string>();
 
   // The right-margin column hosting all cards. One card per thread/draft.
-  private column: HTMLElement | null = null;
+  column: HTMLElement | null = null;
   // Invisible flow element appended to <body> that grows just enough to
   // give scroll room below the lowest comment card, so a card can always
   // be scrolled clear of the viewport-fixed player dock (see
   // `updateBottomSpacer`). 0 height when not needed.
   private bottomSpacer: HTMLElement | null = null;
-  private cardEls = new Map<string, HTMLElement>();
+  cardEls = new Map<string, HTMLElement>();
   // Block elements we stamped `anchor-name` on as the fallback
   // anchor for stale text threads (whose highlights are gone).
   // Tracked so the next render can clear them before re-stamping —
@@ -294,16 +248,6 @@ export class CommentSystem {
   // a stale stamp would otherwise persist after the thread is
   // deleted or revived.
   private staleAnchorBlocks = new Set<HTMLElement>();
-
-  // Floating bar that appears above a text selection: a "Comment" pill and a
-  // sibling "Copy link" pill (the citation deep-link, generated lazily).
-  private actionBar: HTMLDivElement | null = null;
-  private copyLinkBtn: HTMLButtonElement | null = null;
-  private pendingRange: Range | null = null;
-  private pendingStartBlock: BlockInfo | null = null;
-  private pendingEndBlock: BlockInfo | null = null;
-  // Timer that resets the copy-link button's "Copied!" feedback.
-  private citationFeedbackTimer: number | null = null;
 
   // Set while a card is being scrolled-to / pulsed, used to suppress the
   // reposition pass from fighting the smooth-scroll.
@@ -342,7 +286,7 @@ export class CommentSystem {
     this.identity = await loadIdentity();
 
     this.mountColumn();
-    this.mountActionBar();
+    this.selection.mountActionBar();
     this.mountCommentsButton();
     this.mountMenu();
     this.installGraphicTriggers();
@@ -390,16 +334,7 @@ export class CommentSystem {
       const postPath = window.location.pathname;
       this.store = await CommentStore.create(postPath, this.identity.userId);
 
-      // Drafts persist to localStorage under a (post, user) key so a
-      // half-typed comment survives reloads. Loaded synchronously since
-      // localStorage reads are cheap; the in-memory Thread + body
-      // structures are restored before the first render so the cards
-      // appear immediately rather than popping in after.
-      this.draftsStorage = new DraftsStorage(postPath, this.identity.userId);
-      for (const entry of this.draftsStorage.load()) {
-        this.drafts.push(entry.thread);
-        if (entry.body) this.draftBodies.set(entry.thread.id, entry.body);
-      }
+      this.draftMgr.loadPersisted(postPath, this.identity.userId);
 
       // Wire up the network sync. `onChange` is set BEFORE `hydrate`
       // so a user write that lands during the initial GET also queues
@@ -469,7 +404,7 @@ export class CommentSystem {
 
     this.installTestHooks();
 
-    document.addEventListener("selectionchange", () => this.onSelectionChange());
+    document.addEventListener("selectionchange", () => this.selection.onSelectionChange());
     document.addEventListener("click", (e) => this.onAnyClick(e));
     // Because boot is deferred (this module loads lazily on first engagement),
     // the reader may already have a selection when we start (the very gesture
@@ -477,7 +412,7 @@ export class CommentSystem {
     // so the action bar appears for
     // a selection that predates our listener. Fully guarded — no-ops unless the
     // selection is genuine and the reader is signed in.
-    this.onSelectionChange();
+    this.selection.onSelectionChange();
     // No scroll listener — CSS Anchor Positioning re-evaluates
     // `anchor()` on every scroll frame in C++, so cards stay aligned
     // to their anchors without JS layout work.
@@ -489,8 +424,8 @@ export class CommentSystem {
       // action-bar follows its pending range below.
       this.adjustCardStacking();
       this.updateBottomSpacer();
-      if (this.pendingRange && this.actionBar && !this.actionBar.hidden) {
-        this.showActionBarFor(this.pendingRange);
+      if (this.selection.pendingRange && this.selection.actionBar && !this.selection.actionBar.hidden) {
+        this.selection.showActionBarFor(this.selection.pendingRange);
       }
     });
 
@@ -683,7 +618,7 @@ export class CommentSystem {
     if (!this.column) return;
     const author = this.isAuthorMode();
     const totalThreads = this.snapshot.length;
-    const drafts = this.drafts.length;
+    const drafts = this.draftMgr.drafts.length;
     // Show the badge for the author whenever there's something to report: any
     // saved thread, OR any unsent draft. The draft case surfaces a "you have
     // unposted comments" nudge even before the first one is published — the
@@ -758,7 +693,7 @@ export class CommentSystem {
   private jumpToNextUnresolved() {
     const ordered = [
       ...this.snapshot.filter((t) => !this.threadIsResolved(t)),
-      ...this.drafts,
+      ...this.draftMgr.drafts,
     ]
       .map((t) => ({ thread: t, top: this.computeAnchorTop(t) ?? Infinity }))
       .sort((a, b) => a.top - b.top)
@@ -800,7 +735,7 @@ export class CommentSystem {
   // API's top-layer rendering; light-dismiss, ESC, and focus return
   // come from the platform. We only own `activeCardId` (for the
   // tap-same-highlight-to-close gesture) and the body class.
-  private setActiveCard(threadId: string | null): void {
+  setActiveCard(threadId: string | null): void {
     if (this.activeCardId) {
       this.cardEls.get(this.activeCardId)?.hidePopover(); // no-op if closed
     }
@@ -852,7 +787,7 @@ export class CommentSystem {
     // text the reader selected is still present (the tap that follows collapses
     // it). Without this the menu would always open with nothing to comment on.
     btn.addEventListener("pointerdown", () => {
-      this.menuComposeCapture = this.captureSelection();
+      this.menuComposeCapture = this.selection.captureSelection();
     });
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -860,7 +795,7 @@ export class CommentSystem {
       // but tabbing to the button doesn't collapse the document selection, so
       // capture it here if pointerdown didn't (and don't clobber a good touch
       // capture, which the collapsing tap would have turned into null).
-      if (!this.menuComposeCapture) this.menuComposeCapture = this.captureSelection();
+      if (!this.menuComposeCapture) this.menuComposeCapture = this.selection.captureSelection();
       this.toggleMenu();
     });
     document.body.appendChild(btn);
@@ -1000,12 +935,12 @@ export class CommentSystem {
   private composeFromMenu(): void {
     const cap = this.menuComposeCapture;
     if (!cap || !this.identity) return;
-    this.pendingRange = cap.range;
-    this.pendingStartBlock = cap.startBlock;
-    this.pendingEndBlock = cap.endBlock;
+    this.selection.pendingRange = cap.range;
+    this.selection.pendingStartBlock = cap.startBlock;
+    this.selection.pendingEndBlock = cap.endBlock;
     this.menuComposeCapture = null;
     this.hideMenu();
-    this.addDraftForSelection();
+    this.draftMgr.addDraftForSelection();
   }
 
   // Mobile: set the thread-count badge on the button. No-op visual on desktop
@@ -1166,7 +1101,7 @@ export class CommentSystem {
   // Master render: redraws cards, highlights, and indicators from scratch.
   // Cheap enough at our scale (a handful of threads per post) that we
   // don't bother diffing.
-  private renderAll() {
+  renderAll() {
     if (!this.column) return;
 
     // Capture the composer the user is actively typing in, if any. This
@@ -1191,7 +1126,7 @@ export class CommentSystem {
     document.querySelectorAll<HTMLElement>(".cmt-highlight").forEach((s) =>
       unwrap(s),
     );
-    for (const thread of [...this.snapshot, ...this.drafts]) {
+    for (const thread of [...this.snapshot, ...this.draftMgr.drafts]) {
       if (this.threadIsResolved(thread)) continue;
       if (isTextTarget(thread.target) && !this.threadIsStale(thread)) {
         this.highlightTextThread(thread);
@@ -1264,7 +1199,7 @@ export class CommentSystem {
     // — also a child of the column — survives each render pass.
     for (const card of this.cardEls.values()) card.remove();
     this.cardEls.clear();
-    const all: Thread[] = [...this.snapshot, ...this.drafts];
+    const all: Thread[] = [...this.snapshot, ...this.draftMgr.drafts];
     for (const thread of all) {
       if (this.threadIsResolved(thread)) continue;
       const isStale = isTextTarget(thread.target)
@@ -1372,7 +1307,7 @@ export class CommentSystem {
   // drafts distinctly and so the composer's Cancel button can do the
   // right thing (discard the draft entirely vs. just clear the reply box).
   private buildCard(thread: Thread): HTMLElement {
-    const isDraft = this.drafts.includes(thread);
+    const isDraft = this.draftMgr.drafts.includes(thread);
     const isText = isTextTarget(thread.target);
     const isStale = !isDraft && isText && this.threadIsStale(thread);
 
@@ -1582,14 +1517,14 @@ export class CommentSystem {
     // typing. Saved threads always start with an empty reply field —
     // bodies are only persisted for unsubmitted drafts.
     if (isDraft) {
-      const saved = this.draftBodies.get(thread.id);
+      const saved = this.draftMgr.draftBodies.get(thread.id);
       if (saved) ta.value = saved;
       // Persist every keystroke. The localStorage write is cheap and
       // synchronous; debouncing would only matter at thousand-keystroke
       // scales which we won't hit on a comment composer.
       ta.addEventListener("input", () => {
-        this.draftBodies.set(thread.id, ta.value);
-        this.persistDrafts();
+        this.draftMgr.draftBodies.set(thread.id, ta.value);
+        this.draftMgr.persistDrafts();
       });
     } else {
       // Replies to saved threads get the same render-surviving buffer, but
@@ -1597,11 +1532,11 @@ export class CommentSystem {
       // comment mid-reply rebuilds this card with an empty box and the
       // typed reply is lost — the focus-based capture/restore can't help
       // because making the selection already blurred this textarea.
-      const saved = this.replyBodies.get(thread.id);
+      const saved = this.draftMgr.replyBodies.get(thread.id);
       if (saved) ta.value = saved;
       ta.addEventListener("input", () => {
-        if (ta.value) this.replyBodies.set(thread.id, ta.value);
-        else this.replyBodies.delete(thread.id);
+        if (ta.value) this.draftMgr.replyBodies.set(thread.id, ta.value);
+        else this.draftMgr.replyBodies.delete(thread.id);
       });
     }
     // Stop card-click bubbling from inside the textarea (would re-trigger
@@ -1679,7 +1614,7 @@ export class CommentSystem {
       cancel.addEventListener("click", (e) => {
         e.stopPropagation();
         if (isDraft) {
-          this.discardDraft(thread.id);
+          this.draftMgr.discardDraft(thread.id);
         } else {
           this.hiddenCardIds.add(thread.id);
           this.renderAll();
@@ -1764,14 +1699,14 @@ export class CommentSystem {
         // thread no one else has touched yet.
         this.store.addThread(thread.id, thread.target, thread.createdAt);
         this.store.addReply(thread.id, reply);
-        this.drafts = this.drafts.filter((t) => t.id !== thread.id);
-        this.draftBodies.delete(thread.id);
-        this.persistDrafts();
+        this.draftMgr.drafts = this.draftMgr.drafts.filter((t) => t.id !== thread.id);
+        this.draftMgr.draftBodies.delete(thread.id);
+        this.draftMgr.persistDrafts();
       } else {
         this.store.addReply(thread.id, reply);
         // Drop the in-progress buffer so the post-submit re-render doesn't
         // refill the reply box with the text we just sent.
-        this.replyBodies.delete(thread.id);
+        this.draftMgr.replyBodies.delete(thread.id);
       }
       ta.value = "";
       this.refreshSnapshotAndRender();
@@ -1801,7 +1736,7 @@ export class CommentSystem {
       // keeps the native popover from also light-dismissing underneath us.
       if (e.key === "Escape" && isDraft && !ta.value.trim()) {
         e.preventDefault();
-        this.discardDraft(thread.id);
+        this.draftMgr.discardDraft(thread.id);
       }
     });
 
@@ -1896,8 +1831,8 @@ export class CommentSystem {
       this.isAuthorMode() ? "a1" : "a0",
       this.previousVersionHash ? "v1" : "v0",
     ];
-    for (const thread of [...this.snapshot, ...this.drafts]) {
-      const isDraft = this.drafts.includes(thread);
+    for (const thread of [...this.snapshot, ...this.draftMgr.drafts]) {
+      const isDraft = this.draftMgr.drafts.includes(thread);
       const flags =
         (isDraft ? "d" : "") +
         (this.threadIsResolved(thread) ? "r" : "") +
@@ -2170,381 +2105,6 @@ export class CommentSystem {
     }, 1200);
   }
 
-  // ===== Selection → action bar =====
-
-  private mountActionBar() {
-    const bar = document.createElement("div");
-    bar.className = "cmt-action-bar";
-    bar.hidden = true;
-    bar.innerHTML =
-      '<button type="button" class="cmt-action-btn cmt-action-comment">' +
-      '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
-      '<path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H8l-4 4V6a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>' +
-      "<span>Comment</span></button>" +
-      // Citation deep-link, shown alongside Comment from the moment the bar
-      // appears (the icon mirrors the standalone button's quote-mark; see
-      // citationLink.ts). The link is generated on click, not speculatively.
-      '<button type="button" class="cmt-action-btn cmt-action-copylink" ' +
-      'aria-label="Copy a link to the selected text" title="Copy a link to the selected text">' +
-      '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
-      '<path d="M9.5 13.5a3 3 0 0 0 4.5.3l2.5-2.5a3 3 0 0 0-4.3-4.3l-1.2 1.2M14.5 10.5a3 3 0 0 0-4.5-.3L7.5 12.7a3 3 0 0 0 4.3 4.3l1.2-1.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
-      '<span class="cmt-action-copylink-label">Copy link</span></button>';
-    // mousedown (not click) so the selection isn't lost to a focus event
-    // before we capture it.
-    const commentBtn = bar.querySelector<HTMLButtonElement>(".cmt-action-comment")!;
-    commentBtn.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      this.addDraftForSelection();
-    });
-    const copyBtn = bar.querySelector<HTMLButtonElement>(".cmt-action-copylink")!;
-    copyBtn.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      void this.copyCitationFromBar();
-    });
-    this.copyLinkBtn = copyBtn;
-    document.body.appendChild(bar);
-    this.actionBar = bar;
-  }
-
-  // Generate the citation link for the current selection and copy it. Done on
-  // CLICK, not speculatively per selection — so nothing expensive runs on the
-  // (continuous) selectionchange path, and "Copy link" shows alongside "Comment"
-  // from the start instead of popping in after a generation. The generator chunk
-  // is pre-warmed when the bar appears (see showActionBarFor), so this await is
-  // just the synchronous generateFragment; the clipboard write stays well within
-  // the gesture's transient-activation window either way.
-  private async copyCitationFromBar() {
-    const copyBtn = this.copyLinkBtn;
-    const range = this.pendingRange;
-    if (!copyBtn || !range || !this.articleRoot) return;
-    const choice = await citationForRange(range.cloneRange(), this.articleRoot);
-    // citationForRange returns a section fallback for almost any selection;
-    // the clean page URL is only a last resort (selection before any heading).
-    const href = choice?.href ?? `${location.origin}${location.pathname}`;
-    const ok = await copyToClipboard(href);
-    if (!ok) return;
-    const label = copyBtn.querySelector(".cmt-action-copylink-label");
-    if (label) label.textContent = "Copied!";
-    copyBtn.classList.add("cmt-action-copied");
-    if (this.citationFeedbackTimer !== null) window.clearTimeout(this.citationFeedbackTimer);
-    this.citationFeedbackTimer = window.setTimeout(() => {
-      if (label) label.textContent = "Copy link";
-      copyBtn.classList.remove("cmt-action-copied");
-      this.citationFeedbackTimer = null;
-    }, 1200);
-  }
-
-  // Validate the current selection as a commentable article-text range. Pure
-  // (no identity / no side effects) so it can drive both the desktop action
-  // bar and the mobile button-press compose capture. Returns null unless the
-  // selection is non-empty, lands outside our own UI, and both ends sit in
-  // comment-blocks of the same context.
-  private captureSelection(): SelectionCapture | null {
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
-    const range = sel.getRangeAt(0);
-    // Some `selectionchange` events anchor in nodes we can't safely touch (e.g.
-    // native-anonymous media/seek-bar content); both `.contains()` below and the
-    // `blockForNode` tree-walk would throw on them. See isInspectableSelectionNode.
-    if (!isInspectableSelectionNode(range.startContainer) || !isInspectableSelectionNode(range.endContainer)) {
-      return null;
-    }
-    // Ignore selections originating inside our own UI (column / cards / menu).
-    if (this.column?.contains(range.startContainer)) return null;
-    if (this.menuEl?.contains(range.startContainer)) return null;
-    const startBlock = this.blockForNode(range.startContainer);
-    const endBlock = this.blockForNode(range.endContainer);
-    if (!startBlock || !endBlock || startBlock.context !== endBlock.context) {
-      return null;
-    }
-    const rect = range.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) return null;
-    return { range: range.cloneRange(), startBlock, endBlock };
-  }
-
-  private onSelectionChange() {
-    const capture = this.captureSelection();
-
-    // Mobile: no floating action bar — the corner button is the
-    // entry point. Just reflect whether there's something to comment on so the
-    // button can pulse ("comment on what you selected"). The actual range is
-    // grabbed at button-press time (pointerdown), since reaching for the button
-    // collapses this selection. Shown logged-out too — the menu routes to
-    // sign-in (JIT). The body class drives the pulse cue (CSS, reduced-motion
-    // aware).
-    if (this.isMobile) {
-      document.body.classList.toggle("cmt-has-selection", !!capture);
-      return;
-    }
-
-    // Desktop: no commenting without login — keep the action bar suppressed so
-    // text selection doesn't promise a feature the user can't use (the column
-    // header carries the sign-in affordance).
-    if (!this.identity || !capture) {
-      this.hideActionBar();
-      return;
-    }
-    this.pendingRange = capture.range;
-    this.pendingStartBlock = capture.startBlock;
-    this.pendingEndBlock = capture.endBlock;
-    this.showActionBarFor(capture.range);
-  }
-
-  private blockForNode(node: Node): BlockInfo | null {
-    const block = findBlockFor(node);
-    if (!block) return null;
-    const id = block.dataset.commentBlockId;
-    if (!id) return null;
-    return this.index.blocksById.get(id) ?? null;
-  }
-
-  private showActionBarFor(range: Range) {
-    if (!this.actionBar) return;
-    const rect = range.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) {
-      this.hideActionBar();
-      return;
-    }
-    this.actionBar.hidden = false;
-    // Tell the standalone citation button to step aside — this bar now hosts the
-    // "Copy link" action — and pre-warm the generator chunk so the on-click copy
-    // is instant (generation itself happens on click, not here).
-    setCommentBarActive(true);
-    prewarmCitationGenerator();
-    this.positionActionBar(range);
-  }
-
-  // Centre the bar above the selection. Re-run when the bar's width changes
-  // (e.g. the "Copy link" button appears after async generation) so it stays
-  // centred. Absolute coords keep it anchored as the page scrolls.
-  private positionActionBar(range: Range) {
-    if (!this.actionBar || this.actionBar.hidden) return;
-    const rect = range.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) return;
-    const barW = this.actionBar.offsetWidth || 110;
-    const barH = this.actionBar.offsetHeight || 32;
-    const top = window.scrollY + rect.top - barH - 8;
-    let left = window.scrollX + rect.left + rect.width / 2 - barW / 2;
-    left = Math.max(
-      8,
-      Math.min(left, window.scrollX + window.innerWidth - barW - 8),
-    );
-    this.actionBar.style.top = `${top}px`;
-    this.actionBar.style.left = `${left}px`;
-  }
-
-  private hideActionBar() {
-    if (this.actionBar) this.actionBar.hidden = true;
-    // Release the standalone citation button to act again, and clear any
-    // lingering "Copied!" feedback so the next selection's bar starts clean.
-    setCommentBarActive(false);
-    if (this.citationFeedbackTimer !== null) {
-      window.clearTimeout(this.citationFeedbackTimer);
-      this.citationFeedbackTimer = null;
-    }
-    if (this.copyLinkBtn) {
-      this.copyLinkBtn.classList.remove("cmt-action-copied");
-      const label = this.copyLinkBtn.querySelector(".cmt-action-copylink-label");
-      if (label) label.textContent = "Copy link";
-    }
-    this.pendingRange = null;
-    this.pendingStartBlock = null;
-    this.pendingEndBlock = null;
-  }
-
-  // ===== Compose new drafts =====
-
-  // Serialize the current drafts + per-draft textarea bodies to
-  // localStorage. Called after any mutation that adds, removes, or
-  // edits a draft. The bodies map is filtered through the current
-  // `drafts` array so a stray entry for a removed thread can't leak.
-  // Discard an unsubmitted draft entirely — drop the thread, its
-  // in-progress body, and persist the removal, then re-render. Shared by
-  // the composer's "Cancel" button and the Esc-on-empty light-dismiss.
-  private discardDraft(threadId: string): void {
-    this.drafts = this.drafts.filter((t) => t.id !== threadId);
-    this.draftBodies.delete(threadId);
-    this.persistDrafts();
-    // If this draft was the open mobile popover, close it properly —
-    // `preventDefault` on the Esc keydown suppresses the platform's own
-    // light-dismiss, so without this `activeCardId` would linger as open.
-    if (this.activeCardId === threadId) this.setActiveCard(null);
-    this.renderAll();
-  }
-
-  private persistDrafts(): void {
-    if (!this.draftsStorage) return;
-    const entries = this.drafts.map((thread) => ({
-      thread,
-      body: this.draftBodies.get(thread.id) ?? "",
-    }));
-    this.draftsStorage.save(entries);
-  }
-
-  // Triggered by the "Comment" action-bar button after a text selection.
-  // Captures the selection into a WA text target, creates an empty draft, and
-  // adds a card for it in the column (auto-focused for typing).
-  private addDraftForSelection() {
-    if (!this.pendingRange || !this.pendingStartBlock || !this.pendingEndBlock) {
-      return;
-    }
-    if (this.pendingStartBlock.context !== this.pendingEndBlock.context) return;
-
-    const blocks = this.index.blocksByContext.get(this.pendingStartBlock.context) ?? [];
-    const startIdx = blocks.indexOf(this.pendingStartBlock);
-    const endIdx = blocks.indexOf(this.pendingEndBlock);
-    if (startIdx === -1 || endIdx === -1) return;
-    const [a, b] = startIdx <= endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
-    const touched = blocks.slice(a, b + 1);
-
-    // Direction matters: the selection may be created in reverse, in
-    // which case startContainer/endContainer is the *visual* end. The
-    // anchor needs to store the forward-document order regardless.
-    const rangeForwards = startIdx <= endIdx;
-    const startBlock = rangeForwards ? this.pendingStartBlock : this.pendingEndBlock;
-    const endBlock = rangeForwards ? this.pendingEndBlock : this.pendingStartBlock;
-    const startNode = rangeForwards
-      ? this.pendingRange.startContainer
-      : this.pendingRange.endContainer;
-    const startNodeOffset = rangeForwards
-      ? this.pendingRange.startOffset
-      : this.pendingRange.endOffset;
-    const endNode = rangeForwards
-      ? this.pendingRange.endContainer
-      : this.pendingRange.startContainer;
-    const endNodeOffset = rangeForwards
-      ? this.pendingRange.endOffset
-      : this.pendingRange.startOffset;
-
-    const startOffset = offsetInBlock(startBlock.element, startNode, startNodeOffset);
-    const endOffset = offsetInBlock(endBlock.element, endNode, endNodeOffset);
-
-    // Build the quote from the anchored blocks' own text + offsets, not
-    // from `range.toString()`. Across drawer segments the raw range would
-    // splice in the next segment's play-button clock ("0:11") that sits
-    // between the two <p>s in document order; slicing each block's clean
-    // text avoids that and is the precise per-block anchored text anyway.
-    const blockText = (b: BlockInfo) => b.element.textContent ?? "";
-    const quote = touched.length === 1
-      ? blockText(touched[0]!).slice(startOffset, endOffset)
-      : [
-          blockText(touched[0]!).slice(startOffset),
-          ...touched.slice(1, -1).map(blockText),
-          blockText(touched[touched.length - 1]!).slice(0, endOffset),
-        ].join(" ");
-
-    // Surrounding context for the TextQuoteSelector. We don't fuzzy
-    // re-anchor today (the stale-anchor flow orphans + flags instead),
-    // but storing prefix/suffix is cheap (~32 chars each) and keeps the
-    // selector spec-meaningful + leaves the door open to fuzzy matching
-    // later without another CRDT migration.
-    const CTX = 32;
-    const startText = startBlock.element.textContent ?? "";
-    const endText = endBlock.element.textContent ?? "";
-    const prefix = startText.slice(Math.max(0, startOffset - CTX), startOffset);
-    const suffix = endText.slice(endOffset, endOffset + CTX);
-
-    // Narration comments automatically pick up the audio time range of
-    // the segment(s) they touch, from the generated mark timings the
-    // narrator stamps onto each drawer segment (`data-time-ms`). Article
-    // and graphic comments have no audio time and get nothing.
-    const audioRange = this.pendingStartBlock.context === "narration"
-      ? this.computeNarrationAudioRange(touched)
-      : undefined;
-
-    const target = makeTextTarget({
-      context: this.pendingStartBlock.context,
-      blocks: touched.map((blk) => ({ id: blk.id, hash: blk.hash })),
-      startOffset,
-      endOffset,
-      quote,
-      prefix,
-      suffix,
-      ...(audioRange ? { audioRange } : {}),
-    });
-
-    const draft: Thread = {
-      id: uid(),
-      target,
-      replies: [],
-      createdAt: Date.now(),
-    };
-    this.drafts.push(draft);
-    this.persistDrafts();
-    this.hideActionBar();
-    this.renderAll();
-    this.surfaceDraft(draft.id);
-  }
-
-  // Derive the audio time range [first segment start, next segment start)
-  // for a narration selection, from the `data-time-ms` the narrator
-  // stamps on each drawer segment (sourced from the generated manifest).
-  // Returns null if the timings aren't present (e.g. audio not generated,
-  // or the touched blocks aren't inside spoken segments). `endMs: null`
-  // means the selection reaches the final segment and so runs open-ended
-  // to the end of the audio.
-  private computeNarrationAudioRange(
-    touched: BlockInfo[],
-  ): { startMs: number; endMs: number | null } | null {
-    if (!this.index.drawerRoot || touched.length === 0) return null;
-    // `walkBlocks` indexes the `<li>` wrapping each segment (LI is a
-    // block tag and the walker stops there), so `.spoken-segment` is a
-    // *descendant* of the commented block — look down. `closest` is kept
-    // as a fallback in case a future layout nests the block inside the
-    // segment instead.
-    const segOf = (el: HTMLElement): HTMLElement | null =>
-      el.querySelector<HTMLElement>(".spoken-segment[data-time-ms]")
-        ?? el.closest<HTMLElement>(".spoken-segment");
-    const firstSeg = segOf(touched[0]!.element);
-    const lastSeg = segOf(touched[touched.length - 1]!.element);
-    if (!firstSeg || !lastSeg) return null;
-    const startMs = Number(firstSeg.dataset.timeMs);
-    if (!Number.isFinite(startMs)) return null;
-    // Document order == time order (marks are sorted), so the segment
-    // immediately after the last touched one bounds the range.
-    const segs = Array.from(
-      this.index.drawerRoot.querySelectorAll<HTMLElement>(".spoken-segment[data-time-ms]"),
-    );
-    const nextSeg = segs[segs.indexOf(lastSeg) + 1];
-    const endMs = nextSeg ? Number(nextSeg.dataset.timeMs) : NaN;
-    return { startMs, endMs: Number.isFinite(endMs) ? endMs : null };
-  }
-
-  // Triggered by clicking the "+" comment button on a figure.
-  private addDraftForGraphic(graphicEl: HTMLElement) {
-    const id = graphicEl.dataset.commentGraphicId;
-    const ctx = (graphicEl.dataset.commentContext as Context) ?? "article";
-    if (!id) return;
-    const draft: Thread = {
-      id: uid(),
-      target: makeGraphicTarget(ctx, id),
-      replies: [],
-      createdAt: Date.now(),
-    };
-    this.drafts.push(draft);
-    this.persistDrafts();
-    this.renderAll();
-    this.surfaceDraft(draft.id);
-  }
-
-  // After creating a draft, get it in front of the user. On desktop
-  // that means scrolling its column card into view; on mobile it
-  // means promoting it to the active popover.
-  private surfaceDraft(threadId: string) {
-    if (this.isMobile) {
-      this.setActiveCard(threadId);
-      return;
-    }
-    const card = this.cardEls.get(threadId);
-    if (!card) return;
-    card.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
-    const ta = card.querySelector<HTMLTextAreaElement>(".cmt-reply-input");
-    // `preventScroll`: the card is already brought into view by the line
-    // above; without this, focus() does its own scroll-into-view and can
-    // fight/override that (and yank to the top if the card hasn't anchored).
-    ta?.focus({ preventScroll: true });
-  }
-
   // ===== Stale detection =====
 
   private threadIsStale(thread: Thread): boolean {
@@ -2601,7 +2161,7 @@ export class CommentSystem {
         btn.addEventListener("click", (e) => {
           e.preventDefault();
           e.stopPropagation();
-          this.addDraftForGraphic(el);
+          this.draftMgr.addDraftForGraphic(el);
         });
       }
 
