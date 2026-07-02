@@ -16,28 +16,22 @@
 import "./shikwasa-vendor.css";
 import { Player, Chapter } from "shikwasa";
 import { asMs, msToSeconds, secondsToMs, asSeconds, type Milliseconds } from "../shared/time.ts";
-import { computeActiveMark, findActiveWord } from "./narratorTiming.ts";
+import { computeActiveMark } from "./narratorTiming.ts";
 import { emitNarrationPlay, emitNarrationQuartile } from "./analytics.ts";
 import { copyToClipboard } from "./clipboard.ts";
 import { QUARTILES, type PlayTrigger, type Quartile } from "../shared/analyticsSchema.ts";
 import {
   SPOKEN_ID_PREFIX,
-  spokenSegmentId,
-  collectOutline,
-  parseSpokenHash,
   loadCaptureControls,
 } from "./narratorDom.ts";
-import {
-  DRAWER_BODY_WANTED_ATTR,
-  REQUEST_DRAWER_BODY_EVENT,
-  DRAWER_BODY_READY_EVENT,
-} from "./drawerBodyContract.ts";
 import { MediaSessionController } from "./narrator/mediaSession.ts";
 import { NarratorKeyboard } from "./narrator/keyboard.ts";
 import { FigureDriver } from "./narrator/figureDriver.ts";
 import { ChapterStrip } from "./narrator/chapterStrip.ts";
 import { DockControls } from "./narrator/dockControls.ts";
 import { Speakers } from "./narrator/speakers.ts";
+import { Drawer } from "./narrator/drawer.ts";
+import { OutlinePanel } from "./narrator/outlinePanel.ts";
 
 // The manifest shape (`ManifestWord`/`ManifestMark`/`ManifestChapter`/
 // `Manifest`) is declared once in `shared/manifestSchema.ts` and shared with the
@@ -51,8 +45,6 @@ import { Speakers } from "./narrator/speakers.ts";
 import {
   ManifestSchema,
   type Manifest,
-  type ManifestMark,
-  type ManifestWord,
   type ManifestChapter,
 } from "../shared/manifestSchema.ts";
 
@@ -60,25 +52,8 @@ import {
 // re-export here so any in-file uses don't need to re-import.
 // (Both are used by both the drawer DOM build and applyHashIfMatching.)
 
-function formatClockTime(ms: Milliseconds) {
-  const total = Math.max(0, Math.round(msToSeconds(ms)));
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
 // Register the chapter plugin once for the lifetime of the page.
 Player.use(Chapter);
-
-// The two panels sharing the left-edge drawer. ONE drawer, two panels — they
-// occupy the same space by construction, so "script and outline can't both be
-// open" is an invariant of the DOM shape, not a rule two drawers coordinate on.
-type DrawerPanel = "script" | "outline";
-
-// Article scroll position counts as "inside" a section once the section's
-// heading has risen to within this many px of the viewport top. Drives the
-// outline panel's current-section highlight.
-const OUTLINE_ACTIVE_OFFSET_PX = 120;
 
 export class Narrator {
   readonly media = new MediaSessionController(this);
@@ -87,6 +62,8 @@ export class Narrator {
   readonly strip = new ChapterStrip(this);
   readonly dock = new DockControls(this);
   readonly speakers = new Speakers(this);
+  readonly drawer = new Drawer(this);
+  readonly outline = new OutlinePanel(this);
 
   manifest: Manifest | null = null;
   player: InstanceType<typeof Player> | null = null;
@@ -129,43 +106,6 @@ export class Narrator {
   // before the first-play arming so a returning reader who released
   // last session stays released without having to re-toggle.
   captureControls = true;
-  // Script-&-outline drawer + per-mark segment elements. One drawer element,
-  // two panels (`drawerPanel` picks which body is shown); two edge tabs open
-  // it straight to a panel, the header panel-tabs switch in place.
-  private drawerEl: HTMLElement | null = null;
-  private drawerTabBtn: HTMLButtonElement | null = null;
-  private outlineTabBtn: HTMLButtonElement | null = null;
-  private panelTabBtns = new Map<DrawerPanel, HTMLButtonElement>();
-  private drawerPanel: DrawerPanel = "script";
-  // Outline panel: lazily built like the script body (`ensureOutlineBody`).
-  // `outlineEntries` pairs each rendered link with its article target so the
-  // scroll-spy never re-queries the DOM per scroll frame.
-  private outlineBodyEl: HTMLElement | null = null;
-  private outlineBuilt = false;
-  private outlineEntries: { link: HTMLAnchorElement; target: HTMLElement }[] = [];
-  private outlineActiveLink: HTMLAnchorElement | null = null;
-  // Scroll-spy listener is armed only while (drawer open ∧ panel = outline),
-  // so a closed drawer costs nothing per scroll. rAF-coalesced.
-  private outlineScrollArmed = false;
-  private outlineSyncQueued = false;
-  // The drawer body is built lazily off the boot path — see `ensureDrawerBody`
-  // and the narrator↔comments contract in narratorDom.ts. `drawerBodyEl` is the
-  // empty container appended with the shell; `drawerBodyBuilt` guards the
-  // one-time populate.
-  private drawerBodyEl: HTMLElement | null = null;
-  private drawerBodyBuilt = false;
-  private segmentEls = new Map<string, HTMLElement>();
-  // Per-mark word `<span>`s for the karaoke-style active-word highlight.
-  // Populated by `renderSegment` only when the mark carries `words` — marks
-  // without alignment data render text flat and have no entry here. Same key
-  // (mark name) as `segmentEls`; the inner array is in `words[]` order so the
-  // rAF tick can binary-search by time and toggle .narration-active-word on
-  // the corresponding span without re-querying the DOM.
-  private wordEls = new Map<string, HTMLSpanElement[]>();
-  // Last (markName, wordIndex) we lit, so the per-frame tick can short-
-  // circuit when nothing changed.
-  private activeWord: { markName: string; index: number } | null = null;
-  private drawerOpen = false;
   // The post's URL path (e.g. `/posts/hash-functions`) — the key both
   // `/post-version` and `/dev/regenerate` expect (the server indexes posts by
   // URL path, not bare slug; matches how comments.ts identifies the post).
@@ -265,12 +205,12 @@ export class Narrator {
     this.dock.setupCloseButton();
     this.dock.setupSmoothBar();
     this.keys.setupKeyboardShortcuts();
-    this.buildDrawer();
+    this.drawer.buildDrawer();
     this.speakers.setupDividerSpeakers();
     this.speakers.setupHeadingSpeakers();
     void this.maybeEnableAuthorTools();
-    this.applyHashIfMatching();
-    window.addEventListener("hashchange", () => this.applyHashIfMatching());
+    this.drawer.applyHashIfMatching();
+    window.addEventListener("hashchange", () => this.drawer.applyHashIfMatching());
 
     this.player.on("play", () => this.onPlay());
     this.player.on("pause", () => this.onPause());
@@ -438,7 +378,7 @@ export class Narrator {
     // because nothing is cached. See client/narratorTiming.ts.
     const active = computeActiveMark(this.manifest.marks, tMs);
     this.setActive(active ? active.name : null);
-    this.updateActiveWord(active?.name ?? null, tMs);
+    this.drawer.updateActiveWord(active?.name ?? null, tMs);
     // Drive the staged figure off the SAME clock — keyed off the timeline's
     // figure pointer, independent of the `name` highlight above (47).
     this.figures.updateActiveFigure(tMs);
@@ -478,7 +418,7 @@ export class Narrator {
         `#${CSS.escape(this.activeId)}`,
       );
       prev?.classList.remove("narration-active");
-      this.segmentEls.get(this.activeId)?.classList.remove("narration-active");
+      this.drawer.segmentEls.get(this.activeId)?.classList.remove("narration-active");
     }
     if (id) {
       const el = this.narrationRoot.querySelector(`#${CSS.escape(id)}`);
@@ -500,579 +440,15 @@ export class Narrator {
       // spoken script). Scroll inside the drawer only when it's open AND
       // showing the script panel (a `hidden` panel has no boxes to scroll);
       // the drawer body's overflow-y keeps the page itself from scrolling.
-      const seg = this.segmentEls.get(id);
+      const seg = this.drawer.segmentEls.get(id);
       if (seg) {
         seg.classList.add("narration-active");
-        if (this.drawerOpen && this.drawerPanel === "script") {
+        if (this.drawer.drawerOpen && this.drawer.drawerPanel === "script") {
           seg.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
         }
       }
     }
     this.activeId = id;
-  }
-
-  // Build the slide-in drawer SHELL (the `<aside>` + edge tabs + header + two
-  // empty panel bodies) eagerly. The drawer hosts TWO panels — the spoken
-  // script and the article outline — in one element, so the panels share the
-  // left-edge slot by construction (they can never both be open). The script
-  // BODY — one `<article id="spoken-<markName>">` per segment, each split into
-  // per-word spans on an aligned post — is the node bulk, so it's deferred to
-  // `ensureDrawerBody` and built on demand: when the reader opens that panel,
-  // on a `#spoken-…` deep link, or when the logged-in comment system requests
-  // it (a logged-out reader never triggers it, so on the common path — and the
-  // Lighthouse trace — the body never builds unless the reader opens the
-  // script). The outline body defers the same way (`ensureOutlineBody`). See
-  // the narrator↔comments contract in narratorDom.ts and methodology →
-  // Narrator ("Loading: a lazy boot").
-  //
-  // Comment-anchor invariant (see walkBlocks in commentsDom.ts): the comment
-  // system indexes this whole aside and hands out POSITIONAL fallback ids in
-  // walk order, so the sequence of walker-visible blocks must not change:
-  // [h2 "Spoken script"] then the script body's chapters/segments. All chrome
-  // added for the two-panel drawer is either non-block (buttons) or wrapped
-  // in <nav> (the panel switcher, the outline panel), which the walker skips.
-  private buildDrawer() {
-    const drawer = document.createElement("aside");
-    drawer.id = "narrate-drawer";
-    drawer.className = "narrate-drawer";
-    drawer.setAttribute("aria-label", "Script & outline");
-    drawer.dataset.open = "false";
-    drawer.dataset.panel = "script";
-
-    // Edge tabs, stacked on the drawer's left edge — one per panel, each
-    // opening the drawer straight to its panel. They travel with the drawer
-    // (anchored at `left: 100%`): peeking out from the viewport's left edge
-    // when closed, hidden while open (the header switcher takes over).
-    this.drawerTabBtn = this.buildEdgeTab(
-      drawer,
-      "script",
-      "Script",
-      '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
-        '<path d="M5 4h10l4 4v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm10 0v5h4M8 12h8M8 16h6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-      "Open spoken script",
-    );
-    this.outlineTabBtn = this.buildEdgeTab(
-      drawer,
-      "outline",
-      "Outline",
-      '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
-        '<path d="M9 6h11M9 12h11M9 18h11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>' +
-        '<circle cx="4.5" cy="6" r="1.4" fill="currentColor"/><circle cx="4.5" cy="12" r="1.4" fill="currentColor"/><circle cx="4.5" cy="18" r="1.4" fill="currentColor"/></svg>',
-      "Open outline",
-    );
-
-    // Header: panel switcher + close affordance. The switcher sits where the
-    // old static title did and is styled like it — the active panel's name IS
-    // the drawer title, you just happen to be able to press the other one.
-    // It lives in a <nav> so the comment walker skips it (see above).
-    const header = document.createElement("header");
-    header.className = "narrate-drawer-header";
-    const tabsNav = document.createElement("nav");
-    tabsNav.className = "drawer-panel-tabs";
-    tabsNav.setAttribute("aria-label", "Drawer panels");
-    const panelLabels: [DrawerPanel, string][] = [
-      ["script", "Spoken script"],
-      ["outline", "Outline"],
-    ];
-    for (const [panel, label] of panelLabels) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "drawer-panel-tab";
-      btn.textContent = label;
-      btn.setAttribute("aria-pressed", String(panel === "script"));
-      btn.addEventListener("click", () => this.setPanel(panel));
-      tabsNav.appendChild(btn);
-      this.panelTabBtns.set(panel, btn);
-    }
-    header.appendChild(tabsNav);
-    const closeBtn = document.createElement("button");
-    closeBtn.type = "button";
-    closeBtn.className = "narrate-drawer-close";
-    closeBtn.setAttribute("aria-label", "Close drawer");
-    closeBtn.innerHTML =
-      '<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">' +
-      '<path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
-    closeBtn.addEventListener("click", () => this.setDrawerOpen(false));
-    header.appendChild(closeBtn);
-    drawer.appendChild(header);
-
-    // Script panel — populated lazily by `ensureDrawerBody`. The visually-
-    // hidden <h2> titles the panel for screen readers AND keeps the comment
-    // walker's block sequence byte-identical to the pre-outline drawer (the
-    // title used to be a visible header <h2>; same text, same walk position,
-    // so the positional `narration:__b-…` ids — and every anchor hashed
-    // against them — survive the restructure untouched).
-    const body = document.createElement("div");
-    body.className = "narrate-drawer-body";
-    const srTitle = document.createElement("h2");
-    srTitle.className = "narrate-drawer-sr-title";
-    srTitle.textContent = "Spoken script";
-    body.appendChild(srTitle);
-    drawer.appendChild(body);
-
-    // Outline panel — populated lazily by `ensureOutlineBody`. A real <nav>
-    // for its own sake (it IS the post's navigation) and for the walker skip.
-    const outline = document.createElement("nav");
-    outline.className = "narrate-drawer-outline";
-    outline.setAttribute("aria-label", "Outline");
-    outline.hidden = true;
-    drawer.appendChild(outline);
-    this.outlineBodyEl = outline;
-
-    // One-shot entrance: the shell is built client-side at narrator boot, so
-    // without this the tabs pop into the left edge. `data-entering` (set before
-    // append so the first render carries it) drives the tabs' slide+fade in
-    // (see `.narrate-drawer-tab` in narrator.css; the outline tab follows the
-    // script tab on a short stagger) — a single coordinated motion with the
-    // dock's reveal. Cleared after the animation so reclosing the drawer
-    // (which re-shows the tabs) doesn't replay it.
-    drawer.dataset.entering = "true";
-
-    document.body.appendChild(drawer);
-    this.drawerEl = drawer;
-    this.drawerBodyEl = body;
-
-    // 300 ms animation (narrator.css) + a frame of slack; harmless if it lingers
-    // under reduced motion (the animation is suppressed there anyway).
-    setTimeout(() => drawer.removeAttribute("data-entering"), 360);
-
-    // Order-independent handshake (narratorDom.ts): if a requester (the
-    // logged-in comment system) already asked for the body before we booted,
-    // build it now; otherwise answer the request whenever it arrives.
-    if (document.documentElement.hasAttribute(DRAWER_BODY_WANTED_ATTR)) {
-      this.ensureDrawerBody();
-    }
-    document.addEventListener(REQUEST_DRAWER_BODY_EVENT, () => this.ensureDrawerBody());
-  }
-
-  // One edge tab handle. `data-panel-target` keys both the click behavior
-  // (open straight to that panel) and the CSS stacking offset.
-  private buildEdgeTab(
-    drawer: HTMLElement,
-    panel: DrawerPanel,
-    label: string,
-    iconSvg: string,
-    ariaLabel: string,
-  ): HTMLButtonElement {
-    const tab = document.createElement("button");
-    tab.type = "button";
-    tab.className = "narrate-drawer-tab";
-    tab.dataset.panelTarget = panel;
-    tab.setAttribute("aria-controls", "narrate-drawer");
-    tab.setAttribute("aria-expanded", "false");
-    tab.setAttribute("aria-label", ariaLabel);
-    tab.innerHTML = `${iconSvg}<span class="tab-label">${label}</span>`;
-    tab.addEventListener("click", () => this.setDrawerOpen(true, panel));
-    drawer.appendChild(tab);
-    return tab;
-  }
-
-  // Populate the deferred drawer body once: one section per chapter, each a
-  // list of `<article id="spoken-<markName>">` segments (sub-chapter sections
-  // nest INSIDE their parent's so its heading stays sticky for the duration —
-  // sticky scoping is bounded by the containing block). Idempotent. Safe to
-  // call from any trigger (open / deep-link / comment request).
-  private ensureDrawerBody() {
-    if (this.drawerBodyBuilt) return;
-    const body = this.drawerBodyEl;
-    const manifest = this.manifest;
-    if (!body || !manifest) return;
-    this.drawerBodyBuilt = true;
-
-    const byChapter = new Map<string, ManifestMark[]>();
-    for (const mark of manifest.marks) {
-      if (!byChapter.has(mark.chapter)) byChapter.set(mark.chapter, []);
-      byChapter.get(mark.chapter)!.push(mark);
-    }
-
-    const childrenOf = new Map<string, ManifestChapter[]>();
-    for (const chapter of manifest.chapters) {
-      if (chapter.parentId === undefined) continue;
-      if (!childrenOf.has(chapter.parentId)) childrenOf.set(chapter.parentId, []);
-      childrenOf.get(chapter.parentId)!.push(chapter);
-    }
-
-    const buildSection = (
-      chapter: ManifestChapter,
-      isSub: boolean,
-    ): HTMLElement | null => {
-      const marks = byChapter.get(chapter.id) ?? [];
-      const subs = isSub ? [] : (childrenOf.get(chapter.id) ?? []);
-      if (marks.length === 0 && subs.length === 0) return null;
-
-      const section = document.createElement("section");
-      section.className = "spoken-chapter";
-      section.dataset.chapter = chapter.id;
-      if (isSub) section.dataset.subchapter = "true";
-
-      const heading = document.createElement("h3");
-      heading.textContent = chapter.title;
-      section.appendChild(heading);
-
-      if (marks.length > 0) {
-        const ol = document.createElement("ol");
-        ol.className = "spoken-segments";
-        for (const mark of marks) {
-          ol.appendChild(this.renderSegment(mark));
-        }
-        section.appendChild(ol);
-      }
-
-      for (const sub of subs) {
-        const subSection = buildSection(sub, true);
-        if (subSection) section.appendChild(subSection);
-      }
-
-      return section;
-    };
-
-    for (const chapter of manifest.chapters) {
-      if (chapter.parentId !== undefined) continue;
-      const section = buildSection(chapter, false);
-      if (section) body.appendChild(section);
-    }
-
-    // The drawer is now indexable. Mark it + fire the READY signal so a
-    // comment system that requested the body (and is awaiting it) can index
-    // and paint narration highlights into a fully-built drawer.
-    this.drawerEl?.setAttribute("data-body-ready", "true");
-    document.dispatchEvent(new CustomEvent(DRAWER_BODY_READY_EVENT));
-
-    // Re-apply the active highlight: a live playback's rAF tick catches the
-    // new spans next frame, but a paused reader who just built the drawer
-    // needs the current mark/word lit once now.
-    if (this.activeId) {
-      this.segmentEls.get(this.activeId)?.classList.add("narration-active");
-      if (this.player) {
-        this.updateActiveWord(
-          this.activeId,
-          secondsToMs(asSeconds(this.player.currentTime)),
-        );
-      }
-    }
-  }
-
-  private renderSegment(mark: ManifestMark): HTMLLIElement {
-    const li = document.createElement("li");
-    // <article> is appropriate — each segment is a self-contained piece of
-    // content that may later carry its own discussion thread.
-    const seg = document.createElement("article");
-    seg.id = spokenSegmentId(mark.name);
-    seg.className = "spoken-segment";
-    seg.dataset.mark = mark.name;
-    seg.dataset.chapter = mark.chapter;
-    seg.dataset.timeMs = String(mark.time);
-    // `tabindex` so :focus-visible works when arrived at by URL fragment.
-    seg.tabIndex = -1;
-
-    const play = document.createElement("button");
-    play.type = "button";
-    play.className = "spoken-play";
-    play.setAttribute(
-      "aria-label",
-      `Play from ${formatClockTime(mark.time)} — ${mark.name}`,
-    );
-    play.innerHTML =
-      '<svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 1l6 4-6 4z" fill="currentColor"/></svg>' +
-      `<time datetime="PT${msToSeconds(mark.time)}S">${formatClockTime(mark.time)}</time>`;
-    play.addEventListener("click", () => {
-      // Seek into the start of this segment (the small offset matches the
-      // chapter-jump nudge — keeps the chapter plugin's range check happy
-      // when a mark sits exactly on a chapter boundary).
-      this.seekToMs(asMs(mark.time + 10));
-      this.player?.play();
-    });
-    seg.appendChild(play);
-
-    const text = document.createElement("p");
-    text.className = "spoken-text";
-    const fullText = mark.text ?? "";
-    if (mark.words && mark.words.length > 0) {
-      // Word-level alignment is available: render the spoken text as a
-      // sequence of (gap text, <span.spoken-word>word</span>) pairs so the
-      // rAF tick can toggle .narration-active-word on the active span. The
-      // unchanged stretches between words (whitespace, punctuation that
-      // sits outside [s,e)) are emitted as bare text nodes — no per-glyph
-      // span — so the DOM stays light on long segments.
-      const spans: HTMLSpanElement[] = [];
-      let cursor = 0;
-      for (const [wIdx, w] of mark.words.entries()) {
-        if (w.s > cursor) text.appendChild(document.createTextNode(fullText.slice(cursor, w.s)));
-        const span = document.createElement("span");
-        span.className = "spoken-word";
-        span.dataset.wordIndex = String(wIdx);
-        span.textContent = fullText.slice(w.s, w.e);
-        // Click-to-seek on a word — drop-in extension of the segment's
-        // click-to-seek (the play button above), at finer granularity. Same
-        // small offset for the same reason (chapter plugin range check).
-        span.addEventListener("click", () => {
-          this.seekToMs(asMs(w.t + 10));
-          this.player?.play();
-        });
-        text.appendChild(span);
-        spans.push(span);
-        cursor = w.e;
-      }
-      if (cursor < fullText.length) text.appendChild(document.createTextNode(fullText.slice(cursor)));
-      this.wordEls.set(mark.name, spans);
-    } else {
-      text.textContent = fullText;
-    }
-    seg.appendChild(text);
-
-    li.appendChild(seg);
-    this.segmentEls.set(mark.name, seg);
-    return li;
-  }
-
-  // Per-frame active-word update. Called from updateActive() after the active
-  // MARK is resolved, so the binary search is over a single segment's words[]
-  // (typically 30-80 entries) rather than every word in the post. Cheap.
-  private updateActiveWord(activeMarkName: string | null, tMs: Milliseconds) {
-    if (!activeMarkName) {
-      this.clearActiveWord();
-      return;
-    }
-    const spans = this.wordEls.get(activeMarkName);
-    if (!spans || spans.length === 0) {
-      this.clearActiveWord();
-      return;
-    }
-    const mark = this.manifest?.marks.find((m) => m.name === activeMarkName);
-    const words = mark?.words;
-    if (!words || words.length === 0) {
-      this.clearActiveWord();
-      return;
-    }
-    // Pure bisect — see client/narratorTiming.ts. Returns -1 before the
-    // first word; we treat that as "nothing to highlight yet."
-    const idx = findActiveWord(words, tMs);
-    if (idx < 0) {
-      this.clearActiveWord();
-      return;
-    }
-    // The last matched word might have already finished (currentTime past
-    // its [t, t+d)). When that happens AND it's the trailing word of the
-    // mark, the active highlight visually "lingers" on the last spoken
-    // word — which is what a karaoke reader expects (the eye doesn't snap
-    // back to nothing mid-pause). For interior words, the next iteration
-    // will overwrite anyway.
-    if (
-      this.activeWord &&
-      this.activeWord.markName === activeMarkName &&
-      this.activeWord.index === idx
-    ) {
-      return; // unchanged
-    }
-    this.clearActiveWord();
-    spans[idx]?.classList.add("narration-active-word");
-    this.activeWord = { markName: activeMarkName, index: idx };
-  }
-
-  private clearActiveWord() {
-    if (!this.activeWord) return;
-    const prev = this.wordEls.get(this.activeWord.markName);
-    prev?.[this.activeWord.index]?.classList.remove("narration-active-word");
-    this.activeWord = null;
-  }
-
-  private setDrawerOpen(open: boolean, panel?: DrawerPanel) {
-    if (!this.drawerEl) return;
-    if (open && panel) this.setPanel(panel);
-    // Opening reveals a panel — build its (deferred) body first so there's
-    // something to show. No-op if already built.
-    if (open) this.ensurePanelBody(this.drawerPanel);
-    if (this.drawerOpen === open) return;
-    this.drawerOpen = open;
-    this.drawerEl.dataset.open = String(open);
-    for (const tab of [this.drawerTabBtn, this.outlineTabBtn]) {
-      tab?.setAttribute("aria-expanded", String(open));
-    }
-    document.body.classList.toggle("drawer-open", open);
-    this.armOutlineScrollSync();
-    if (open) this.revealPanelPosition(this.drawerPanel);
-  }
-
-  // Switch which panel the (single) drawer shows. In-place swap — no slide,
-  // the drawer doesn't move, only its body changes. Builds the incoming
-  // panel's body lazily when the drawer is (or is being) opened.
-  private setPanel(panel: DrawerPanel) {
-    if (!this.drawerEl || this.drawerPanel === panel) return;
-    this.drawerPanel = panel;
-    this.drawerEl.dataset.panel = panel;
-    for (const [p, btn] of this.panelTabBtns) {
-      btn.setAttribute("aria-pressed", String(p === panel));
-    }
-    if (this.drawerBodyEl) this.drawerBodyEl.hidden = panel !== "script";
-    if (this.outlineBodyEl) this.outlineBodyEl.hidden = panel !== "outline";
-    if (this.drawerOpen) {
-      this.ensurePanelBody(panel);
-      this.revealPanelPosition(panel);
-    }
-    this.armOutlineScrollSync();
-  }
-
-  private ensurePanelBody(panel: DrawerPanel) {
-    if (panel === "script") this.ensureDrawerBody();
-    else this.ensureOutlineBody();
-  }
-
-  // After opening (or switching panels while open), bring the panel's "you
-  // are here" into view: the active narration segment (script) or the current
-  // section (outline), so the reader doesn't have to hunt.
-  private revealPanelPosition(panel: DrawerPanel) {
-    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    let target: HTMLElement | null | undefined;
-    if (panel === "script") {
-      target = this.activeId ? this.segmentEls.get(this.activeId) : null;
-    } else {
-      this.syncOutlineActive();
-      target = this.outlineActiveLink;
-    }
-    if (!target) return;
-    // Defer past the open-transition's first frame so layout has settled
-    // and `scrollIntoView` finds non-zero dimensions.
-    requestAnimationFrame(() => {
-      target?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
-    });
-  }
-
-  // Populate the deferred outline panel once from the ARTICLE's structure —
-  // part dividers + h2/h3 headings (collectOutline in narratorDom.ts), NOT
-  // the narration manifest: the outline is a reading tool, so it lists every
-  // heading whether or not narration touches it. Tiny next to the script body
-  // (tens of links, no per-word spans), but deferred the same way — same
-  // pattern, and a reader who never opens it pays nothing.
-  private ensureOutlineBody() {
-    if (this.outlineBuilt) return;
-    const nav = this.outlineBodyEl;
-    if (!nav) return;
-    this.outlineBuilt = true;
-
-    const makeLink = (id: string, text: string): HTMLAnchorElement | null => {
-      const target = document.getElementById(id);
-      if (!target) return null;
-      const a = document.createElement("a");
-      a.className = "outline-link";
-      a.href = `#${id}`;
-      a.textContent = text;
-      this.outlineEntries.push({ link: a, target });
-      return a;
-    };
-
-    // Group: one section per part divider, holding the headings under it;
-    // headings before the first divider go in a leading label-less section.
-    let section = document.createElement("section");
-    section.className = "outline-part";
-    let list: HTMLOListElement | null = null;
-    const flushSection = () => {
-      if (section.childNodes.length > 0) nav.appendChild(section);
-    };
-    for (const entry of collectOutline(this.narrationRoot)) {
-      if (entry.kind === "part") {
-        flushSection();
-        section = document.createElement("section");
-        section.className = "outline-part";
-        list = null;
-        const label = document.createElement("h3");
-        const a = makeLink(entry.id, entry.text);
-        if (a) label.appendChild(a);
-        else label.textContent = entry.text;
-        section.appendChild(label);
-      } else {
-        if (!list) {
-          list = document.createElement("ol");
-          list.className = "outline-entries";
-          section.appendChild(list);
-        }
-        const a = makeLink(entry.id, entry.text);
-        if (!a) continue;
-        const li = document.createElement("li");
-        li.dataset.level = String(entry.level ?? 2);
-        li.appendChild(a);
-        list.appendChild(li);
-      }
-    }
-    flushSection();
-
-    // Navigating from an entry deliberately does NOT close the drawer: the
-    // outline is a browsing surface (hop between sections, skim, hop again),
-    // and native anchor behavior already does the hash + smooth scroll. The
-    // scroll-spy follows the jump, so the highlight lands on the clicked
-    // entry by itself; closing stays on the X / the panel's edge tabs.
-  }
-
-  // ----- Outline scroll-spy --------------------------------------------------
-  // While (drawer open ∧ panel = outline), the article's scroll position is
-  // mirrored as a highlight on the outline entry whose section the reader is
-  // in. Armed/disarmed on those two state edges so a closed drawer costs
-  // nothing per scroll; rAF-coalesced so a scroll burst computes once a frame.
-
-  private onArticleScroll = () => {
-    if (this.outlineSyncQueued) return;
-    this.outlineSyncQueued = true;
-    requestAnimationFrame(() => {
-      this.outlineSyncQueued = false;
-      this.syncOutlineActive();
-    });
-  };
-
-  private armOutlineScrollSync() {
-    const want = this.drawerOpen && this.drawerPanel === "outline";
-    if (want === this.outlineScrollArmed) return;
-    this.outlineScrollArmed = want;
-    if (want) {
-      window.addEventListener("scroll", this.onArticleScroll, { passive: true });
-    } else {
-      window.removeEventListener("scroll", this.onArticleScroll);
-    }
-  }
-
-  // Current section = LAST outline target risen to within
-  // OUTLINE_ACTIVE_OFFSET_PX of the viewport top. Above the first target
-  // (still in the lede) nothing is current — honest, not a bug.
-  private syncOutlineActive() {
-    let active: HTMLAnchorElement | null = null;
-    for (const { link, target } of this.outlineEntries) {
-      if (target.getBoundingClientRect().top <= OUTLINE_ACTIVE_OFFSET_PX) {
-        active = link;
-      }
-    }
-    if (active === this.outlineActiveLink) return;
-    this.outlineActiveLink?.classList.remove("outline-active");
-    this.outlineActiveLink?.removeAttribute("aria-current");
-    this.outlineActiveLink = active;
-    if (active) {
-      active.classList.add("outline-active");
-      active.setAttribute("aria-current", "location");
-      // Keep the lit entry visible as the article scrolls under the open
-      // drawer. "nearest" so we never yank a drawer the reader is browsing.
-      active.scrollIntoView({ block: "nearest" });
-    }
-  }
-
-  // If the page was loaded (or navigated to) with a URL fragment that points
-  // at a spoken segment, open the drawer and bring that segment into view.
-  // Plain `#elementId` fragments still scroll the article as the browser does
-  // by default — we only intervene for our prefixed ids.
-  private applyHashIfMatching() {
-    // Parse via the pure helper — it covers the empty-hash, malformed-
-    // `%xx`, and "not our prefix" cases uniformly. See narratorDom.ts.
-    const markName = parseSpokenHash(window.location.hash);
-    if (!markName) return;
-    // The target segment lives in the (deferred) drawer body — build it first.
-    this.ensureDrawerBody();
-    const seg = this.segmentEls.get(markName);
-    if (!seg) return;
-    this.setDrawerOpen(true, "script");
-    // Highlight briefly so it's easy to spot when arrived from a link.
-    seg.classList.add("anchor-flash");
-    setTimeout(() => seg.classList.remove("anchor-flash"), 1500);
-    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    requestAnimationFrame(() => {
-      seg.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
-      seg.focus({ preventScroll: true });
-    });
   }
 
   // Author-only, dev-only per-segment "regenerate audio" tool. Gated on BOTH:
@@ -1098,7 +474,7 @@ export class Narrator {
       return;
     }
     if (!isAuthor) return;
-    for (const [markName, seg] of this.segmentEls) {
+    for (const [markName, seg] of this.drawer.segmentEls) {
       // Marks the segment as carrying author tools so the controls row widens
       // to a third column for the name label (see narrator.css).
       seg.classList.add("has-dev-tools");
