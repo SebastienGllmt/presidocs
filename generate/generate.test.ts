@@ -11,7 +11,7 @@
 // manifest's claim against the real MP3 catches that whole class of bug
 // regardless of which arithmetic in the pipeline drifts.
 
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -22,6 +22,12 @@ import {
   pcmDurationMs,
   type AudioFormat,
 } from "./audio-pipeline.ts";
+import {
+  buildManifestParts,
+  hashedManifestName,
+  mergeLexicons,
+  resolveForcedTexts,
+} from "./generate.ts";
 import { asMs } from "../shared/time.ts";
 import { findManifestName } from "../shared/manifestFile.ts";
 
@@ -207,4 +213,226 @@ test("createMp3AudioPipeline's duration op reads the WAV header, not ffmpeg `tim
   // PCM buffer reports as `time=00:00:19.59`, a 43ms under-report).
   const buf = await buildSilence(asMs(19_633), fmt);
   expect(await pipeline.duration(buf)).toBe(pcmDurationMs(buf, fmt));
+});
+
+// --- Pure-stage unit tests (4.3) --------------------------------------------
+// The end-to-end tests above (and the golden generate runs) enforce the byte
+// contract; these lock the arithmetic and the manifest byte-contract (absent-
+// key invariant, name-hash field subset) that the goldens can't isolate — and
+// the word projection, which isn't golden-runnable without QWEN3_ALIGNER_DIR.
+
+// Minimal ChapterArtifact factory — buildManifestParts reads only id/title/
+// duration/localMarks/trimMs; `buffer` is required by the type but unused here.
+type LocalMark = {
+  name: string;
+  time: ReturnType<typeof asMs>;
+  text: string;
+  segmentStartInChapter: ReturnType<typeof asMs>;
+  words?: { s: number; e: number; t: ReturnType<typeof asMs>; d: ReturnType<typeof asMs> }[];
+  figure?: string;
+  step?: string;
+};
+function artifact(
+  id: string,
+  title: string,
+  durationMs: number,
+  localMarks: LocalMark[],
+  trimMsN = 0,
+) {
+  return {
+    id,
+    title,
+    buffer: new Uint8Array(),
+    duration: asMs(durationMs),
+    localMarks,
+    trimMs: asMs(trimMsN),
+  };
+}
+
+// --- buildManifestParts: gap arithmetic + parentId ---------------------------
+
+test("buildManifestParts advances chapter offsets by segmentGapMs and carries parentId", () => {
+  const chapters = [
+    { id: "A", title: "Alpha", content: "" },
+    { id: "B", title: "Beta", content: "", parentId: "A" },
+  ];
+  const artifacts = [
+    artifact("A", "Alpha", 1000, [{ name: "a0", time: asMs(0), text: "A0", segmentStartInChapter: asMs(0) }]),
+    artifact("B", "Beta", 500, [{ name: "b0", time: asMs(50), text: "B0", segmentStartInChapter: asMs(50) }]),
+  ];
+  const { manifestChapters, manifestMarks, duration } = buildManifestParts(artifacts, chapters, asMs(200));
+
+  // Chapter A: 0..1000. Chapter B: +200 gap → 1200..1700.
+  expect(manifestChapters[0]).toMatchObject({ id: "A", startTime: 0, endTime: 1000 });
+  expect(manifestChapters[1]).toMatchObject({ id: "B", startTime: 1200, endTime: 1700, parentId: "A" });
+  // Flat chapter serializes with parentId ABSENT (undefined value dropped).
+  expect(manifestChapters[0]!.parentId).toBeUndefined();
+  expect(JSON.stringify(manifestChapters[0])).not.toContain("parentId");
+  expect(JSON.stringify(manifestChapters[1])).toContain('"parentId":"A"');
+
+  // Mark times are chapter-start + local time.
+  expect(manifestMarks[0]).toMatchObject({ name: "a0", time: 0, chapter: "A" });
+  expect(manifestMarks[1]).toMatchObject({ name: "b0", time: 1250, chapter: "B" });
+
+  expect(duration).toBe(asMs(1700));
+});
+
+// --- buildManifestParts: word projection math --------------------------------
+
+test("buildManifestParts projects words with trim clamp and drops entirely-trimmed words", () => {
+  const artifacts = [
+    artifact("A", "Alpha", 1000, [
+      {
+        name: "m",
+        time: asMs(0),
+        text: "words",
+        segmentStartInChapter: asMs(50),
+        words: [
+          // rawEnd = 50 + 0 - 100 + 30 = -20 <= 0 → dropped entirely.
+          { s: 0, e: 1, t: asMs(0), d: asMs(30) },
+          // rawStart = 50 + 60 - 100 = 10; clamped 10; d = 100.
+          { s: 1, e: 2, t: asMs(60), d: asMs(100) },
+          // rawStart = 50 + 40 - 100 = -10 → clamp to 0; dur = max(0, 90-0)=90.
+          { s: 2, e: 3, t: asMs(40), d: asMs(100) },
+        ],
+      },
+    ], 100),
+  ];
+  const { manifestMarks } = buildManifestParts(artifacts, [{ id: "A", title: "Alpha", content: "" }], asMs(0));
+
+  expect(manifestMarks[0]!.words).toEqual([
+    { s: 1, e: 2, t: asMs(10), d: asMs(100) },
+    { s: 2, e: 3, t: asMs(0), d: asMs(90) },
+  ]);
+});
+
+test("buildManifestParts drops the words key when every word is trimmed away", () => {
+  const artifacts = [
+    artifact("A", "Alpha", 1000, [
+      {
+        name: "m",
+        time: asMs(0),
+        text: "gone",
+        segmentStartInChapter: asMs(0),
+        // rawEnd = 0 + 0 - 100 + 50 = -50 <= 0 → dropped → empty → undefined.
+        words: [{ s: 0, e: 1, t: asMs(0), d: asMs(50) }],
+      },
+    ], 100),
+  ];
+  const { manifestMarks } = buildManifestParts(artifacts, [{ id: "A", title: "Alpha", content: "" }], asMs(0));
+
+  expect(manifestMarks[0]!.words).toBeUndefined();
+  expect(JSON.stringify(manifestMarks[0])).not.toContain("words");
+});
+
+// --- buildManifestParts: absent-key invariant (the manifest byte-contract) ---
+
+test("buildManifestParts omits figure/step/words keys for a bare mark", () => {
+  const artifacts = [
+    artifact("A", "Alpha", 1000, [
+      { name: "bare", time: asMs(0), text: "hi", segmentStartInChapter: asMs(0) },
+    ]),
+  ];
+  const { manifestMarks } = buildManifestParts(artifacts, [{ id: "A", title: "Alpha", content: "" }], asMs(0));
+  const json = JSON.stringify(manifestMarks[0]);
+  expect(json).not.toContain("figure");
+  expect(json).not.toContain("step");
+  expect(json).not.toContain("words");
+});
+
+test("buildManifestParts carries figure/step literals verbatim, including empty and 'none'", () => {
+  const artifacts = [
+    artifact("A", "Alpha", 1000, [
+      { name: "clear", time: asMs(0), text: "a", segmentStartInChapter: asMs(0), figure: "", step: "none" },
+      { name: "set", time: asMs(0), text: "b", segmentStartInChapter: asMs(0), figure: "fig-1", step: "s2" },
+    ]),
+  ];
+  const { manifestMarks } = buildManifestParts(artifacts, [{ id: "A", title: "Alpha", content: "" }], asMs(0));
+  expect(manifestMarks[0]).toMatchObject({ figure: "", step: "none" });
+  expect(manifestMarks[1]).toMatchObject({ figure: "fig-1", step: "s2" });
+  // An explicit empty-string figure is a real key with "" — not absent.
+  expect(JSON.stringify(manifestMarks[0])).toContain('"figure":""');
+});
+
+// --- hashedManifestName: the name-hash field subset --------------------------
+
+test("hashedManifestName ignores generatedAt/slug/audioBytes/provenance", () => {
+  const base = {
+    slug: "post-a",
+    generatedAt: "2020-01-01T00:00:00.000Z",
+    audio: "/generated/post/full.abc.mp3",
+    audioDigest: "deadbeef",
+    audioBytes: 111,
+    provenance: { tts: "espeak-ng", voice: "en-us", aligner: null, alignLanguage: null, mock: false },
+    duration: asMs(1000),
+    chapters: [],
+    marks: [],
+  };
+  const varied = {
+    ...base,
+    slug: "post-b",
+    generatedAt: "2099-12-31T23:59:59.999Z",
+    audioBytes: 999999,
+    provenance: { tts: "moss", voice: "clip.wav", aligner: "qwen3", alignLanguage: "English", mock: true },
+  };
+  expect(hashedManifestName(varied)).toBe(hashedManifestName(base));
+});
+
+test("hashedManifestName changes when the marks change", () => {
+  const base = {
+    audio: "/a",
+    audioDigest: "dd",
+    duration: asMs(1000),
+    chapters: [],
+    marks: [],
+  };
+  const withMark = {
+    ...base,
+    marks: [{ name: "m", time: asMs(0), chapter: "A", text: "hi" }],
+  };
+  expect(hashedManifestName(withMark)).not.toBe(hashedManifestName(base));
+});
+
+// --- mergeLexicons: root wrapper + <!-- from label --> stitching -------------
+
+test("mergeLexicons stitches source bodies under one root, in order", () => {
+  const merged = mergeLexicons([
+    { label: "posts/common-terms.pls", xml: "<lexicon><lexeme>first</lexeme></lexicon>" },
+    { label: "inline:posts/x.html#0", xml: "<lexicon><lexeme>second</lexeme></lexicon>" },
+  ]);
+  expect(merged.sources).toEqual(["posts/common-terms.pls", "inline:posts/x.html#0"]);
+  expect(merged.xml).toStartWith(
+    `<?xml version="1.0" encoding="UTF-8"?>\n` +
+      `<lexicon version="1.0" xmlns="http://www.w3.org/2005/01/pronunciation-lexicon" xml:lang="en-US">\n`,
+  );
+  expect(merged.xml).toContain(`<!-- from posts/common-terms.pls --><lexeme>first</lexeme>`);
+  expect(merged.xml).toContain(`<!-- from inline:posts/x.html#0 --><lexeme>second</lexeme>`);
+  // Order: common-terms body before the inline body.
+  expect(merged.xml.indexOf("first")).toBeLessThan(merged.xml.indexOf("second"));
+  expect(merged.xml).toEndWith(`\n</lexicon>\n`);
+});
+
+// --- resolveForcedTexts: mark→text + missing-mark warn -----------------------
+
+test("resolveForcedTexts resolves forced mark names to their segment text", () => {
+  const chapters = [
+    { id: "c", title: "C", content: `<mark name="m1"/> Hello world. <mark name="m2"/> Second bit.` },
+  ];
+  const forced = resolveForcedTexts(chapters, new Set(["m1"]));
+  expect([...forced]).toEqual(["Hello world."]);
+});
+
+test("resolveForcedTexts warns about mark names that match no segment", () => {
+  const chapters = [
+    { id: "c", title: "C", content: `<mark name="m1"/> Hello world.` },
+  ];
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const forced = resolveForcedTexts(chapters, new Set(["m1", "nope"]));
+    expect([...forced]).toEqual(["Hello world."]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toContain("nope");
+  } finally {
+    warn.mockRestore();
+  }
 });
