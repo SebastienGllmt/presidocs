@@ -4,6 +4,22 @@ globs: "*.ts, *.tsx, *.html, *.css, *.js, *.jsx, package.json"
 alwaysApply: false
 ---
 
+## Which AI model to use:
+
+- Use Sonnet 5 only if Claude Code internals themselves are recommending its use (sometimes happens for tool calls, etc.)
+- use Opus 4.8 for
+    - implementing anything with a clear implementation plan
+    - doing any investigation/implementation that is mostly mechanical
+    - blog authoring (prose, figures, etc.)
+    - session orchestration
+- Use Fable 5 for
+    - planning of features deemed difficult
+    - review of features/plans deemed difficult
+
+Fable 5 usage always requires explicit permission, and we should never have multipel Fable 5 agents running in parallel without an even higher level of explicit permission.
+
+## Bun
+
 Default to using Bun instead of Node.js.
 
 - Use `bun <file>` instead of `node <file>` or `ts-node <file>`
