@@ -1,6 +1,8 @@
 # Engine CI (proposal 22 §3): the whole suite runs against the self-contained
-# e2e fixture (templates/content-repo — the resolveBlogDir() default), so no
-# private content repo is involved. Posture: Chromium-only (the runner's
+# e2e fixture — materialized into a scratch dir outside the repo from the
+# tracked template + the committed e2e/fixture-content/ overlay (the
+# resolveBlogDir() default), so no private content repo is involved and the
+# checkout stays clean. Posture: Chromium-only (the runner's
 # preinstalled Chrome via the harness's system-Chrome resolution; Firefox/
 # WebKit tiers skip gracefully and stay manual-quarterly per release-check).
 name: ci
@@ -31,8 +33,9 @@ jobs:
       # frozenLockfile is deliberately CI-only — see bunfig.toml's [install]
       # note (a global frozen install only adds local friction).
       - run: bun install --frozen-lockfile
-      # Materialize the fixture (engine symlink, bun link + install, generated
-      # secrets + fixture SITE_URL) before anything resolves resolveBlogDir().
+      # Materialize the fixture into its scratch dir (engine symlink, bun link +
+      # install, generated secrets + fixture SITE_URL) before anything resolves
+      # resolveBlogDir(). Front-loads the slow first install.
       - run: bun run e2e:fixture
       - run: bun x tsc --noEmit
       - run: bun test
@@ -40,8 +43,9 @@ jobs:
 
   # The heavy build + `wrangler dev` (workerd/Miniflare, local mode — no
   # Cloudflare credentials) tiers: SW/PWA lifecycle, prod-CSP violations,
-  # broken links/fragments. Split out so a browser-tier failure and a
-  # build/worker-tier failure are distinguishable at a glance.
+  # broken links/fragments, and the prod audio smoke (now that the fixture
+  # overlay commits the espeak audio — D2/D5). Split out so a browser-tier
+  # failure and a build/worker-tier failure are distinguishable at a glance.
   worker-tiers:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -62,6 +66,12 @@ jobs:
         env:
           PRESIDOCS_E2E_SKIP_BUILD: "1"
       - run: bun run test:e2e:links
+        env:
+          PRESIDOCS_E2E_SKIP_BUILD: "1"
+      # Prod audio smoke (prodAudioSmoke.ts) — the Range/206/episode referee,
+      # reusing the same build. Newly runnable in CI because the fixture overlay
+      # now carries the committed espeak audio (D2/D5).
+      - run: bun run test:e2e:prod
         env:
           PRESIDOCS_E2E_SKIP_BUILD: "1"
       # The private-blog tier (methodology → Private blogs): builds the

@@ -13,7 +13,8 @@
     "test:e2e:prod": "bun test ./e2e/prodAudioSmoke.ts",
     "test:e2e:sw": "bun test ./e2e/serviceWorker.ts",
     "test:e2e:csp": "bun test ./e2e/cspConsole.ts",
-    "test:e2e:links": "bun test ./e2e/brokenLinks.ts"
+    "test:e2e:links": "bun test ./e2e/brokenLinks.ts",
+    "test:e2e:wrangler": "bun run test:e2e:sw && PRESIDOCS_E2E_SKIP_BUILD=1 bun run test:e2e:csp && PRESIDOCS_E2E_SKIP_BUILD=1 bun run test:e2e:links && PRESIDOCS_E2E_SKIP_BUILD=1 bun run test:e2e:prod && bun run test:e2e:private"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.3",

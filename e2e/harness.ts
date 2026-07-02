@@ -572,11 +572,13 @@ export async function startBlogServer(blogDirOverride?: string): Promise<BlogSer
  * internal `env.ASSETS.fetch` + header rewrite (proposals/32 §10 prod gap).
  *
  * Runs a full `bun run build` first (the worker serves from `dist/` + imports the
- * `.generated/` maps). **That build is the normal pipeline and rewrites source
- * posts/*.html (managed <script> tags) + posts/versions.json** — expected; run
- * this on an ephemeral/CI checkout, or `git checkout` those afterward. Set
- * `PRESIDOCS_E2E_SKIP_BUILD=1` to reuse an existing fresh `dist/` (faster local
- * iteration; skips the source-rewrite).
+ * `.generated/` maps). For the fixture default that build runs inside the scratch
+ * materialization, so it mutates nothing tracked (1.5 build-once, mutate-nothing).
+ * Only when `PRESIDOCS_E2E_BLOG` points at a real repo does the build rewrite that
+ * repo's source posts/*.html (managed <script> tags) + posts/versions.json in
+ * place — D6, documented not fixed; `git checkout` those afterward. Set
+ * `PRESIDOCS_E2E_SKIP_BUILD=1` to reuse an existing fresh `dist/` — the build-once
+ * mechanism the `test:e2e:wrangler` script threads across the csp/links/prod tiers.
  *
  * Requires the blog to have generated audio on disk (same precondition as the
  * browser subscribe tier) so there's an episode to serve.
