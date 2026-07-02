@@ -40,7 +40,7 @@ export type Env = {
   // Served by the Worker instead of the `[assets]` bundle because a long track can
   // exceed Cloudflare's hard 25 MiB per-static-asset limit; R2 has no such cap.
   // Optional: a content repo without the binding (its tracks all under the cap)
-  // falls back to the ASSETS path — see `createWorker.ts` `fetchAudioBytes`.
+  // falls back to the ASSETS path — see `server/workerAssets.ts` `fetchAudioBytes`.
   AUDIO?: R2Bucket;
 
   // Cloudflare Analytics Engine dataset for engagement events
