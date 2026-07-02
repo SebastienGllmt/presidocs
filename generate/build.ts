@@ -101,8 +101,17 @@ export async function runBuild(
 }
 
 if (import.meta.main) {
-  runBuild().catch((err) => {
-    console.error(String(err?.message ?? err));
-    process.exit(1);
-  });
+  // `--private` declares the private posture STRUCTURALLY at the invocation
+  // (templates/private-content-repo/package.json passes it), forcing
+  // ctx.private = true so audit-private always runs. audit-private.ts then
+  // re-checks isPrivateBlog() and fails loudly if BLOG_PRIVATE was lost — a
+  // lost env var must fail the build, not silently ship a private blog public.
+  // No flag ⇒ opts.private stays undefined ⇒ isPrivateBlog() governs (PUBLIC
+  // behavior unchanged).
+  runBuild(undefined, { private: process.argv.includes("--private") ? true : undefined }).catch(
+    (err) => {
+      console.error(String(err?.message ?? err));
+      process.exit(1);
+    },
+  );
 }

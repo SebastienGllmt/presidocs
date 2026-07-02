@@ -11,11 +11,13 @@ import { join } from "node:path";
 import {
   BUILD_STAGES,
   buildHtmlEntries,
+  type BuildOpts,
   type Stage,
   type StageContext,
 } from "./build.ts";
 import { DEPLOY_STAGES } from "./deploy.ts";
 import type { BlogPaths } from "../shared/blogPaths.ts";
+import { isPrivateBlog } from "../shared/blogPrivacy.ts";
 
 function ctx(overrides: Partial<StageContext> = {}): StageContext {
   return { paths: {} as BlogPaths, private: false, dryRun: false, ...overrides };
@@ -58,6 +60,43 @@ test("public build drops audit-private; private build appends it last", () => {
   expect(priv[priv.length - 1]).toBe("audit-private");
   // Every public stage is still present, in order, ahead of it.
   expect(priv.slice(0, pub.length)).toEqual(pub);
+});
+
+// (b2) Posture resolution — the NEW structural contract (fix 1.1). runBuild
+// resolves `ctx.private = opts.private ?? isPrivateBlog(env)` (build.ts), and the
+// `import.meta.main` wrapper sets `opts.private = true` iff `--private` is on argv
+// (templates/private-content-repo passes it). So `--private` FORCES audit-private
+// into the stage list regardless of BLOG_PRIVATE; without it, isPrivateBlog(env)
+// governs — the fail-safe being that audit-private.ts itself still exits 1 on a
+// lost BLOG_PRIVATE (asserted end-to-end by the e2e private tier, not here).
+function resolvePosture(opts: BuildOpts, env: Record<string, string | undefined>): boolean {
+  return opts.private ?? isPrivateBlog(env);
+}
+
+test("--private (opts.private:true) forces audit-private regardless of BLOG_PRIVATE env", () => {
+  // Private invocation, env LOST: posture is still forced private, so
+  // audit-private is in the chain — where it will re-check the env and fail loudly.
+  const forcedNoEnv = resolvePosture({ private: true }, {});
+  expect(forcedNoEnv).toBe(true);
+  expect(activeNames(BUILD_STAGES, ctx({ private: forcedNoEnv }))).toContain("audit-private");
+
+  // Private invocation, env present: also private (belt+suspenders).
+  const forcedWithEnv = resolvePosture({ private: true }, { BLOG_PRIVATE: "1" });
+  expect(forcedWithEnv).toBe(true);
+  expect(activeNames(BUILD_STAGES, ctx({ private: forcedWithEnv }))).toContain("audit-private");
+});
+
+test("without --private, isPrivateBlog(env) governs the posture", () => {
+  // No flag + env set ⇒ private ⇒ audit-private present (public template on a
+  // deliberately-private deploy still gets the gate via the knob).
+  const knobOn = resolvePosture({}, { BLOG_PRIVATE: "1" });
+  expect(knobOn).toBe(true);
+  expect(activeNames(BUILD_STAGES, ctx({ private: knobOn }))).toContain("audit-private");
+
+  // No flag + env unset ⇒ public ⇒ audit-private dropped (public behavior unchanged).
+  const knobOff = resolvePosture({}, {});
+  expect(knobOff).toBe(false);
+  expect(activeNames(BUILD_STAGES, ctx({ private: knobOff }))).not.toContain("audit-private");
 });
 
 // (c) DEPLOY_STAGES private posture == the private template's §1b column.

@@ -71,7 +71,17 @@ export async function runDeploy(
 }
 
 if (import.meta.main) {
-  runDeploy(undefined, { dryRun: process.argv.includes("--dry-run") }).catch((err) => {
+  // `--private` declares the private posture STRUCTURALLY at the invocation
+  // (templates/private-content-repo/package.json passes it), forcing
+  // ctx.private = true. This propagates into the build step (runBuild with
+  // { private: ctx.private }, so audit-private always runs) AND makes the
+  // announce-stage `when: (c)=>!c.private` gating drop publish-notify/websub-ping
+  // — the public-only steps the private chain structurally never had. audit-private
+  // still fails loudly on a lost BLOG_PRIVATE. No flag ⇒ isPrivateBlog() governs.
+  runDeploy(undefined, {
+    dryRun: process.argv.includes("--dry-run"),
+    private: process.argv.includes("--private") ? true : undefined,
+  }).catch((err) => {
     console.error(String(err?.message ?? err));
     process.exit(1);
   });
