@@ -19,8 +19,8 @@
 // feed omits it and still works in every podcast app that auto-discovers it.
 
 import { z } from "zod";
-import { envFlag, trimmedOr, trimmedOrNull } from "./envSchemas.ts";
-import { resolveLicenseConfig } from "./licenseConfig.ts";
+import { envFlag, trimmedOr, trimmedOrNull } from "../shared/envSchemas.ts";
+import { resolveLicenseConfig } from "../shared/licenseConfig.ts";
 
 export type FeedConfig = {
   /** Canonical origin, no trailing slash. Null → feeds are skipped. */

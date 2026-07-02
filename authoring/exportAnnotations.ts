@@ -8,7 +8,7 @@
 // It reuses the same offline aggregation the comment-applier uses
 // (`loadUnresolvedThreads` — merges every reader's per-user CRDT blob
 // from the dev fsAdapter), then runs the pure serializer in
-// `shared/annotationExport.ts`. Running the merge locally in Bun is
+// `authoring/annotationExport.ts`. Running the merge locally in Bun is
 // fine: the dumb-server rule is a *production* constraint (see
 // methodology.md), and this tool never runs in prod.
 //
@@ -31,7 +31,7 @@ import {
   loadUnresolvedThreads,
   type UnresolvedThread,
 } from "./loadUnresolvedThreads.ts";
-import { snapshotToAnnotationCollection } from "../shared/annotationExport.ts";
+import { snapshotToAnnotationCollection } from "./annotationExport.ts";
 
 const paths = resolveBlogPaths();
 

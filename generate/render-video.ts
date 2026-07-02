@@ -39,7 +39,7 @@ import {
 } from "./figureCacheKey.ts";
 import { resolveAuthorProfile } from "../shared/authorProfile.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
-import { decodeHtmlEntities } from "../shared/htmlEntities.ts";
+import { decodeHtmlEntities } from "./htmlEntities.ts";
 // The manifest timeline shape is the shared one (single source of truth with
 // the producer + the live narrator). Aliased to this file's existing local
 // names. Time fields carry the `Milliseconds` brand; this file reads them as

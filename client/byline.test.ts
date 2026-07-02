@@ -277,7 +277,7 @@ test("mountBylineInto: post-meta lands directly after #title when version is pro
 });
 
 test("mountBylineInto: replaces the .byline-reserve placeholder in place (no reflow)", () => {
-  // The build emits a fixed-height reserve (shared/articleChromeReserve.ts via
+  // The build emits a fixed-height reserve (generate/articleChromeReserve.ts via
   // the bunHtmlHeadPlugin, dev + prod); the client swaps it for the real byline
   // via replaceWith, so the article below never shifts. The byline must land
   // exactly where the reserve was, and

@@ -47,12 +47,12 @@ import { XMLParser } from "fast-xml-parser";
 import type { APIEmbed, RESTPostAPIWebhookWithTokenJSONBody } from "discord-api-types/v10";
 import type { Block, KnownBlock } from "@slack/types";
 import { type BlogPaths, resolveBlogPaths } from "../shared/blogPaths.ts";
-import { resolveFeedConfig } from "../shared/feedConfig.ts";
+import { resolveFeedConfig } from "./feedConfig.ts";
 import {
   hasAnyChannel,
   type NotifyConfig,
   resolveNotifyConfig,
-} from "../shared/notifyConfig.ts";
+} from "./notifyConfig.ts";
 
 /** The CloudEvents `type` for a new-post event (reverse-DNS, per CE spec). */
 export const EVENT_TYPE = "com.presidocs.post.published";

@@ -1,5 +1,5 @@
 // Post-build step: rewrites every HTML file under `dist/` to remove
-// generation-only tags (see `shared/stripServedHtml.ts`), injecting the
+// generation-only tags (see `generate/stripServedHtml.ts`), injecting the
 // structured-data + feed-autodiscovery + privacy-footer chrome along the way.
 // Runs in-place. Idempotent — running twice produces the same output.
 //
@@ -15,9 +15,9 @@
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, readdirSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import { stripServedHtml } from "../shared/stripServedHtml.ts";
-import { injectSiteFooter } from "../shared/injectFooter.ts";
-import { injectPwaHead, type PwaHeadOptions } from "../shared/injectPwaHead.ts";
+import { stripServedHtml } from "./stripServedHtml.ts";
+import { injectSiteFooter } from "./injectFooter.ts";
+import { injectPwaHead, type PwaHeadOptions } from "./injectPwaHead.ts";
 // W3C-accurate type for the authored manifest.webmanifest (DefinitelyTyped,
 // MIT, types-only — erased at compile time, never shipped). One shared spec
 // interface for both manifest readers (here + e2e/serviceWorker.ts) instead of
@@ -28,7 +28,7 @@ import {
   injectSiteStructuredData,
   type StructuredDataContext,
   type SiteStructuredDataContext,
-} from "../shared/injectStructuredData.ts";
+} from "./injectStructuredData.ts";
 import { buildAuthorMap, type PublicAuthorProfile } from "../shared/authorProfile.ts";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { collectHtmlFiles } from "../shared/walkHtml.ts";
@@ -266,7 +266,7 @@ function injectPostMainLandmark(html: string, postPath: string): string {
 }
 
 // NOTE: the client-chrome reserves + narration-dock hide are applied by
-// shared/bunHtmlHeadPlugin.ts (via shared/articleChromeReserve.ts), which runs in
+// generate/bunHtmlHeadPlugin.ts (via generate/articleChromeReserve.ts), which runs in
 // both dev and prod — not in this prod-only strip, so the dev server reserves too.
 
 

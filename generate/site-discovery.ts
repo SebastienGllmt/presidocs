@@ -29,7 +29,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { isPrivateBlog } from "../shared/blogPrivacy.ts";
-import { resolveFeedConfig } from "../shared/feedConfig.ts";
+import { resolveFeedConfig } from "./feedConfig.ts";
 import { resolveLicenseConfig } from "../shared/licenseConfig.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 import { escapeXml, extractPostMeta, readSiteMeta } from "./feeds.ts";

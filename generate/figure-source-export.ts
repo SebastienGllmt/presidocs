@@ -32,7 +32,7 @@ import { parseHTML } from "linkedom";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { resolveLicenseConfig } from "../shared/licenseConfig.ts";
 import { isValidFigureSrc, spdxHeader } from "../shared/figureSource.ts";
-import { postHtmlFiles } from "./audit-posts.ts";
+import { collectHtmlFiles } from "../shared/walkHtml.ts";
 
 // Re-exported from its shared home so existing importers/tests keep their path.
 export { spdxHeader } from "../shared/figureSource.ts";
@@ -56,7 +56,7 @@ export function collectFigureSrc(html: string): string[] {
 async function main(): Promise<void> {
   const paths = resolveBlogPaths();
   const distPostsDir = join(paths.distDir, "posts");
-  const files = await postHtmlFiles(distPostsDir);
+  const files = collectHtmlFiles(distPostsDir, { onMissing: "empty", recursive: false });
   if (files.length === 0) {
     console.warn(
       `Figure-source export: no built posts under ${relative(paths.contentRoot, distPostsDir)} — did \`bun run build\` run the earlier steps?`,
@@ -85,7 +85,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  // The promote-to-error that audit-license.ts anticipated: advertising figure
+  // The promote-to-error that audit-own-license.ts anticipated: advertising figure
   // source on a PUBLISHED build (SITE_URL set) without a code license would ship
   // those files all-rights-reserved while a twin invites their reuse —
   // contradictory. Fail loudly. Local/preview builds (no SITE_URL) are exempt and

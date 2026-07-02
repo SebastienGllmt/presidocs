@@ -16,7 +16,7 @@
 
 import { initializeWasm, isWasmInitialized } from "@automerge/automerge/slim";
 import * as Automerge from "@automerge/automerge/slim";
-import { fsAdapter } from "../server/comments/fsAdapter.ts";
+import { fsAdapter } from "./fsAdapter.ts";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { SEED_BYTES_B64 } from "../client/commentsStore.ts";
 import type {
@@ -27,7 +27,7 @@ import type {
 import type {
   CommentOrigin,
   ThreadOrigins,
-} from "../shared/annotationExport.ts";
+} from "./annotationExport.ts";
 
 // ---------- Types mirrored from client/commentsStore.ts ----------
 //

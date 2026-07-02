@@ -11,7 +11,7 @@
 // ("Pinning the order") for the full why.
 //
 // Posts don't author the order. The engine's HTML-head bundler plugin
-// (shared/bunHtmlHeadPlugin.ts) injects it as the first <head> CSS from the
+// (generate/bunHtmlHeadPlugin.ts) injects it as the first <head> CSS from the
 // constants here — in dev via `bunfig.toml`'s `[serve.static].plugins` and in
 // prod via `Bun.build` in generate/build-html.ts — so the single source of
 // truth lives here and a layer-order change needs no per-post edit.

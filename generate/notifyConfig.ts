@@ -16,7 +16,7 @@
 // SITE_URL. There is no system-wide shared channel.
 
 import { z } from "zod";
-import { csvList, trimmedOrNull } from "./envSchemas.ts";
+import { csvList, trimmedOrNull } from "../shared/envSchemas.ts";
 
 export type WebhookFormat = "plain" | "cloudevents";
 

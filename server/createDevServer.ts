@@ -24,16 +24,16 @@ import { handleCommentsRequest } from "./comments/routes.ts";
 import { handleResolutionsRequest } from "./comments/resolutionsRoutes.ts";
 import { r2Adapter } from "./comments/r2Adapter.ts";
 import type { Env } from "./env.ts";
-import { loadDevPostMetaIndex } from "./postMeta.dev.ts";
-import { loadDevPostVersionIndex } from "./postVersions.dev.ts";
+import { loadDevPostMetaIndex } from "./dev/postMeta.dev.ts";
+import { loadDevPostVersionIndex } from "./dev/postVersions.dev.ts";
 import { handlePostVersionRequest } from "./postVersionsRoute.ts";
 import { buildOpenApiDocument } from "./openapi.ts";
 import { handleAnalyticsRequest } from "./analyticsRoute.ts";
-import { handleRegenerateRequest } from "./regenerate.dev.ts";
+import { handleRegenerateRequest } from "./dev/regenerate.dev.ts";
 import { renderHelpHtmlFromSource } from "../generate/help-page.ts";
 import { renderLicensesHtmlFromSource } from "../generate/licenses-page.ts";
-import { handleSoundTestList, handleSoundTestRegenerate } from "./soundTest.dev.ts";
-import { withSecurityHeaders } from "../shared/securityHeaders.ts";
+import { handleSoundTestList, handleSoundTestRegenerate } from "./dev/soundTest.dev.ts";
+import { withSecurityHeaders } from "./securityHeaders.ts";
 import { buildAuthorMap } from "../shared/authorProfile.ts";
 import { buildPublicPostVersionsMap } from "../shared/publicPostVersions.ts";
 import { htmlToMarkdown, renderMarkdownDocument, type FrontMatter } from "../shared/htmlToMarkdown.ts";
@@ -138,7 +138,7 @@ async function assertHeadPluginRegistered(contentRoot: string): Promise<void> {
       "[dev] bunfig.toml does not register the engine HTML-head plugin, so the " +
         "dev server would mis-render (cascade layers can invert; no footer or " +
         "feature-chips) while prod renders correctly. Add to bunfig.toml:\n\n" +
-        '  [serve.static]\n  plugins = ["presidocs/shared/bunHtmlHeadPlugin.ts"]\n\n' +
+        '  [serve.static]\n  plugins = ["presidocs/generate/bunHtmlHeadPlugin.ts"]\n\n' +
         `(checked ${join(contentRoot, "bunfig.toml")}; set BLOG_SKIP_BUNFIG_CHECK=1 to bypass.)`,
     );
   }
@@ -152,7 +152,7 @@ export async function createDevServer(opts: DevServerOptions) {
   // Wrap a function-style route handler so its response carries the security
   // headers (parity with the Worker). `priv` additionally sets CORP for the
   // non-asset API responses. The HTMLBundle routes are served by Bun's bundler
-  // and can't be wrapped — see shared/securityHeaders.ts; the document CSP is
+  // and can't be wrapped — see server/securityHeaders.ts; the document CSP is
   // verified against the Worker (`wrangler dev`), not this dev server.
   const pub = (h: DevHandler): DevHandler => async (req) =>
     withSecurityHeaders(await h(req));
@@ -169,7 +169,7 @@ export async function createDevServer(opts: DevServerOptions) {
   // Failure to construct the proxy (malformed wrangler.toml, missing bindings)
   // is loud at startup, not a silent fallback to a divergent in-memory shape.
   //
-  // Note: `server/comments/fsAdapter.ts` is still kept for the offline author
+  // Note: `authoring/fsAdapter.ts` is still kept for the offline author
   // tooling (authoring/resolveThreads.ts, loadUnresolvedThreads.ts,
   // exportAnnotations.ts, r2Sync.ts) that operates on the on-disk dev store
   // outside this server. Dev-server writes now land in Miniflare R2

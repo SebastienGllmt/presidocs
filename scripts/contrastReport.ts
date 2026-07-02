@@ -20,8 +20,8 @@
 //
 // NOT a test and NOT named `*.e2e.ts`: it never asserts, so it can't fail a
 // suite. Run it on demand to see the backlog:
-//     bun run e2e/contrastReport.ts            # all pages
-//     bun run e2e/contrastReport.ts offer-files # one slug (+ the landing)
+//     bun run scripts/contrastReport.ts            # all pages
+//     bun run scripts/contrastReport.ts offer-files # one slug (+ the landing)
 // Like cspConsole.ts it's a heavy real-browser tier, kept out of the default
 // `bun test` and the `test:e2e` glob.
 
@@ -29,7 +29,7 @@ import type { Browser, Page } from "playwright";
 import AxeBuilder from "@axe-core/playwright";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { launchChrome, startBlogServer, resolveBlogDir, type BlogServer } from "./harness.ts";
+import { launchChrome, startBlogServer, resolveBlogDir, type BlogServer } from "../e2e/harness.ts";
 
 // Same tag set + Shikwasa exclusion as axe.e2e.ts, so this reports exactly the
 // nodes that gate would fail on once the ratchet flips — no more, no less.

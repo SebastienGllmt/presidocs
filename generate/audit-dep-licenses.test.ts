@@ -4,7 +4,7 @@ import {
   evaluateLicenses,
   isPermissiveLicense,
   licenseTokens,
-} from "./audit-licenses.ts";
+} from "./audit-dep-licenses.ts";
 import type { DepLicense } from "./licenseFiles.ts";
 
 // Note the `in` checks: an explicitly-passed `null` must override the default

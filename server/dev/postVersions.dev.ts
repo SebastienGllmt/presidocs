@@ -12,14 +12,14 @@
 
 import { readFile } from "node:fs/promises";
 import { relative, sep } from "node:path";
-import { collectHtmlFiles } from "../shared/walkHtml.ts";
+import { collectHtmlFiles } from "../../shared/walkHtml.ts";
 import {
   createPostVersionIndex,
   sha256Hex,
   type PostVersionIndex,
   type PostVersion,
   type PostVersionRecord,
-} from "./postVersions.ts";
+} from "../postVersions.ts";
 
 export async function loadDevPostVersionIndex(
   postsDir: string,

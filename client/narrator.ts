@@ -16,7 +16,7 @@
 import "./shikwasa-vendor.css";
 import { Player, Chapter } from "shikwasa";
 import { asMs, msToSeconds, secondsToMs, asSeconds, type Milliseconds } from "../shared/time.ts";
-import { computeActiveMark, findActiveWord, stagedFigureAt, figureSeekPlan } from "../shared/narratorTiming.ts";
+import { computeActiveMark, findActiveWord, stagedFigureAt, figureSeekPlan } from "./narratorTiming.ts";
 import { getFigureJourney, type FigureJourney } from "./figureAnimation.ts";
 import { emitNarrationPlay, emitNarrationQuartile } from "./analytics.ts";
 import { copyToClipboard } from "./clipboard.ts";
@@ -341,7 +341,7 @@ class Narrator {
 
     // Everything that determines the dock's height (player + chapter strip) is
     // now mounted, so reveal it. The build ships the dock `data-hidden="true"`
-    // (shared/articleChromeReserve.ts → hideNarrateDockForReveal, applied by the
+    // (generate/articleChromeReserve.ts → hideNarrateDockForReveal, applied by the
     // bunHtmlHeadPlugin in both dev and prod) so it never painted its empty box;
     // revealing it here slides it up via transform/opacity — neither of which
     // triggers layout shift — so the player costs zero CLS.
@@ -1341,7 +1341,7 @@ class Narrator {
     this.updateBar();
     const tMs = secondsToMs(asSeconds(this.player.currentTime));
     // Pure bisect — works for both linear playback AND backward seeks
-    // because nothing is cached. See shared/narratorTiming.ts.
+    // because nothing is cached. See client/narratorTiming.ts.
     const active = computeActiveMark(this.manifest.marks, tMs);
     this.setActive(active ? active.name : null);
     this.updateActiveWord(active?.name ?? null, tMs);
@@ -1878,7 +1878,7 @@ class Narrator {
       this.clearActiveWord();
       return;
     }
-    // Pure bisect — see shared/narratorTiming.ts. Returns -1 before the
+    // Pure bisect — see client/narratorTiming.ts. Returns -1 before the
     // first word; we treat that as "nothing to highlight yet."
     const idx = findActiveWord(words, tMs);
     if (idx < 0) {
@@ -2112,7 +2112,7 @@ class Narrator {
   // Author-only, dev-only per-segment "regenerate audio" tool. Gated on BOTH:
   //   - localhost — the `/dev/regenerate` endpoint that shells out to the
   //     generate pipeline exists only on the dev Bun server, never the prod
-  //     Worker (see server/regenerate.dev.ts). On any other host the button
+  //     Worker (see server/dev/regenerate.dev.ts). On any other host the button
   //     would 404, so we don't show it.
   //   - the server-authoritative `isAuthor` flag from `/post-version` — the
   //     same check the comments UI uses. Never trust the DOM for this.

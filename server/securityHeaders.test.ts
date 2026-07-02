@@ -67,7 +67,7 @@ test("style-src layer-order hash matches CSS_LAYER_ORDER_STATEMENT (drift guard)
   // actual injected style. If a layer is ever added/renamed in cssLayers.ts,
   // the statement changes, this recomputed hash changes, and this test fails —
   // forcing the hash (and the allowance) to be regenerated in lockstep.
-  const { CSS_LAYER_ORDER_STATEMENT } = await import("./cssLayers.ts");
+  const { CSS_LAYER_ORDER_STATEMENT } = await import("../generate/cssLayers.ts");
   const { createHash } = await import("node:crypto");
   const want = "sha256-" + createHash("sha256").update(CSS_LAYER_ORDER_STATEMENT).digest("base64");
   const styleSrc = directive(cspOf(securityHeaders()), "style-src")!;

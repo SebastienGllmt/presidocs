@@ -317,7 +317,7 @@ export function mountBylineInto(
   const title = article.querySelector("#title");
 
   // The build serves a fixed-height reserve placeholder where each element
-  // mounts (shared/articleChromeReserve.ts, applied by the bunHtmlHeadPlugin in
+  // mounts (generate/articleChromeReserve.ts, applied by the bunHtmlHeadPlugin in
   // both dev and prod); base.css gives the reserve the same box as the real
   // element, so swapping it in is a single zero-shift layout pass — killing the
   // article reflow Lighthouse's `cls-culprits-insight` attributed to this client

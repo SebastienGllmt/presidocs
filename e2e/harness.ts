@@ -239,7 +239,7 @@ export function resolveBlogDir(): string {
 export function ensureFixtureBlog(): string {
   return ensureFixture("content-repo", {
     SITE_URL: "https://fixture.example.com",
-    // A published build (SITE_URL set) hard-fails audit-license.ts without a
+    // A published build (SITE_URL set) hard-fails audit-own-license.ts without a
     // declared content license; CODE_LICENSE silences its companion warning.
     // The append-only convergence loop retrofits existing fixture .env files.
     CONTENT_LICENSE: "CC-BY-4.0",
@@ -257,7 +257,7 @@ export function ensurePrivateFixtureBlog(): string {
   return ensureFixture("private-content-repo", {
     SITE_URL: "https://private-fixture.example.com",
     BLOG_PRIVATE: "1",
-    // See ensureFixtureBlog: audit-license.ts hard-fails a published build with
+    // See ensureFixtureBlog: audit-own-license.ts hard-fails a published build with
     // no CONTENT_LICENSE; CODE_LICENSE silences the companion warning.
     CONTENT_LICENSE: "CC-BY-4.0",
     CODE_LICENSE: "MIT",

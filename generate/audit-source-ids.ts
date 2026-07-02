@@ -19,7 +19,8 @@
 
 import { relative } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
-import { type AuditViolation, postHtmlFiles } from "./audit-posts.ts";
+import { type AuditViolation } from "./audit-posts.ts";
+import { collectHtmlFiles } from "../shared/walkHtml.ts";
 
 /**
  * The ids that appear more than once in one post's HTML, sorted. Empty = clean.
@@ -53,7 +54,7 @@ export function auditSourceIds(html: string): AuditViolation[] {
 
 async function main(): Promise<void> {
   const paths = resolveBlogPaths();
-  const files = await postHtmlFiles(paths.postsDir);
+  const files = collectHtmlFiles(paths.postsDir, { onMissing: "empty", recursive: false });
   if (files.length === 0) {
     console.warn(`Source-id audit: no source posts under ${relative(paths.contentRoot, paths.postsDir)}.`);
     return;

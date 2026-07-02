@@ -39,7 +39,6 @@ export interface FigureJourney {
 
 registerFigureJourney(id, journey)      // register under the figure's element id; fires `presidocs:figure-ready`
 getFigureJourney(id)                    // a driver looks one up
-listFigureJourneys()                    // enumerate all (à la document.getAnimations()); the conformance gate uses this
 stepsFromLabels(labels, durationSec)    // project tl.labels (+ tl.duration()) into steps[] — the ONE source of truth for steps
 buildLoopingJourney({ playMs, labels, loopGapMs, seek, reset })  // bake loop-dwell into durationMs/steps (rule 15)
 ```
@@ -100,7 +99,7 @@ Every conformant figure obeys these. Rules 1–15 are the heart of the contract 
 6. **Add narration pointers** in the post (orthogonal to the highlight `name`): `figure="<id>"` stages the figure; `figure="none"`/`""` clears it; omit to carry it. `step="<label>"` drives the staged figure to a labeled state (forward-only, targets the staged figure). A staged figure holds frame 1 until a driving event advances it.
 7. **Reserve height for every variable region** (rule 16): any text that swaps, list that grows, or control shown on only some states gets a `min-height` (or a `visibility:hidden` slot) sized to its **tallest/fullest** state, in line-based `em` against the real font, using `var(--font-sans)`/`var(--font-mono)`. Skipping this is the #1 cause of page-shift, and it's the easiest thing to forget because the figure looks fine in its end state.
 8. **Colour from the palette, measure the result** (rule 17): default to the `--fig-*` tokens (DESIGN.md §1); never `opacity` a label/graphic to dim it (use `--fig-faint`); tag load-bearing graphics `data-contrast="graphic"`. Then **`bun run
-  e2e/contrastReport.ts <slug>`** to confirm no failing text — the eye is unreliable on tinted backgrounds.
+  scripts/contrastReport.ts <slug>`** to confirm no failing text — the eye is unreliable on tinted backgrounds.
 9. **Run the gates** (below): conformance (`figureJourney.e2e.ts`), height (`figureHeight.e2e.ts`), and contrast (`figureContrast.e2e.ts`).
 ## Auditing a figure — checklist
 
@@ -110,7 +109,7 @@ Run the conformance gate and read its two distinct checks:
 bun run test:e2e        # the e2e tier; e2e/figureJourney.e2e.ts is the conformance gate
 ```
 
-`e2e/figureJourney.e2e.ts` loads each post (and the dev-only `_figjourneys` fixture post), enumerates `listFigureJourneys()`, and per journey asserts the structural invariants plus two semantic checks. A figure that no published post embeds can still be exercised via the `_`-prefixed `_figjourneys` fixture (the dev route serves it; `build-html` skips it so it never deploys).
+`e2e/figureJourney.e2e.ts` loads each post (and the dev-only `_figjourneys` fixture post), enumerates `window.__presidocsFigures`, and per journey asserts the structural invariants plus two semantic checks. A figure that no published post embeds can still be exercised via the `_`-prefixed `_figjourneys` fixture (the dev route serves it; `build-html` skips it so it never deploys).
 
 - **Structural:** registered under its id; `durationMs > 0`; `steps[0].startMs === 0`; contiguous increasing segments; last `endMs === durationMs`; `reset()`+forward `seek()` across `[0, durationMs]` at capture fps throws nothing and yields **≥2 distinct frames**; `seek(durationMs)` idempotent. Sampling is **inclusive of `durationMs`** (else a state set on the last frame is dropped).
 - **Determinism check** — two full passes are byte-identical at the end. This is the load-bearing catch for **rules 9, 11, 12** (detached tweens, randomness/wall-clock, `clearProps` residue). If this fails, hunt for entropy or non-timeline visuals on the seek path.

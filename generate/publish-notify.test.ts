@@ -26,7 +26,7 @@ import {
   truncate,
 } from "./publish-notify.ts";
 import { type BlogPaths } from "../shared/blogPaths.ts";
-import { hasAnyChannel, resolveNotifyConfig } from "../shared/notifyConfig.ts";
+import { hasAnyChannel, resolveNotifyConfig } from "./notifyConfig.ts";
 
 // --- test doubles for the phase lifecycle -----------------------------------
 

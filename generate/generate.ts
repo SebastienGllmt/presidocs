@@ -52,7 +52,7 @@ import {
 import { ttsProviders, type PlsLexicon, type SegmentContext } from "./tts-providers.ts";
 import { splitChapter } from "./narration.ts";
 import { wrapWithCache, computeTextHash, computeCacheKey, type CachedTtsProvider } from "./tts-cache.ts";
-import { forcedAligners, type ForcedAlignerName } from "./aligner.ts";
+import { createQwen3Aligner } from "./aligner.ts";
 import { wrapWithAlignmentCache, type CachedAligner, type CachedWord } from "./aligner-cache.ts";
 import { buildVtt, hasAlignment } from "./webvtt.ts";
 import { parseLexicon } from "./pronunciation.ts";
@@ -171,7 +171,7 @@ const forceMarks = new Set(
 // off, so existing builds are unchanged. Today the only backend is `qwen3`,
 // gated by QWEN3_ALIGNER_DIR (see generate/aligner.ts). `--align-language`
 // picks the language fed to the aligner (default English).
-const alignName = flags.align as ForcedAlignerName | undefined;
+const alignName = flags.align as string | undefined;
 const alignLanguage = flags["align-language"] ?? "English";
 
 // `--chapters=ID[,ID,...]` keeps only the listed chapters (matched by
@@ -517,14 +517,13 @@ const tts = cachedTts ?? rawTts;
 // otherwise the stale words.json would describe the old audio.
 let cachedAligner: CachedAligner | null = null;
 if (alignName && !mock) {
-  const factory = forcedAligners[alignName];
-  if (!factory) {
+  if (alignName !== "qwen3") {
     console.error(
-      `--align=${alignName} is not a known aligner. Known: ${Object.keys(forcedAligners).join(", ")}.`,
+      `--align=${alignName} is not a known aligner. Known: qwen3.`,
     );
     process.exit(1);
   }
-  const rawAligner = factory({ defaultLanguage: alignLanguage });
+  const rawAligner = createQwen3Aligner({ defaultLanguage: alignLanguage });
   // Alignment runs on the MERGED lexicon (the same text the TTS engine
   // received, including cross-post `common-terms.pls` substitutions),
   // because the AUDIO contains the substituted speech regardless of which

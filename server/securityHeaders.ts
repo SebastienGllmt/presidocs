@@ -14,10 +14,10 @@
 //     styles only into those unwrapped HTML routes, so a tight `style-src`
 //     never collides with HMR.
 
-import { isProd } from "./isProd.ts";
+import { isProd } from "../shared/isProd.ts";
 
 // sha256 of the cascade-layer-order inline <style>'s content
-// (CSS_LAYER_ORDER_STATEMENT in shared/cssLayers.ts), base64 — the CSP hash
+// (CSS_LAYER_ORDER_STATEMENT in generate/cssLayers.ts), base64 — the CSP hash
 // that allows that one engine-emitted inline style under a no-'unsafe-inline'
 // style-src. Hardcoded (no runtime crypto in workerd) and guarded against drift
 // by securityHeaders.test.ts, which recomputes it from the constant.
@@ -31,7 +31,7 @@ const STYLE_LAYER_ORDER_HASH = "sha256-wmcq5f2L5SjOMdfmh0MPE8ZN1Aui78gc2GzM6aRHn
 //   - style-src has NO 'unsafe-inline'. Stylesheets are <link>ed, and the
 //     client-side `.style.x =` writes are CSSOM (which CSP does not govern),
 //     so they keep working. The ONE inline <style> we emit is the engine's
-//     cascade-layer-order pin (shared/cssLayers.ts, injected first in <head>
+//     cascade-layer-order pin (generate/cssLayers.ts, injected first in <head>
 //     by bunHtmlHeadPlugin) — a fixed, engine-controlled string. We allow it
 //     by HASH, not 'unsafe-inline': maximally tight (this exact style and
 //     nothing else). `STYLE_LAYER_ORDER_HASH` below is the sha256 of

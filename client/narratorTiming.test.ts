@@ -5,7 +5,7 @@
 
 import { test, expect } from "bun:test";
 
-import { asMs } from "./time.ts";
+import { asMs } from "../shared/time.ts";
 import {
   computeActiveMark,
   findActiveWord,

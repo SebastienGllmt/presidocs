@@ -8,13 +8,13 @@
 
 import { readFile, stat } from "node:fs/promises";
 import { relative, sep } from "node:path";
-import { collectHtmlFiles } from "../shared/walkHtml.ts";
+import { collectHtmlFiles } from "../../shared/walkHtml.ts";
 import {
   createPostMetaIndex,
   parseAuthorEmailFromHtml,
   type PostMeta,
   type PostMetaIndex,
-} from "./postMeta.ts";
+} from "../postMeta.ts";
 
 export async function loadDevPostMetaIndex(
   postsDir: string,

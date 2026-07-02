@@ -15,9 +15,8 @@ import {
   type ChangeListEntry,
   type ChangeOrigin,
   type CommentChangeStore,
-  type PutChangeResult,
   type ResolutionListEntry,
-} from "./store.ts";
+} from "../server/comments/store.ts";
 
 function safeResolve(rootDir: string, key: string): string {
   const safe = normalize(key);
@@ -62,21 +61,20 @@ export function fsAdapter(rootDir: string): CommentChangeStore {
       }
     },
 
-    async putChange(post, userId, changeHash, bytes, origin): Promise<PutChangeResult> {
+    async putChange(post, userId, changeHash, bytes, origin): Promise<void> {
       const path = safeResolve(rootDir, changeKey(post, userId, changeHash));
       try {
         await stat(path);
         // Already present — content-addressed key + idempotent. A declared
         // origin still upgrades the provenance sidecar (one-way).
         if (origin) await writeOriginSidecar(path, origin);
-        return { kind: "already_present" };
+        return;
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
       }
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, bytes);
       if (origin) await writeOriginSidecar(path, origin);
-      return { kind: "ok" };
     },
 
     async listChanges(post, userId): Promise<ChangeListEntry[]> {

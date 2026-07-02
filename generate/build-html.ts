@@ -18,15 +18,15 @@
 // only carries the per-blog entry list.
 
 import { basename } from "node:path";
-import { htmlHeadPlugin } from "../shared/bunHtmlHeadPlugin.ts";
+import { htmlHeadPlugin } from "./bunHtmlHeadPlugin.ts";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
-import { checkHeadLayerOrder } from "../shared/cssLayers.ts";
+import { checkHeadLayerOrder } from "./cssLayers.ts";
 
 /**
  * Assert the canonical cascade-layer order landed before the (bundled)
  * stylesheet in each built layer-system page. The injection itself is done by
  * `htmlHeadPlugin()` during the bundle (the same plugin dev registers via
- * bunfig — see shared/bunHtmlHeadPlugin.ts); this is the build-time half of the
+ * bunfig — see generate/bunHtmlHeadPlugin.ts); this is the build-time half of the
  * dev/prod parity guard (methodology → Cascade-layer architecture, "Pinning the
  * order") and catches any future bundler change that reorders or drops it.
  *
@@ -108,7 +108,7 @@ async function main(): Promise<void> {
     // constant-fold both run before minify, so neither is disturbed.
     minify: true,
     sourcemap: "linked",
-    // Injects the cascade-layer order + site footer (shared/bunHtmlHeadPlugin.ts).
+    // Injects the cascade-layer order + site footer (generate/bunHtmlHeadPlugin.ts).
     // The same plugin runs in dev via bunfig, so dev and prod render identically.
     // `preloadFonts` is prod-only: it adds the critical-face <link rel=preload>,
     // which dev must NOT emit (dev inlines the woff2, so a preload would point at

@@ -28,11 +28,11 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { isPrivateBlog } from "../shared/blogPrivacy.ts";
-import { resolveFeedConfig, type FeedConfig } from "../shared/feedConfig.ts";
+import { resolveFeedConfig, type FeedConfig } from "./feedConfig.ts";
 import { resolveLicenseConfig } from "../shared/licenseConfig.ts";
 import { buildAuthorMap, type PublicAuthorProfile } from "../shared/authorProfile.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
-import { decodeHtmlEntities } from "../shared/htmlEntities.ts";
+import { decodeHtmlEntities } from "./htmlEntities.ts";
 import { parseHTML } from "linkedom";
 import { XMLValidator } from "fast-xml-parser";
 import { encodeXML } from "entities";
@@ -46,7 +46,7 @@ const paths = resolveBlogPaths();
 // ---- pure XML/JSON builders (exported for tests) ----------------------------
 
 // XML-escape a plain-text field. Backed by `entities`' `encodeXML` — the same
-// audited library as the decode side (shared/htmlEntities.ts) — so both halves
+// audited library as the decode side (generate/htmlEntities.ts) — so both halves
 // of the decode-before-escape step share one source of truth. `encodeXML`
 // emits the identical five XML metacharacter entities (incl. `&apos;`) the
 // hand-rolled five-replace version did. Kept as `escapeXml` so the ~50 call

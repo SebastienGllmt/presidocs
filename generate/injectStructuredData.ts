@@ -22,7 +22,7 @@
 
 import { parseHTML } from "linkedom";
 import { decodeHtmlEntities } from "./htmlEntities.ts";
-import { escapeHtmlAttr } from "./htmlEscape.ts";
+import { escapeHtmlAttr } from "../shared/htmlEscape.ts";
 // Google's own typed Schema.org vocabulary (Apache-2.0). `import type` only, so
 // it is fully erased at compile time — no runtime value, never bundled, never
 // shipped (this whole module is the build-time `dist/` rewrite). It turns every

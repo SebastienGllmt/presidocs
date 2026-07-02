@@ -1,4 +1,4 @@
-// ForcedAligner registry + the Qwen3-ForcedAligner-0.6B adapter.
+// The ForcedAligner contract + the Qwen3-ForcedAligner-0.6B adapter.
 //
 // The aligner takes (segment audio, segment text) and returns per-token
 // timing — the input the drawer's word-highlight feature and the future
@@ -57,8 +57,6 @@ export interface ForcedAlignerConfig {
   // Defaults to "English" if not set.
   defaultLanguage?: string;
 }
-
-export type ForcedAlignerFactory = (config: ForcedAlignerConfig) => ForcedAligner;
 
 // --- Qwen3 adapter -----------------------------------------------------------
 //
@@ -328,12 +326,3 @@ export function createQwen3Aligner(config: ForcedAlignerConfig = {}): ForcedAlig
   };
 }
 
-// Registry mirroring `ttsProviders`. Keep this list flat — the build picks an
-// aligner by name (e.g. `--aligner=qwen3`) once alignment is wired into the
-// pipeline. For now the single entry is enough to give callers a stable
-// indirection and to give tests a registry to assert against.
-export const forcedAligners = {
-  qwen3: createQwen3Aligner,
-} satisfies Record<string, ForcedAlignerFactory>;
-
-export type ForcedAlignerName = keyof typeof forcedAligners;

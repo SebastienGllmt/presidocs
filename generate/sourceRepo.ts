@@ -22,7 +22,7 @@
 // injection is gated on this, and audit-private.ts asserts no `vcs-github` link
 // reaches a private build.
 
-import { isPrivateBlog } from "./blogPrivacy.ts";
+import { isPrivateBlog } from "../shared/blogPrivacy.ts";
 
 /** Resolved repo location: a web base already including `/blob/<branch>`. */
 export type SourceRepo = { base: string };

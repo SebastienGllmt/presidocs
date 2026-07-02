@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { websubPublishBody, websubTopics } from "./websub-ping.ts";
-import { resolveFeedConfig } from "../shared/feedConfig.ts";
+import { resolveFeedConfig } from "./feedConfig.ts";
 
 test("websubPublishBody — publish mode with both topic + url keys", () => {
   const body = new URLSearchParams(websubPublishBody("https://blog.example.com/feed.xml"));

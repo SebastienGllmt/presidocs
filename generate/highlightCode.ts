@@ -11,10 +11,10 @@
 // BUILD-TIME ONLY. Shiki's grammars/themes are megabytes of build data; this
 // module must never enter the client bundle or the production Worker (the
 // dumb-edge rule). It rides the one shared HTML seam that runs in BOTH dev and
-// the prod build — `shared/bunHtmlHeadPlugin.ts` — so dev and prod render
+// the prod build — `generate/bunHtmlHeadPlugin.ts` — so dev and prod render
 // identically, and nothing Shiki reaches `server/createWorker.ts`.
 //
-// Surgical, not a round-trip: like `shared/stripServedHtml.ts` we use Bun's
+// Surgical, not a round-trip: like `generate/stripServedHtml.ts` we use Bun's
 // `HTMLRewriter`, which streams the page through untouched except for the code
 // elements — a whole-document linkedom re-serialization perturbs ~400 bytes of
 // a real post (SVG/whitespace normalization) and is the wrong tool for a

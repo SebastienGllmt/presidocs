@@ -1,7 +1,7 @@
 // Tests for the deploy-time license-declaration gate.
 
 import { test, expect } from "bun:test";
-import { checkLicenseGate } from "./audit-license.ts";
+import { checkLicenseGate } from "./audit-own-license.ts";
 
 test("no SITE_URL → exempt (local/preview build, no friction)", () => {
   // Even with no license at all, an unpublished build passes clean.

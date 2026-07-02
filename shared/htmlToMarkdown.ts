@@ -3,7 +3,7 @@
 // into clean Markdown an LLM can ingest — figures collapsed to their caption
 // text, runtime chrome dropped, the article body serialized.
 //
-// Like shared/annotationExport.ts this is a *pure* transform: HTML string in,
+// Like authoring/annotationExport.ts this is a *pure* transform: HTML string in,
 // `{ markdown, title }` out. No filesystem, no network, no Worker — it runs in
 // the build step (generate/markdown-export.ts), in the dev server route, and is
 // trivially golden-testable (htmlToMarkdown.test.ts). It is deliberately NOT a

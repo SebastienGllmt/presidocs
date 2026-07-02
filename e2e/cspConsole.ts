@@ -11,7 +11,7 @@
 // how an engine-emitted inline-`<style>` violation (the cascade-layer-order pin)
 // could reach prod undetected. So this drives the built worker under `wrangler dev`
 // (startWranglerServer = `bun run build` + `wrangler dev`), where
-// `shared/securityHeaders.ts` wraps every document — i.e. what a reader's
+// `server/securityHeaders.ts` wraps every document — i.e. what a reader's
 // browser actually enforces.
 //
 // What it catches that the header-only prodAudioSmoke can't: prodAudioSmoke

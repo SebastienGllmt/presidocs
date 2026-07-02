@@ -36,7 +36,7 @@ import {
 import { handlePostVersionRequest } from "./postVersionsRoute.ts";
 import { buildOpenApiDocument } from "./openapi.ts";
 import { handleAnalyticsRequest } from "./analyticsRoute.ts";
-import { withNoindexOffCanonicalHost, withSecurityHeaders } from "../shared/securityHeaders.ts";
+import { withNoindexOffCanonicalHost, withSecurityHeaders } from "./securityHeaders.ts";
 import {
   contentRangeHeader,
   isResolvableRangeHeader,
@@ -73,7 +73,7 @@ export type WorkerContent = {
   // Canonical host (SITE_HOST from .generated/postMeta.ts, baked from
   // SITE_URL at build). When supplied, responses served from any OTHER host
   // (a preview/staging deploy) carry `X-Robots-Tag: noindex` — see
-  // shared/securityHeaders.ts:withNoindexOffCanonicalHost. Optional/null →
+  // server/securityHeaders.ts:withNoindexOffCanonicalHost. Optional/null →
   // no noindex anywhere (a SITE_URL-less build has no canonical to defend).
   siteHost?: string | null;
   // Private (capability-URL) blog (SITE_PRIVATE from .generated/postMeta.ts,

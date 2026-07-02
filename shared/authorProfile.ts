@@ -18,7 +18,7 @@
 //
 // THE LOAD-BEARING CONSTRAINT: the served byline must NOT re-leak the email.
 // `<meta name="author-email">` is deliberately stripped from served HTML
-// (shared/stripServedHtml.ts) so the address stays out of crawlers' hands. So
+// (generate/stripServedHtml.ts) so the address stays out of crawlers' hands. So
 // the email is only ever a *disk/join* key here — every value that reaches the
 // client (avatar URL, anchor text) is derived from the public `handle`/`name`,
 // never the email. The served avatar lives at `/assets/authors/<handle>.<ext>`,

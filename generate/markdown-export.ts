@@ -19,7 +19,7 @@
 import { join, relative } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { resolveLicenseConfig } from "../shared/licenseConfig.ts";
-import { postHtmlFiles } from "./audit-posts.ts";
+import { collectHtmlFiles } from "../shared/walkHtml.ts";
 import {
   htmlToMarkdown,
   renderMarkdownDocument,
@@ -39,7 +39,7 @@ function distFileToPostPath(distDir: string, file: string): string {
 async function main(): Promise<void> {
   const paths = resolveBlogPaths();
   const distPostsDir = join(paths.distDir, "posts");
-  const files = await postHtmlFiles(distPostsDir);
+  const files = collectHtmlFiles(distPostsDir, { onMissing: "empty", recursive: false });
   if (files.length === 0) {
     console.warn(
       `Markdown export: no built posts under ${relative(paths.contentRoot, distPostsDir)} — did the earlier build steps run?`,

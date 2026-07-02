@@ -15,7 +15,7 @@
 // visible rendering), so they belong in the post-build sweep, not in the bundler
 // step (the build-only-vs-content-bearing split; see methodology → Build-time HTML strip).
 
-import { escapeHtmlAttr } from "./htmlEscape.ts";
+import { escapeHtmlAttr } from "../shared/htmlEscape.ts";
 
 export interface PwaHeadOptions {
   /** = manifest.theme_color. Omitted → no <meta name="theme-color"> emitted. */

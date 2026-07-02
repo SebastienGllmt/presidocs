@@ -27,7 +27,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { resolveAuthorProfile } from "../shared/authorProfile.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
-import { decodeHtmlEntities } from "../shared/htmlEntities.ts";
+import { decodeHtmlEntities } from "./htmlEntities.ts";
 import { readSiteMeta } from "./feeds.ts";
 
 const paths = resolveBlogPaths();
