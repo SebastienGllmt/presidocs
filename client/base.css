@@ -1262,6 +1262,18 @@
   code.shiki-code .line.tok-create [class*="shk-"] { color: #146c30; }
   code.shiki-code .line.tok-spend { background: #f3effb; box-shadow: inset 2px 0 0 #5a45a8; }
   code.shiki-code .line.tok-spend [class*="shk-"] { color: #5a45a8; }
+  /* Whole-line highlight in a third colour (blue), `// [!code ref]`. */
+  code.shiki-code .line.tok-ref { background: #e9f1fd; box-shadow: inset 2px 0 0 #1565c0; }
+  code.shiki-code .line.tok-ref [class*="shk-"] { color: #0a53be; }
+  /* Per-word highlight (`// [!colors green:Foo blue:Bar purple:23]`): the
+     transformer wraps just the matched word (not the line, not the token's
+     indentation) in a `.tok-c-*` span — like shiki's `[!code word:…]`, but in
+     three tints. A background box (over the existing syntax colour) plus a
+     readable same-hue text colour, so a struct's references can be highlighted
+     in that struct's colour and followed to its definition. */
+  code.shiki-code .tok-c-green  { background: #d6f0de; color: #14532d; border-radius: 3px; padding: 0 2px; }
+  code.shiki-code .tok-c-blue   { background: #dae8fd; color: #0b3d7a; border-radius: 3px; padding: 0 2px; }
+  code.shiki-code .tok-c-purple { background: #e9e1fb; color: #4a2f8f; border-radius: 3px; padding: 0 2px; }
 
   /* `@annotate:` / `@log:` / `@warn:` / `@error:` callouts (vendored customTag).
      A full-width tinted, left-bordered line carrying the pointer-label text. */

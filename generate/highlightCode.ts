@@ -40,7 +40,7 @@ import {
   transformerRemoveLineBreak,
 } from "@shikijs/transformers";
 import { decodeHTML } from "entities";
-import { codeAnnotations, customTag, elisionComment, styleToClass, type LineNotes } from "./shikiTransformers.ts";
+import { codeAnnotations, customTag, elisionComment, styleToClass, tokenColors, type LineNotes } from "./shikiTransformers.ts";
 
 const THEME = "github-light";
 // Languages whose grammar we load. A `language-X` block in any other language is
@@ -72,11 +72,12 @@ function buildTransformers(s2c: ReturnType<typeof styleToClass>, notes: LineNote
     // Overlay labels first, so it indexes the original source lines before
     // customTag can insert any callout lines and shift them.
     codeAnnotations(notes),
+    tokenColors(),
     transformerNotationFocus(),
     transformerNotationHighlight(),
     transformerNotationWordHighlight(),
     transformerNotationDiff(),
-    transformerNotationMap({ classMap: { create: "tok-create", spend: "tok-spend" } }, "presidocs:semantic"),
+    transformerNotationMap({ classMap: { create: "tok-create", spend: "tok-spend", ref: "tok-ref" } }, "presidocs:semantic"),
     customTag(),
     elisionComment(),
     // Drop the `\n` text nodes Shiki puts between lines. Our CSS makes each

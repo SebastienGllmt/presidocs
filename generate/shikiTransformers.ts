@@ -203,6 +203,89 @@ export function elisionComment(): ShikiTransformer {
   };
 }
 
+// Per-token text colouring. A `// [!colors green:Foo,Bar blue:Baz purple:23]`
+// comment line anywhere in a block is removed, and every token whose text is
+// EXACTLY one of the listed words is given a `tok-c-<colour>` class (a text
+// colour, committed in base.css). Lets a figure tint individual identifiers — a
+// type name, a map key — rather than whole lines, e.g. to colour each struct's
+// references in that struct's own colour so the reader can follow them. Words
+// match whole tokens only (identifiers/types/numbers are single Shiki tokens),
+// so it never splits a token. Runs in the `code` hook, after the token spans
+// (and their `shk-` colour classes) exist; the more-specific `code.shiki-code
+// .tok-c-*` rule wins over the `shk-` colour. NOTE: do not combine with `@note`
+// in the same block — the extra spec line would shift `@note` line indices.
+const TOKEN_COLOR_RE = /\[!colors\s+([^\]]+)\]/;
+
+export function tokenColors(): ShikiTransformer {
+  return {
+    name: "presidocs:token-colors",
+    code(code) {
+      const lines = code.children.filter((c): c is Element => c.type === "element");
+      let spec: Element | null = null;
+      let match: RegExpMatchArray | null = null;
+      for (const line of lines) {
+        const m = textOf(line).match(TOKEN_COLOR_RE);
+        if (m) {
+          spec = line;
+          match = m;
+          break;
+        }
+      }
+      if (!spec || !match) return;
+
+      const wordClass = new Map<string, string>();
+      for (const group of match[1]!.trim().split(/\s+/)) {
+        const colon = group.indexOf(":");
+        if (colon < 1) continue;
+        const colour = group.slice(0, colon);
+        for (const w of group.slice(colon + 1).split(",")) {
+          if (w) wordClass.set(w, `tok-c-${colour}`);
+        }
+      }
+
+      // Drop the spec comment line (and its trailing newline text node).
+      const at = code.children.indexOf(spec);
+      if (at !== -1) {
+        const next = code.children[at + 1];
+        code.children.splice(at, next?.type === "text" && next.value === "\n" ? 2 : 1);
+      }
+
+      const visit = (el: Element): void => {
+        for (const child of el.children) {
+          if (child.type !== "element") continue;
+          const text = textOf(child);
+          const cls = wordClass.get(text.trim());
+          const lone = child.children.length === 1 && child.children[0]?.type === "text";
+          if (cls && lone) {
+            // Wrap ONLY the word (not the token's leading indentation) in a child
+            // span carrying the tint — the shiki way, like `[!code word:…]`. The
+            // box hugs the text, and a background sits ON the existing `shk-`
+            // token colour rather than fighting it in the cascade.
+            const m = text.match(/^(\s*)(\S.*?)(\s*)$/);
+            if (m) {
+              const [, lead, word, trail] = m;
+              const wrapped: Element = {
+                type: "element",
+                tagName: "span",
+                properties: { class: [cls] },
+                children: [{ type: "text", value: word! }],
+              };
+              const kids: Array<Element | Text> = [];
+              if (lead) kids.push({ type: "text", value: lead });
+              kids.push(wrapped);
+              if (trail) kids.push({ type: "text", value: trail });
+              child.children = kids;
+            }
+          } else {
+            visit(child);
+          }
+        }
+      };
+      for (const line of code.children) if (line.type === "element") visit(line);
+    },
+  };
+}
+
 export type StyleToClass = ShikiTransformer & {
   /** CSS for every class this transformer emitted, e.g. `.shk-ab12{color:#24292e}`. */
   getCss(): string;
