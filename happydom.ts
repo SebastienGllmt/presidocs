@@ -15,6 +15,14 @@
 // Per-file registration keeps that blast radius contained to the test files
 // that actually need a DOM.
 //
+// ⚠ "Per-file" is opt-in, not containment: in a full `bun test` run all files
+// share one process, so this registration LEAKS into every file that runs
+// after the first importer (verified empirically 2026-07-03). For most
+// server/generate/shared tests that's harmless; tests exercising the `cookie`
+// request header or Set-Cookie response headers break under happy-dom's
+// classes — those files must call `useNativeWebClasses()` from nativedom.ts
+// (this module's mirror) to restore Bun's natives for their duration.
+//
 // Registration is idempotent — multiple test files can import this safely.
 
 import { GlobalRegistrator } from "@happy-dom/global-registrator";

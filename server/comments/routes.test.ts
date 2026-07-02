@@ -13,22 +13,13 @@
 // store's resolution surface throws, so a wrong-family call is a hard failure.
 // Every 401/403 row also asserts the store was never touched (calls empty).
 //
-// NOTE: never import ../../happydom.ts here — a global happy-dom registration
-// drops the forbidden `cookie` REQUEST header (→ spurious 401s) and appended
-// Set-Cookie RESPONSE headers, and changes Response semantics. This file must
-// run on Bun's native Request/Response.
-//
-// DEVIATION from spec §1.1: that section asserts happy-dom registration in one
-// test file does NOT leak into another. Empirically it DOES in the full
-// `bun test` run — client/* files call GlobalRegistrator.register() on
-// globalThis process-wide and it persists into these server tests (client
-// sorts before server). So this file DEFENSIVELY unregisters happy-dom for its
-// own duration and re-registers it in afterAll, restoring the exact pre-file
-// state for later DOM-dependent files. No happydom.ts import; no assertion
-// weakened. See the executor report for the full finding.
+// NOTE: never import ../../happydom.ts here — and happy-dom leaked from
+// client/* files would drop the forbidden `cookie` request header (→ spurious
+// 401s). The useNativeWebClasses() call below restores Bun's native classes
+// for this file's duration (see nativedom.ts for the leak mechanics).
 
-import { test, expect, describe, beforeAll, afterEach, afterAll } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { test, expect, describe, beforeAll, afterEach } from "bun:test";
+import { useNativeWebClasses } from "../../nativedom.ts";
 import type { RateLimit } from "@cloudflare/workers-types";
 import { handleCommentsRequest, type CommentsDeps } from "./routes.ts";
 import { createSessionToken } from "../auth/session.ts";
@@ -63,14 +54,9 @@ const ALICE_ID = "google:alice-sub";
 const BOB_ID = "microsoft:bob-sub";
 const AUTHOR_ID = "google:author-sub";
 
-// Restore Bun's native web classes if an earlier file left happy-dom registered
-// (see header DEVIATION note); re-register in afterAll to preserve pre-file state.
-let hadHappyDom = false;
-afterAll(() => { if (hadHappyDom) GlobalRegistrator.register(); });
+useNativeWebClasses();
 
 beforeAll(async () => {
-  hadHappyDom = (globalThis as { __HAPPY_DOM_REGISTERED__?: boolean }).__HAPPY_DOM_REGISTERED__ === true;
-  if (hadHappyDom) GlobalRegistrator.unregister();
   author = await createSessionToken({
     userId: AUTHOR_ID, email: "author@example.com", emailVerified: true,
     name: "Author", picture: undefined, provider: "google",

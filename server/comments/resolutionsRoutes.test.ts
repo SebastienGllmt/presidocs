@@ -12,14 +12,13 @@
 // a wrong-family call is a hard failure. Every 401/403 row also asserts the
 // store was never touched.
 //
-// NOTE: never import ../../happydom.ts here. DEVIATION from spec §1.1: happy-dom
-// registered by client/* files DOES leak into these server tests in the full
-// `bun test` run (dropping the forbidden `cookie` request header → spurious
-// 401s). This file defensively unregisters happy-dom for its own duration and
-// re-registers in afterAll. No assertion weakened; see the executor report.
+// NOTE: never import ../../happydom.ts here — and happy-dom leaked from
+// client/* files would drop the forbidden `cookie` request header (→ spurious
+// 401s). The useNativeWebClasses() call below restores Bun's native classes
+// for this file's duration (see nativedom.ts for the leak mechanics).
 
-import { test, expect, describe, beforeAll, afterEach, afterAll } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { test, expect, describe, beforeAll, afterEach } from "bun:test";
+import { useNativeWebClasses } from "../../nativedom.ts";
 import { handleResolutionsRequest, type ResolutionsDeps } from "./resolutionsRoutes.ts";
 import { createSessionToken } from "../auth/session.ts";
 import { createPostMetaIndex } from "../postMeta.ts";
@@ -40,13 +39,9 @@ let alice: string;
 let bob: string;
 let unverifiedAuthor: string;
 
-// Restore native web classes if an earlier file left happy-dom registered.
-let hadHappyDom = false;
-afterAll(() => { if (hadHappyDom) GlobalRegistrator.register(); });
+useNativeWebClasses();
 
 beforeAll(async () => {
-  hadHappyDom = (globalThis as { __HAPPY_DOM_REGISTERED__?: boolean }).__HAPPY_DOM_REGISTERED__ === true;
-  if (hadHappyDom) GlobalRegistrator.unregister();
   author = await createSessionToken({
     userId: "google:author-sub", email: "author@example.com", emailVerified: true,
     name: "Author", picture: undefined, provider: "google",

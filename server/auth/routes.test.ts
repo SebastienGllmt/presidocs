@@ -7,21 +7,14 @@
 // provider userinfo) is stubbed, dispatched on URL substring per §1.7. No
 // module mocking.
 //
-// NOTE: never import ../../happydom.ts here. A global happy-dom registration
-// makes `new Response(null, {headers})` silently DROP appended Set-Cookie
-// headers AND drops the forbidden `cookie` request header — either would make
-// the assertions below fail for the wrong reason.
-//
-// DEVIATION from spec §1.1: that section asserts happy-dom does NOT leak across
-// test files. Empirically it DOES in the full `bun test` run — client/* files
-// register it on globalThis process-wide (client sorts before server). So this
-// file DEFENSIVELY unregisters happy-dom for its own duration (restoring Bun's
-// native getSetCookie() + cookie-header semantics) and re-registers it in
-// afterAll, restoring the exact pre-file state for later DOM-dependent files.
-// No happydom.ts import; no assertion weakened. See the executor report.
+// NOTE: never import ../../happydom.ts here — and happy-dom leaked from
+// client/* files would drop the forbidden `cookie` request header AND appended
+// Set-Cookie headers, failing these assertions for the wrong reason. The
+// useNativeWebClasses() call below restores Bun's native classes for this
+// file's duration (see nativedom.ts for the leak mechanics).
 
-import { test, expect, describe, beforeAll, afterEach, afterAll } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { test, expect, describe, beforeAll, afterEach } from "bun:test";
+import { useNativeWebClasses } from "../../nativedom.ts";
 import {
   startGoogleAuth,
   startMicrosoftAuth,
@@ -57,16 +50,13 @@ afterEach(() => {
   Object.assign(process.env, savedEnv as Record<string, string>);
 });
 
-// Restore native web classes if an earlier file left happy-dom registered
-// (see header DEVIATION note); re-register in afterAll to preserve pre-file state.
-let hadHappyDom = false;
-afterAll(() => { if (hadHappyDom) GlobalRegistrator.register(); });
+// Must be called before the beforeAll below: hooks run in registration order,
+// so the helper's unregister happens before realFetch captures native fetch.
+useNativeWebClasses();
 
 let validSession: string;
 
 beforeAll(async () => {
-  hadHappyDom = (globalThis as { __HAPPY_DOM_REGISTERED__?: boolean }).__HAPPY_DOM_REGISTERED__ === true;
-  if (hadHappyDom) GlobalRegistrator.unregister();
   realFetch = globalThis.fetch; // native fetch, captured after unregister
   process.env.SESSION_SECRET = "test-secret-at-least-32-chars-long-xx";
   process.env.GOOGLE_OAUTH_CLIENT_ID = "dummy-google-id";
