@@ -85,7 +85,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  // The promote-to-error that audit-license.ts anticipated: advertising figure
+  // The promote-to-error that audit-own-license.ts anticipated: advertising figure
   // source on a PUBLISHED build (SITE_URL set) without a code license would ship
   // those files all-rights-reserved while a twin invites their reuse —
   // contradictory. Fail loudly. Local/preview builds (no SITE_URL) are exempt and

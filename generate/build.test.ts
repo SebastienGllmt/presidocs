@@ -31,7 +31,7 @@ function activeNames(stages: readonly Stage[], c: StageContext): string[] {
 // (a) BUILD_STAGES in the §1a order.
 test("BUILD_STAGES declare the §1a chain order", () => {
   expect(BUILD_STAGES.map((s) => s.name)).toEqual([
-    "audit-license",
+    "audit-own-license",
     "post-meta",
     "post-versions",
     "episode-audio",
@@ -103,7 +103,7 @@ test("without --private, isPrivateBlog(env) governs the posture", () => {
 test("private deploy equals the private template's deploy chain", () => {
   expect(activeNames(DEPLOY_STAGES, ctx({ private: true }))).toEqual([
     "audit-deps",
-    "audit-licenses",
+    "audit-dep-licenses",
     "verify-narration",
     "build",
     "upload-audio-r2",
@@ -115,7 +115,7 @@ test("private deploy equals the private template's deploy chain", () => {
 test("public deploy keeps the announce stages", () => {
   expect(activeNames(DEPLOY_STAGES, ctx({ private: false }))).toEqual([
     "audit-deps",
-    "audit-licenses",
+    "audit-dep-licenses",
     "verify-narration",
     "build",
     "upload-audio-r2",
@@ -131,7 +131,7 @@ test("dry-run deploy runs audits+build, skips side effects, dry-runs wrangler", 
   const c = ctx({ private: false, dryRun: true });
   expect(activeNames(DEPLOY_STAGES, c)).toEqual([
     "audit-deps",
-    "audit-licenses",
+    "audit-dep-licenses",
     "verify-narration",
     "build",
     "wrangler deploy",

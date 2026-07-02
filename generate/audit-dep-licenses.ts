@@ -5,7 +5,7 @@
 // has a CVE, this fails it when a CLIENT-bundled dependency carries a license we
 // can't satisfy — a non-permissive / unrecognised license reaching the code we
 // distribute to every reader, or a dep whose required notice we have no text to
-// reproduce. (Distinct from generate/audit-license.ts — singular — which gates
+// reproduce. (Distinct from generate/audit-own-license.ts — which gates
 // the blog's OWN declared content license.)
 //
 // Why this exists: generate/licenses-page.ts SURFACES the notices, but nothing
@@ -156,7 +156,7 @@ export function evaluateLicenses(
         name: d.name,
         license: d.license || "(none declared)",
         reason:
-          "a non-permissive / unrecognised license reaching the client bundle. Verify it's safe to distribute, then add it to ALLOWED_LICENSES (if it's a permissive SPDX id) or WAIVED_LICENSES (with a reason) in generate/audit-licenses.ts.",
+          "a non-permissive / unrecognised license reaching the client bundle. Verify it's safe to distribute, then add it to ALLOWED_LICENSES (if it's a permissive SPDX id) or WAIVED_LICENSES (with a reason) in generate/audit-dep-licenses.ts.",
       });
     }
   }
@@ -175,7 +175,7 @@ async function main(): Promise<void> {
     // to derive it means the build itself is broken — a compliance gate that
     // can't see what ships must not wave the deploy through.
     console.error(
-      `audit-licenses FAILED: could not derive the client dependency set — ${(err as Error).message}`,
+      `audit-dep-licenses FAILED: could not derive the client dependency set — ${(err as Error).message}`,
     );
     process.exit(1);
   }
@@ -192,7 +192,7 @@ async function main(): Promise<void> {
 
   if (blocking.length > 0) {
     console.error(
-      `\naudit-licenses FAILED: ${blocking.length} client-bundled dependency(ies) with an unsatisfiable license:\n`,
+      `\naudit-dep-licenses FAILED: ${blocking.length} client-bundled dependency(ies) with an unsatisfiable license:\n`,
     );
     for (const f of blocking)
       console.error(`      ${f.name} [${f.license}] — ${f.reason}`);
@@ -204,7 +204,7 @@ async function main(): Promise<void> {
 
   const waivedNote = waived.length > 0 ? ` (${waived.length} waived)` : "";
   console.log(
-    `audit-licenses: OK — ${ok.length} client dependency(ies) on the permissive allowlist with reproducible notices${waivedNote}.`,
+    `audit-dep-licenses: OK — ${ok.length} client dependency(ies) on the permissive allowlist with reproducible notices${waivedNote}.`,
   );
 }
 

@@ -41,7 +41,7 @@ export async function buildHtmlEntries({ paths }: StageContext): Promise<string[
 
 // Mirrors the §1a chain column-for-column; posture branches are `when`.
 export const BUILD_STAGES: readonly Stage[] = [
-  { name: "audit-license", script: "generate/audit-license.ts" },
+  { name: "audit-own-license", script: "generate/audit-own-license.ts" },
   { name: "post-meta", script: "generate/post-meta.ts" },
   { name: "post-versions", script: "generate/post-versions.ts" },
   // Live-blog stage folded in (1.3): harmless on episode-less repos — writes an

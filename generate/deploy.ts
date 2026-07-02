@@ -20,7 +20,7 @@ import { runBuild, runStage, type Stage, type StageContext } from "./build.ts";
 // wrangler.toml's AUDIO binding, upload-audio-r2.ts:20–26).
 export const DEPLOY_STAGES: readonly Stage[] = [
   { name: "audit-deps", script: "generate/audit-deps.ts" },
-  { name: "audit-licenses", script: "generate/audit-licenses.ts" },
+  { name: "audit-dep-licenses", script: "generate/audit-dep-licenses.ts" },
   { name: "verify-narration", script: "generate/verify-narration.ts" },
   { name: "build", run: (c) => runBuild(c.paths, { private: c.private }) },
   {
