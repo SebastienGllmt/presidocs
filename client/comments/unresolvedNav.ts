@@ -7,6 +7,20 @@ import type { CommentSystem } from "../comments.ts";
 export class UnresolvedNav {
   constructor(private readonly sys: CommentSystem) {}
 
+  // Author-only at-a-glance unresolved-thread count. Lives in the
+  // column header alongside the version history so the author can see
+  // "are there comments I haven't dealt with yet?" without scrolling
+  // the post. Clicking it cycles through the unresolved threads in
+  // document order. Re-rendered on every renderAll() so polls and
+  // mutations keep it current.
+  private unresolvedCountEl: HTMLButtonElement | null = null;
+  // Index into the document-order list of unresolved threads, used so
+  // repeated clicks on the badge step through them rather than
+  // re-snapping to the same one. Reset whenever the underlying set
+  // shifts (resolved, deleted, …) so we don't index off the end.
+  private unresolvedCycleIndex = 0;
+  private lastUnresolvedIds: string[] = [];
+
   // Author-only at-a-glance counter of unresolved threads, mounted in
   // the column header. The intent is "did I miss any comments?"
   // surfacing — without it the author has to scroll the whole post to
@@ -19,14 +33,6 @@ export class UnresolvedNav {
   // so a half-written-but-never-submitted comment can't masquerade as
   // done. Clicks cycle through the unresolved threads and unsent drafts in
   // document order.
-  private unresolvedCountEl: HTMLButtonElement | null = null;
-  // Index into the document-order list of unresolved threads, used so
-  // repeated clicks on the badge step through them rather than
-  // re-snapping to the same one. Reset whenever the underlying set
-  // shifts (resolved, deleted, …) so we don't index off the end.
-  private unresolvedCycleIndex = 0;
-  private lastUnresolvedIds: string[] = [];
-
   renderUnresolvedCount() {
     if (!this.sys.column) return;
     const author = this.sys.isAuthorMode();

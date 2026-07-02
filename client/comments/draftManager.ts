@@ -22,7 +22,7 @@ export class DraftManager {
   // Deliberately not in the CRDT: drafts shouldn't sync to a server
   // (or to the user's other devices) until the user commits. They DO
   // persist to localStorage so closing the tab doesn't lose work; see
-  // `draftsStorage` and `draftBodies` below for the per-textarea
+  // `storage` and `draftBodies` below for the per-textarea
   // body-of-typing buffer that pairs with each draft thread.
   drafts: Thread[] = [];
   // In-progress textarea contents for each draft, keyed by thread id.
@@ -37,7 +37,7 @@ export class DraftManager {
   // reply box, so the focus-based capture/restore in `renderAll` can't
   // rescue it). Restored in `buildComposer`, written on every keystroke,
   // cleared on submit. Session-only and deliberately NOT in
-  // `draftsStorage`: an unsent reply has no draft thread to belong to,
+  // `storage`: an unsent reply has no draft thread to belong to,
   // and persisting it would need a storage-schema change for little gain.
   replyBodies = new Map<string, string>();
   // Persistence handle for `drafts` + `draftBodies`. Null until identity

@@ -75,10 +75,10 @@ import { MobileMenu } from "./comments/mobileMenu.ts";
 // same pattern. Never true in a shipped bundle.
 declare const __BUN_DEV__: boolean | undefined;
 
-// BLOCK_TAGS, normalizeText, walkBlocks are imported from ./commentsDom.ts
-// — extracting them gave the indexer's leaf-tag set, whitespace rule, and
-// document-order walker a place to be tested without instantiating the
-// whole CommentSystem.
+// BLOCK_TAGS, normalizeText, walkBlocks live in ./commentsDom.ts (imported
+// by ./comments/blockIndex.ts) — extracting them gave the indexer's leaf-tag
+// set, whitespace rule, and document-order walker a place to be tested
+// without instantiating the whole CommentSystem.
 
 // Extra gap kept between the lowest card's bottom and the player dock
 // when reserving bottom scroll room, so a bottom card never sits flush
