@@ -308,9 +308,14 @@ export async function whoami(req: Request): Promise<Response> {
   return Response.json(body, { headers: noStore });
 }
 
-// The Set-Cookie strings that clear the auth pair. Pure (no Headers/Response) so
-// it's unit-testable without the global `Headers` — which, under happy-dom's
-// global registration in the full test run, drops appended Set-Cookie headers.
+// `POST /auth/logout` — clears the session cookie and returns 200 with a `null`
+// JSON body (the same body `whoami` returns when logged out). Builds a `Headers`
+// + `Response`, exactly like the callback does. (The earlier "Pure — no
+// Headers/Response" note was stale: this has always returned a Response. It also
+// mis-described the isolation posture — happy-dom's global registration, when it
+// leaks into a server test, drops appended Set-Cookie headers AND the forbidden
+// `cookie` request header, so auth route tests must run on Bun's native classes;
+// see server/auth/routes.test.ts.)
 export function logout(_req: Request): Response {
   const headers = new Headers({ "Content-Type": "application/json" });
   // A `__Host-` cookie's clearing Set-Cookie must itself carry Secure +
