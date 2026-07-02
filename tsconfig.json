@@ -31,5 +31,5 @@
   // `../engine/...`, and `./.generated/...` paths that only resolve once
   // they've been materialized into a consumer repo (the fixture scratch dir) —
   // they can't typecheck where they live.
-  "exclude": ["templates/content-repo", "templates/private-content-repo", "e2e/fixture-content"]
+  "exclude": ["templates/content-repo", "e2e/fixture-content"]
 }

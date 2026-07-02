@@ -65,7 +65,8 @@ test("public build drops audit-private; private build appends it last", () => {
 // (b2) Posture resolution — the NEW structural contract (fix 1.1). runBuild
 // resolves `ctx.private = opts.private ?? isPrivateBlog(env)` (build.ts), and the
 // `import.meta.main` wrapper sets `opts.private = true` iff `--private` is on argv
-// (templates/private-content-repo passes it). So `--private` FORCES audit-private
+// (a private blog's package.json and the e2e private fixture both pass it). So
+// `--private` FORCES audit-private
 // into the stage list regardless of BLOG_PRIVATE; without it, isPrivateBlog(env)
 // governs — the fail-safe being that audit-private.ts itself still exits 1 on a
 // lost BLOG_PRIVATE (asserted end-to-end by the e2e private tier, not here).

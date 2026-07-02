@@ -5,8 +5,9 @@
 // `"deploy": "bun engine/generate/deploy.ts"`.
 //
 // The private posture drops the announce stages (publish-notify snapshot/notify,
-// websub-ping) exactly as templates/private-content-repo/package.json:7
-// documents — announcing posts is the opposite of a capability-URL blog's job.
+// websub-ping) exactly as a private blog's package.json "//private" breadcrumb
+// (README → Private blog) documents — announcing posts is the opposite of a
+// capability-URL blog's job.
 //
 // `--dry-run`: skips every stage with external side effects (R2 writes,
 // webhooks, hub ping) and passes `--dry-run` to `wrangler deploy`. All audits +
@@ -72,7 +73,8 @@ export async function runDeploy(
 
 if (import.meta.main) {
   // `--private` declares the private posture STRUCTURALLY at the invocation
-  // (templates/private-content-repo/package.json passes it), forcing
+  // (a private blog's package.json — README → Private blog — and the e2e private
+  // fixture, e2e/harness.ts materializer, both pass it), forcing
   // ctx.private = true. This propagates into the build step (runBuild with
   // { private: ctx.private }, so audit-private always runs) AND makes the
   // announce-stage `when: (c)=>!c.private` gating drop publish-notify/websub-ping

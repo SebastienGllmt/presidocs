@@ -59,4 +59,29 @@ bun run deploy       # build + wrangler deploy
 bun run clean <slug> # delete a post's generated audio + GC the TTS cache
 ```
 
+## Private blog
+
+This same starter runs a **private** blog, where **the URL is the secret**: the
+engine's whole discovery surface (sitemap, feeds, llms.txt, landing post list,
+Ask-this-blog, publish webhooks) is suppressed and re-audited on every build, and
+every response carries `noindex`. Read the full design + threat model at engine
+`methodology.md` → **Private blogs** before trusting it with anything serious
+(notably: anyone holding a link can reshare it).
+
+Four edits turn this blog private — nothing else:
+
+- Set `BLOG_PRIVATE=1` in `.env` (the commented knob is already in `.env.example`).
+- Point `build` and `deploy` at their `--private` forms in `package.json` — see the
+  `"//private"` breadcrumb key there for the exact two lines. `--private` makes the
+  posture *structural*, so audit-private still fires even if `.env` is lost.
+- Swap the landing to the commented private variant in `index.html` (delete the
+  public block, uncomment the private one).
+
+`bun run new-post <slug>` mints the unguessable `--<token>` suffix for you — never
+hand-invent tokens (the audit rejects filenames without one). **Renaming a file
+rotates its key**: leak recovery is rename, rebuild, redeploy (the old link 404s).
+
+**Keep the repo itself private on GitHub** — blog-level privacy means source,
+figures, and generated audio are all covered by one repository ACL.
+
 See `presidocs/methodology.md` for the engine's design and authoring rules.

@@ -102,7 +102,8 @@ export async function runBuild(
 
 if (import.meta.main) {
   // `--private` declares the private posture STRUCTURALLY at the invocation
-  // (templates/private-content-repo/package.json passes it), forcing
+  // (a private blog's package.json — README → Private blog — and the e2e private
+  // fixture, e2e/harness.ts materializer, both pass it), forcing
   // ctx.private = true so audit-private always runs. audit-private.ts then
   // re-checks isPrivateBlog() and fails loudly if BLOG_PRIVATE was lost — a
   // lost env var must fail the build, not silently ship a private blog public.

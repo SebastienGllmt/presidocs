@@ -4,6 +4,7 @@
   "private": true,
   "//trustedDependencies": "Empty on purpose: all dependency lifecycle scripts are blocked (the binaries the toolchain needs arrive as platform packages, not scripts). See methodology.md → Supply-chain: install policy.",
   "trustedDependencies": [],
+  "//private": "Private blog? Set BLOG_PRIVATE=1 in .env AND make the posture structural: build → \"bun engine/generate/build.ts --private\", deploy → \"bun engine/generate/deploy.ts --private\". The --private flag forces audit-private even if .env is lost; deploy's announce stages (publish-notify, websub-ping) drop automatically under the private posture. See README → Private blog.",
   "scripts": {
     "dev": "bun engine/scripts/dev.ts",
     "dev:edge": "bun run build && bun engine/generate/upload-audio-r2.ts --local && wrangler dev --port 3000",
