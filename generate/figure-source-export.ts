@@ -32,7 +32,7 @@ import { parseHTML } from "linkedom";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { resolveLicenseConfig } from "../shared/licenseConfig.ts";
 import { isValidFigureSrc, spdxHeader } from "../shared/figureSource.ts";
-import { postHtmlFiles } from "./audit-posts.ts";
+import { collectHtmlFiles } from "../shared/walkHtml.ts";
 
 // Re-exported from its shared home so existing importers/tests keep their path.
 export { spdxHeader } from "../shared/figureSource.ts";
@@ -56,7 +56,7 @@ export function collectFigureSrc(html: string): string[] {
 async function main(): Promise<void> {
   const paths = resolveBlogPaths();
   const distPostsDir = join(paths.distDir, "posts");
-  const files = await postHtmlFiles(distPostsDir);
+  const files = collectHtmlFiles(distPostsDir, { onMissing: "empty" });
   if (files.length === 0) {
     console.warn(
       `Figure-source export: no built posts under ${relative(paths.contentRoot, distPostsDir)} — did \`bun run build\` run the earlier steps?`,

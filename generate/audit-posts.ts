@@ -36,12 +36,12 @@
 // conformance). NB: duplicate-id/well-formedness is HYGIENE (broken id-dependent
 // machinery), NOT a WCAG 4.1.1 bar — SC 4.1.1 was obsoleted in WCAG 2.2.
 
-import { readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, relative } from "node:path";
 import { HtmlValidate, type ConfigData } from "html-validate";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { isValidFigureSrc } from "../shared/figureSource.ts";
+import { collectHtmlFiles } from "../shared/walkHtml.ts";
 
 export type AuditViolation = { rule: string; detail: string };
 
@@ -183,24 +183,10 @@ export async function validateHtmlStructure(
   return { errors, warnings };
 }
 
-async function postHtmlFiles(postsDir: string): Promise<string[]> {
-  let entries;
-  try {
-    entries = await readdir(postsDir, { withFileTypes: true });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw err;
-  }
-  return entries
-    .filter((e) => e.isFile() && e.name.endsWith(".html"))
-    .map((e) => join(postsDir, e.name))
-    .sort();
-}
-
 async function main(): Promise<void> {
   const paths = resolveBlogPaths();
   const postsDir = join(paths.distDir, "posts");
-  const files = await postHtmlFiles(postsDir);
+  const files = collectHtmlFiles(postsDir, { onMissing: "empty" });
   if (files.length === 0) {
     console.warn(
       `Post audit: no built posts under ${relative(paths.contentRoot, postsDir)} — did \`bun run build\` run the earlier steps?`,
@@ -263,5 +249,3 @@ if (import.meta.main) {
     process.exit(1);
   });
 }
-
-export { postHtmlFiles };
