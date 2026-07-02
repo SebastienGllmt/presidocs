@@ -27,8 +27,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { resolveAuthorProfile } from "../shared/authorProfile.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
-import { decodeHtmlEntities } from "./htmlEntities.ts";
-import { readSiteMeta } from "./feeds.ts";
+import { extractPostMeta, readSiteMeta } from "./feeds.ts";
 
 const paths = resolveBlogPaths();
 
@@ -197,43 +196,15 @@ export async function renderElementToPng(
 
 // --- build driver ------------------------------------------------------------
 
-// The blog name from the landing index.html <title> (engine stays content-
-// agnostic — never hardcodes a blog name). Mirrors generate/feeds.ts.
+// The blog name from the landing index.html <title> and a post's <title>: one
+// source of truth with the feed extractors in generate/feeds.ts (engine stays
+// content-agnostic — never hardcodes a blog name).
 async function readSiteName(): Promise<string> {
-  const indexPath = join(paths.contentRoot, "index.html");
-  if (!existsSync(indexPath)) return "";
-  const html = await Bun.file(indexPath).text();
-  let title = "";
-  let inTitle = false;
-  new HTMLRewriter()
-    .on("title", {
-      element() {
-        inTitle = true;
-      },
-      text(t) {
-        if (inTitle) title += t.text;
-        if (t.lastInTextNode) inTitle = false;
-      },
-    })
-    .transform(html);
-  return decodeHtmlEntities(title.replace(/\s+/g, " ").trim());
+  return (await readSiteMeta()).title;
 }
 
 function extractTitle(html: string): string {
-  let title = "";
-  let inTitle = false;
-  new HTMLRewriter()
-    .on("title", {
-      element() {
-        inTitle = true;
-      },
-      text(t) {
-        if (inTitle) title += t.text;
-        if (t.lastInTextNode) inTitle = false;
-      },
-    })
-    .transform(html);
-  return decodeHtmlEntities(title.replace(/\s+/g, " ").trim());
+  return extractPostMeta(html).title;
 }
 
 function hasOwnOgImage(html: string): boolean {

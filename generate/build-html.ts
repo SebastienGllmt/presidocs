@@ -21,6 +21,7 @@ import { basename } from "node:path";
 import { htmlHeadPlugin } from "./bunHtmlHeadPlugin.ts";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { checkHeadLayerOrder } from "./cssLayers.ts";
+import { clientBuildOptions } from "./clientBuildOptions.ts";
 
 /**
  * Assert the canonical cascade-layer order landed before the (bundled)
@@ -81,49 +82,23 @@ async function main(): Promise<void> {
   const result = await Bun.build({
     entrypoints: entries,
     outdir: paths.distDir,
-    target: "browser",
-    // Code-splitting is required for `import()` to emit a SEPARATE chunk rather
-    // than inlining the dynamic dependency back into the importer. Without it,
-    // `client/commentsLoader.ts`'s lazy `import("./comments.ts")` would still
-    // ship the ~150 KB comment system in the eager entry.
-    // With it, shared code across the post's many <script> entries is also
-    // de-duplicated into shared chunks the HTML modulepreloads. Bundle-budget
-    // guarded by client/comments.budget.test.ts.
-    splitting: true,
-    // Keep the self-hosted Red Hat woff2 OUT of the bundle. Without this Bun
-    // inlines each @font-face `url(./fonts/*.woff2)` as a base64 data: URI into
-    // every post's CSS chunk (~104 KB of fonts duplicated per post, re-fetched
-    // on every navigation). `external` leaves the url verbatim; the CSS chunks
-    // sit at dist root, so `./fonts/x.woff2` resolves to `/fonts/x.woff2`, which
-    // copy-static.ts copies to `dist/fonts/` — one cacheable file, fetched once.
-    // (Dev's serve.static still inlines, which is fine — no caching concerns
-    // there, and it keeps the figure-height gate / capture font-faithful.)
-    external: ["*.woff2"],
+    // Shared client-bundle options (target/splitting/minify/external/define) —
+    // one source of truth with clientDeps.ts (generate/clientBuildOptions.ts).
+    ...clientBuildOptions(),
     // Production assets are content-hashed and served immutable (methodology →
     // Serving generated audio / Immutable Responses), so the build is the only
-    // place to shrink them. `minify` trims the JS/CSS chunks (Lighthouse
-    // `unminified-javascript`/`unminified-css`); `sourcemap: "linked"` emits a
-    // sibling `.js.map` + `//# sourceMappingURL` so prod stays debuggable and
-    // `valid-source-maps` passes. The head plugin and the `__BUN_DEV__`
-    // constant-fold both run before minify, so neither is disturbed.
-    minify: true,
+    // place to shrink them. `sourcemap: "linked"` emits a sibling `.js.map` +
+    // `//# sourceMappingURL` so prod stays debuggable and `valid-source-maps`
+    // passes. The head plugin and the `__BUN_DEV__` constant-fold both run
+    // before minify, so neither is disturbed.
     sourcemap: "linked",
     // Injects the cascade-layer order + site footer (generate/bunHtmlHeadPlugin.ts).
     // The same plugin runs in dev via bunfig, so dev and prod render identically.
     // `preloadFonts` is prod-only: it adds the critical-face <link rel=preload>,
     // which dev must NOT emit (dev inlines the woff2, so a preload would point at
-    // a never-fetched URL). `external: ["*.woff2"]` above is what makes the prod
-    // fonts real URLs the preload can target.
+    // a never-fetched URL). `external: ["*.woff2"]` (in clientBuildOptions) is
+    // what makes the prod fonts real URLs the preload can target.
     plugins: [htmlHeadPlugin({ preloadFonts: true })],
-    define: {
-      // client/swRegister.ts uses `typeof __BUN_DEV__ === "undefined"` to
-      // decide whether to register the SW. Substituting the identifier with
-      // the literal `false` here means the bundled output runs the
-      // registration path; the un-bundled source served by Bun's inner loop
-      // sees an undeclared identifier and the SW stays unregistered there.
-      // (Proposal 06 §7 "Don't register the SW from the Bun inner loop".)
-      __BUN_DEV__: "false",
-    },
   });
 
   if (!result.success) {

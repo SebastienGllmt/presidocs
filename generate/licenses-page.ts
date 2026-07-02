@@ -42,18 +42,14 @@ import {
 } from "../shared/servedLicense.ts";
 import { deriveShippedClientPackages } from "./clientDeps.ts";
 import { readSiteMeta } from "./feeds.ts";
-import { escHtml, extractStylesheetLinks } from "./help-page.ts";
+import { extractStylesheetLinks } from "./help-page.ts";
+import { escapeHtmlAttr as escAttr, escapeHtmlText as escHtml } from "../shared/htmlEscape.ts";
 import { type DepLicense, resolveDepLicenses } from "./licenseFiles.ts";
 
 const paths = resolveBlogPaths();
 
 /** URL the combined page is served at; the footer "Acknowledgements" link target. */
 export const LICENSES_PATH = ACKNOWLEDGEMENTS_PATH;
-
-// HTML double-quoted-attribute escape (escHtml comes from help-page.ts).
-function escAttr(s: string): string {
-  return escHtml(s).replace(/"/g, "&quot;");
-}
 
 // ---- self-hosted fonts (engine constant) ------------------------------------
 // The Red Hat Text/Mono woff2 ship from client/fonts and are redistributed under
