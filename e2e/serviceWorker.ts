@@ -168,7 +168,7 @@ test("content-addressed assets are cache-first — a hashed chunk is cached and 
 }, 120_000);
 
 // The OTHER half of "is this a PWA": the Web App Manifest + installability
-// shell (`shared/injectPwaHead.ts` + the served `/manifest.webmanifest`). The SW
+// shell (`generate/injectPwaHead.ts` + the served `/manifest.webmanifest`). The SW
 // tests above cover the *runtime* half; this covers the *install* half. It's a
 // dev:edge concern specifically — the head injection is a post-build rewrite, so
 // the fast `bun run dev` server (which serves source HTML) carries none of it;

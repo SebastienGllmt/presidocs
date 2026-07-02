@@ -8,7 +8,7 @@
 // possible without re-rendering a whole post:
 //   - the offline CLI (`generate/sound-test.ts`) that synthesizes one WAV per
 //     lexeme into `generated/.sound-test/`, and
-//   - the dev endpoint (`server/soundTest.dev.ts`) that lists the lexemes and
+//   - the dev endpoint (`server/dev/soundTest.dev.ts`) that lists the lexemes and
 //     decides which already have audio.
 // Both must agree on (a) what text gets synthesized for a lexeme and (b) the
 // content-addressed filename that text+voice maps to — so they live here once.

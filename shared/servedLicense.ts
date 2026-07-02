@@ -13,7 +13,7 @@
 // two surfaces (and no broken `/license` link).
 //
 // The existence predicate is the SINGLE source of truth the two footer-inject
-// paths share — the build-time bundler plugin (shared/bunFooterPlugin.ts) and
+// paths share — the build-time bundler plugin (generate/bunFooterPlugin.ts) and
 // the post-build sweep (generate/strip-served-html.ts) — so both resolve the
 // SAME href. That matters because the inject is idempotent: if the two paths
 // disagreed, whichever won the race would decide the footer's license link.

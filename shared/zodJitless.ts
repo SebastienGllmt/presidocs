@@ -3,7 +3,7 @@
 // Why: Zod 4 JIT-compiles validators with `new Function(...)` for speed, gated
 // behind a feature-probe that calls `new Function("")` inside a try/catch
 // (zod/v4/core/util.ts `allowsEval`). Under our strict CSP — `script-src` has
-// no `'unsafe-eval'` (shared/securityHeaders.ts) — that probe is *blocked*: the
+// no `'unsafe-eval'` (server/securityHeaders.ts) — that probe is *blocked*: the
 // browser fires a `securitypolicyviolation` (surfaced as a DevTools Issue and a
 // Lighthouse Best-Practices `errors-in-console` hit) and Zod falls back to the
 // interpreter anyway. So the JIT can never actually run in our client; the only

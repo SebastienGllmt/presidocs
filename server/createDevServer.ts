@@ -152,7 +152,7 @@ export async function createDevServer(opts: DevServerOptions) {
   // Wrap a function-style route handler so its response carries the security
   // headers (parity with the Worker). `priv` additionally sets CORP for the
   // non-asset API responses. The HTMLBundle routes are served by Bun's bundler
-  // and can't be wrapped — see shared/securityHeaders.ts; the document CSP is
+  // and can't be wrapped — see server/securityHeaders.ts; the document CSP is
   // verified against the Worker (`wrangler dev`), not this dev server.
   const pub = (h: DevHandler): DevHandler => async (req) =>
     withSecurityHeaders(await h(req));
@@ -169,7 +169,7 @@ export async function createDevServer(opts: DevServerOptions) {
   // Failure to construct the proxy (malformed wrangler.toml, missing bindings)
   // is loud at startup, not a silent fallback to a divergent in-memory shape.
   //
-  // Note: `server/comments/fsAdapter.ts` is still kept for the offline author
+  // Note: `authoring/fsAdapter.ts` is still kept for the offline author
   // tooling (authoring/resolveThreads.ts, loadUnresolvedThreads.ts,
   // exportAnnotations.ts, r2Sync.ts) that operates on the on-disk dev store
   // outside this server. Dev-server writes now land in Miniflare R2

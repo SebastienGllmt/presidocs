@@ -174,5 +174,5 @@ test("injectMarkdownAltLink: idempotent and scoped to posts", () => {
 });
 
 // The article-chrome reserves + narration-dock hide moved to
-// shared/articleChromeReserve.ts (applied by the bunHtmlHeadPlugin in dev + prod)
-// — their tests live in shared/articleChromeReserve.test.ts.
+// generate/articleChromeReserve.ts (applied by the bunHtmlHeadPlugin in dev + prod)
+// — their tests live in generate/articleChromeReserve.test.ts.

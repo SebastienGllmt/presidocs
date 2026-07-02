@@ -13,7 +13,7 @@ The list is short on purpose. Adding a check that the automated layer already co
 - Open any post with narration in Chrome desktop.
 - Press play. The first paragraph's `<mark>` element gains the highlight within ~1 second.
 - Drag the scrub bar to the middle. The highlight jumps to the new section within ~1 second (forward seek).
-- Drag the scrub bar *backwards* to the start. The highlight returns to the first paragraph (backward seek must NOT stick on the prior mark — the pure helpers in `shared/narratorTiming.ts` enforce this, but the integration is here).
+- Drag the scrub bar *backwards* to the start. The highlight returns to the first paragraph (backward seek must NOT stick on the prior mark — the pure helpers in `client/narratorTiming.ts` enforce this, but the integration is here).
 
 ## 2. Mobile popover positioning
 

@@ -16,7 +16,7 @@
 //   - dev:  each content repo's `bunfig.toml` → [serve.static].plugins, which
 //           hooks Bun's dev *bundler* (where `loader: "html"` works and the
 //           HTML's referenced scripts/styles are still discovered — a runtime
-//           `Bun.plugin()` can't; see shared/bunFooterPlugin.ts). The default
+//           `Bun.plugin()` can't; see generate/bunFooterPlugin.ts). The default
 //           export turns chip injection ON, because in dev there's no build step
 //           to add them.
 //   - prod: `Bun.build({ plugins: [...] })` in generate/build-html.ts, with chip

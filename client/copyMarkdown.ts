@@ -289,7 +289,7 @@ export function installCopyMarkdown(article: HTMLElement): void {
   group.appendChild(menu);
 
   // The build serves a min-height `.subctl-zone` flex container
-  // (shared/articleChromeReserve.ts, applied by the bunHtmlHeadPlugin in both
+  // (generate/articleChromeReserve.ts, applied by the bunHtmlHeadPlugin in both
   // dev and prod) so the control row doesn't drop the body when it appears;
   // mount into it. subscribe.ts then does `copyMd.after(row)`, landing its row in
   // the same zone — so it needs no change. The byline-slot fallback below (under

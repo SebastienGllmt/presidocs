@@ -26,7 +26,7 @@
 // The seam that works is `bunfig.toml`'s `[serve.static].plugins`, which hooks
 // the dev server's *bundler*. Because Bun `onLoad` is first-match-wins, the
 // footer and the cascade-layer-order injection share ONE `.html` plugin —
-// `shared/bunHtmlHeadPlugin.ts` — which calls `injectSiteFooterFromEnv` (here)
+// `generate/bunHtmlHeadPlugin.ts` — which calls `injectSiteFooterFromEnv` (here)
 // and `injectLayerOrderStyle` (cssLayers.ts). That plugin is registered in dev
 // via bunfig and in prod via `Bun.build` in generate/build-html.ts, so the
 // footer now renders under `bun run dev` too (it is no longer prod-only).
@@ -58,7 +58,7 @@ export type SiteFooterPluginOptions = {
  * unchanged when no links are configured (fail-silent) or when a footer is
  * already present (injectSiteFooter is idempotent). This is the reusable unit
  * shared by the build-time plugin below and the dev/prod HTML-head plugin
- * (shared/bunHtmlHeadPlugin.ts) — so dev and prod inject the same footer.
+ * (generate/bunHtmlHeadPlugin.ts) — so dev and prod inject the same footer.
  */
 export function injectSiteFooterFromEnv(
   html: string,

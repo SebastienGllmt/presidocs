@@ -1,5 +1,5 @@
 // Offline synthesis for the dev-only sound-test page (see shared/soundTest.ts
-// and server/soundTest.dev.ts). Renders one short WAV per lexeme in a PLS
+// and server/dev/soundTest.dev.ts). Renders one short WAV per lexeme in a PLS
 // lexicon into `generated/.sound-test/`, so an author can audition how the
 // production voice reads each respelling — and re-roll one when MOSS mangles it.
 //

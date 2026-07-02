@@ -1,5 +1,5 @@
 // Post-build step: rewrites every HTML file under `dist/` to remove
-// generation-only tags (see `shared/stripServedHtml.ts`), injecting the
+// generation-only tags (see `generate/stripServedHtml.ts`), injecting the
 // structured-data + feed-autodiscovery + privacy-footer chrome along the way.
 // Runs in-place. Idempotent — running twice produces the same output.
 //
@@ -266,7 +266,7 @@ function injectPostMainLandmark(html: string, postPath: string): string {
 }
 
 // NOTE: the client-chrome reserves + narration-dock hide are applied by
-// shared/bunHtmlHeadPlugin.ts (via shared/articleChromeReserve.ts), which runs in
+// generate/bunHtmlHeadPlugin.ts (via generate/articleChromeReserve.ts), which runs in
 // both dev and prod — not in this prod-only strip, so the dev server reserves too.
 
 

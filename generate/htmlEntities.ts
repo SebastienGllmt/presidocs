@@ -8,7 +8,7 @@
 // entity back into the character it denotes; the destination's escaper then
 // encodes only what that destination requires.
 //
-// Used by shared/injectStructuredData.ts (og:/JSON-LD plain-text fields) and
+// Used by generate/injectStructuredData.ts (og:/JSON-LD plain-text fields) and
 // generate/feeds.ts (Atom/RSS plain-text fields).
 //
 // Backed by `entities` (BSD-2-Clause, build-time only): `decodeHTMLStrict`

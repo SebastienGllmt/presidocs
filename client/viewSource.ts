@@ -5,12 +5,12 @@
 // controls — not a dropdown item, because viewing the source is a distinct act
 // from taking the article as Markdown or subscribing to a feed.
 //
-// The per-post URL is computed at BUILD time (shared/sourceRepo.ts) and injected
+// The per-post URL is computed at BUILD time (generate/sourceRepo.ts) and injected
 // as `<link rel="vcs-github" href="…">` by the head plugin (dev AND prod); this
 // module just reads that href. So there's nothing to configure client-side, and
 // the gating lives in one place: no link is injected when SOURCE_REPO_URL is
 // unset or the blog is private (a public-source link must never appear on a
-// capability-gated post — see shared/sourceRepo.ts), so this control simply
+// capability-gated post — see generate/sourceRepo.ts), so this control simply
 // doesn't render in those cases. See methodology.md → "View on GitHub".
 
 import faGithub from "@fortawesome/fontawesome-free/svgs/brands/github.svg" with { type: "text" };
@@ -47,7 +47,7 @@ export function installViewSource(article: HTMLElement): void {
   a.appendChild(iconSpan("view-src-trailing", faExternal));
 
   // Same mount family as copyMarkdown.ts: the build reserves a min-height
-  // `.subctl-zone` flex row (shared/articleChromeReserve.ts) so the controls
+  // `.subctl-zone` flex row (generate/articleChromeReserve.ts) so the controls
   // don't reflow the body on mount; the byline-slot fallbacks cover any context
   // with no zone.
   const zone = article.querySelector(".subctl-zone");

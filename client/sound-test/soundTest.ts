@@ -3,7 +3,7 @@
 // and drives the async regenerate endpoint so the author can re-roll a term that
 // MOSS reads wrong. React-free (the whole site is); plain DOM + fetch.
 //
-// See server/soundTest.dev.ts for the endpoints and shared/soundTest.ts for the
+// See server/dev/soundTest.dev.ts for the endpoints and shared/soundTest.ts for the
 // audio identity contract.
 
 import "./soundTest.css";

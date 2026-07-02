@@ -15,11 +15,11 @@
 //
 // Navigation rationale: the provider hand-off is a top-level navigation via
 // <a> (and window.open in the client), NOT a cross-origin <form> submit — the
-// engine CSP pins `form-action 'self' …` (shared/securityHeaders.ts), which
+// engine CSP pins `form-action 'self' …` (server/securityHeaders.ts), which
 // would BLOCK a `<form action="https://claude.ai/…">`. Anchors / window.open are
 // navigations, which `form-action` does not govern, so they're CSP-clean.
 //
-// Injected by shared/bunHtmlHeadPlugin.ts during the HTML bundle (dev server +
+// Injected by generate/bunHtmlHeadPlugin.ts during the HTML bundle (dev server +
 // prod build-html.ts), so the `<script src>` it adds is bundled like the
 // landing's other module scripts (verified: Bun bundles a plugin-injected
 // <script src> into a hashed chunk). Idempotent via the `presidocs-ai-search`

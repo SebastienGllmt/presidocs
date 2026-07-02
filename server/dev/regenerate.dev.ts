@@ -81,7 +81,7 @@ export async function handleRegenerateRequest(
 
   const url = new URL(req.url);
   // `post` is the post's URL PATH (e.g. "/posts/hash-functions") — the key the
-  // post index is built on (server/postMeta.dev.ts), matching how the client
+  // post index is built on (server/dev/postMeta.dev.ts), matching how the client
   // and comments.ts identify a post. The bare slug is derived from it below.
   const post = url.searchParams.get("post");
   const mark = url.searchParams.get("mark");

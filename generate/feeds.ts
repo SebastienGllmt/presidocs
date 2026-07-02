@@ -46,7 +46,7 @@ const paths = resolveBlogPaths();
 // ---- pure XML/JSON builders (exported for tests) ----------------------------
 
 // XML-escape a plain-text field. Backed by `entities`' `encodeXML` — the same
-// audited library as the decode side (shared/htmlEntities.ts) — so both halves
+// audited library as the decode side (generate/htmlEntities.ts) — so both halves
 // of the decode-before-escape step share one source of truth. `encodeXML`
 // emits the identical five XML metacharacter entities (incl. `&apos;`) the
 // hand-rolled five-replace version did. Kept as `escapeXml` so the ~50 call

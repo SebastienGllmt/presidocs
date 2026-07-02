@@ -1,5 +1,5 @@
 // "Ask this blog" — client enhancement for the engine-injected AI-search block
-// (markup from shared/injectAiSearch.ts). It turns the reader's typed question
+// (markup from generate/injectAiSearch.ts). It turns the reader's typed question
 // into a contextual prompt for an external chat model and hands it off via a
 // top-level navigation to Claude or ChatGPT.
 //
@@ -11,7 +11,7 @@
 //
 // Why anchors + window.open, never a <form action="https://…">: the destination
 // is cross-origin and the engine CSP pins `form-action 'self' …`
-// (shared/securityHeaders.ts), which blocks a cross-origin form submit. A
+// (server/securityHeaders.ts), which blocks a cross-origin form submit. A
 // top-level navigation is not governed by `form-action`, so this stays CSP-clean
 // (and opens in a new tab, leaving the blog open behind it).
 
@@ -19,7 +19,7 @@ type ProviderId = "claude" | "chatgpt";
 
 // Each provider's deep-link (`?q=` prefilled chat) and its bare home (the
 // query-less fallback shown before the reader types). The home URLs match the
-// static hrefs in shared/injectAiSearch.ts.
+// static hrefs in generate/injectAiSearch.ts.
 const PROVIDERS: Record<ProviderId, { query: string; home: string }> = {
   claude: { query: "https://claude.ai/new?q=", home: "https://claude.ai/new" },
   chatgpt: { query: "https://chatgpt.com/?q=", home: "https://chatgpt.com/" },
