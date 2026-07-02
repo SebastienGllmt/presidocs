@@ -30,6 +30,7 @@ import { getSessionFromRequest } from "../auth/routes.ts";
 import { isPostAuthor, type PostMetaIndex } from "../postMeta.ts";
 import { resolveAuthorVoice } from "../../shared/voiceResolution.ts";
 import { join } from "node:path";
+import { runDevJob } from "./devJobRunner.ts";
 
 export type RegenerateDeps = {
   // Where the posts + generated/ live (the content repo). The post file and
@@ -146,33 +147,22 @@ export async function handleRegenerateRequest(
   // Start the job and return immediately. The subprocess runs in the
   // background; its result is recorded onto `job` for GET pollers.
   job = { running: true, post, mark, startedAt: Date.now() };
-  const proc = Bun.spawn({
-    cmd: [
-      "bun",
-      join(deps.engineRoot, "generate", "generate.ts"),
-      postFile,
-      `--tts=${tts}`,
-      ...(voiceArg ? [`--voice=${voiceArg}`] : []),
-      `--force-mark=${mark}`,
-    ],
-    cwd: deps.contentRoot,
-    env: process.env,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  const cmd = [
+    "bun",
+    join(deps.engineRoot, "generate", "generate.ts"),
+    postFile,
+    `--tts=${tts}`,
+    ...(voiceArg ? [`--voice=${voiceArg}`] : []),
+    `--force-mark=${mark}`,
+  ];
   void (async () => {
     try {
-      const [stdout, stderr, exitCode] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ]);
+      // On failure, `tail` surfaces *why* (e.g. a MOSS synthesis error) rather
+      // than a bare failure.
+      const { exitCode, tail } = await runDevJob(cmd, deps.contentRoot);
       if (exitCode === 0) {
         job = { running: false, ok: true, post, mark, startedAt: job!.startedAt };
       } else {
-        // Surface the tail of stderr so the author sees *why* (e.g. a MOSS
-        // synthesis error) rather than a bare failure.
-        const tail = (stderr || stdout).trim().split("\n").slice(-8).join("\n");
         job = { running: false, ok: false, error: tail, post, mark, startedAt: job!.startedAt };
       }
     } catch (err) {

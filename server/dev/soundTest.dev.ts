@@ -43,6 +43,7 @@ import {
   type SoundTestVoice,
 } from "../../shared/soundTest.ts";
 import { resolveAuthorVoice } from "../../shared/voiceResolution.ts";
+import { runDevJob } from "./devJobRunner.ts";
 
 export type SoundTestDeps = {
   // Content repo root (its posts/ + generated/ live here; the spawned CLI's
@@ -269,8 +270,8 @@ async function runInPostsSweep(deps: SoundTestDeps, current: Job): Promise<void>
     // intentionally no global default; a single fallback would silently
     // overwrite `full.<hash>.<ext>` with the wrong voice on a multi-author
     // blog. The per-post resolution happened above (resolved[]).
-    const proc = Bun.spawn({
-      cmd: [
+    const { exitCode, tail } = await runDevJob(
+      [
         "bun",
         join(deps.engineRoot, "generate", "generate.ts"),
         join(deps.contentRoot, "posts", `${p.slug}.html`),
@@ -278,16 +279,8 @@ async function runInPostsSweep(deps: SoundTestDeps, current: Job): Promise<void>
         `--voice=${p.voiceClipPath}`,
         `--force-mark=${p.marks.join(",")}`,
       ],
-      cwd: deps.contentRoot,
-      env: process.env,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
+      deps.contentRoot,
+    );
     if (exitCode === 0) {
       p.status = "ok";
       continue;
@@ -295,7 +288,6 @@ async function runInPostsSweep(deps: SoundTestDeps, current: Job): Promise<void>
     // Stop on first failure: a generate.ts error usually means something needs
     // human attention (missing env, model load failure, …) and continuing would
     // just produce N copies of the same error.
-    const tail = (stderr || stdout).trim().split("\n").slice(-8).join("\n");
     p.status = "error";
     p.error = tail;
     current.error = `${p.slug}: ${tail}`;
@@ -444,24 +436,12 @@ export async function handleSoundTestRegenerate(
     `--voice=${identity.clipPath}`,
     all ? "--all" : `--index=${indexParam}`,
   ];
-  const proc = Bun.spawn({
-    cmd,
-    cwd: deps.contentRoot,
-    env: process.env,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
   void (async () => {
     try {
-      const [stdout, stderr, exitCode] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ]);
+      const { exitCode, tail } = await runDevJob(cmd, deps.contentRoot);
       if (exitCode === 0) {
         job = { running: false, ok: true, target, startedAt: job!.startedAt };
       } else {
-        const tail = (stderr || stdout).trim().split("\n").slice(-8).join("\n");
         job = { running: false, ok: false, error: tail, target, startedAt: job!.startedAt };
       }
     } catch (err) {
