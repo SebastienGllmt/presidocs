@@ -146,9 +146,14 @@ async function main(): Promise<void> {
   let deleted = 0;
 
   // 1. Upload any live track whose hash isn't already the newest recorded one.
+  //    Local mode ALWAYS puts: the index is durable but Miniflare's store is
+  //    disposable (.wrangler/state gets wiped), so skip-on-index would no-op
+  //    forever against an emptied store — that exact drift broke the
+  //    prodAudioSmoke referee for weeks (3/7 fails; see the 5b tracker entry).
+  //    Re-putting is idempotent (content-addressed key) and costs ~a second.
   for (const [slug, file] of live) {
     const recorded = state[slug] ?? [];
-    if (recorded[0] === file) {
+    if (!local && recorded[0] === file) {
       skipped++; // unchanged since last deploy — content-addressed, already in R2
     } else {
       const src = join(paths.generatedDir, slug, file);
