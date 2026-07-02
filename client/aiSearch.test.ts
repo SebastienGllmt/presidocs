@@ -6,7 +6,7 @@ import "../happydom.ts";
 
 import { beforeEach, expect, test } from "bun:test";
 
-import { buildAiSearchHtml } from "../shared/injectAiSearch.ts";
+import { buildAiSearchHtml } from "../generate/injectAiSearch.ts";
 import {
   buildProviderUrl,
   buildPrompt,

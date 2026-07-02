@@ -18,9 +18,9 @@
 // only carries the per-blog entry list.
 
 import { basename } from "node:path";
-import { htmlHeadPlugin } from "../shared/bunHtmlHeadPlugin.ts";
+import { htmlHeadPlugin } from "./bunHtmlHeadPlugin.ts";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
-import { checkHeadLayerOrder } from "../shared/cssLayers.ts";
+import { checkHeadLayerOrder } from "./cssLayers.ts";
 
 /**
  * Assert the canonical cascade-layer order landed before the (bundled)

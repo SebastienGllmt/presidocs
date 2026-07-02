@@ -31,9 +31,9 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { isPrivateBlog } from "../shared/blogPrivacy.ts";
-import { injectSiteFooterFromEnv } from "../shared/bunFooterPlugin.ts";
-import { resolveFeedConfig } from "../shared/feedConfig.ts";
-import { injectPwaHead } from "../shared/injectPwaHead.ts";
+import { injectSiteFooterFromEnv } from "./bunFooterPlugin.ts";
+import { resolveFeedConfig } from "./feedConfig.ts";
+import { injectPwaHead } from "./injectPwaHead.ts";
 import { type License, resolveLicenseConfig } from "../shared/licenseConfig.ts";
 import {
   ACKNOWLEDGEMENTS_PATH,

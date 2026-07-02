@@ -138,7 +138,7 @@ async function assertHeadPluginRegistered(contentRoot: string): Promise<void> {
       "[dev] bunfig.toml does not register the engine HTML-head plugin, so the " +
         "dev server would mis-render (cascade layers can invert; no footer or " +
         "feature-chips) while prod renders correctly. Add to bunfig.toml:\n\n" +
-        '  [serve.static]\n  plugins = ["presidocs/shared/bunHtmlHeadPlugin.ts"]\n\n' +
+        '  [serve.static]\n  plugins = ["presidocs/generate/bunHtmlHeadPlugin.ts"]\n\n' +
         `(checked ${join(contentRoot, "bunfig.toml")}; set BLOG_SKIP_BUNFIG_CHECK=1 to bypass.)`,
     );
   }

@@ -34,7 +34,7 @@
 //     decoration, exactly like the Cloudflare Analytics beacon, and
 //     keeps the source HTML clean.
 
-import { escapeHtmlAttr, escapeHtmlText } from "./htmlEscape.ts";
+import { escapeHtmlAttr, escapeHtmlText } from "../shared/htmlEscape.ts";
 
 export interface FooterOptions {
   /**

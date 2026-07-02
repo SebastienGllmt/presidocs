@@ -40,8 +40,8 @@
 
 import type { BunPlugin } from "bun";
 import { injectSiteFooter } from "./injectFooter.ts";
-import { resolveLicenseConfig } from "./licenseConfig.ts";
-import { resolveLicenseLinkHref, ACKNOWLEDGEMENTS_PATH } from "./servedLicense.ts";
+import { resolveLicenseConfig } from "../shared/licenseConfig.ts";
+import { resolveLicenseLinkHref, ACKNOWLEDGEMENTS_PATH } from "../shared/servedLicense.ts";
 
 export type SiteFooterPluginOptions = {
   // Override for the privacy-policy URL. Defaults to PRIVACY_POLICY_URL,

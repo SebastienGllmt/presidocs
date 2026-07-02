@@ -23,7 +23,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
-import { resolveFeedConfig } from "../shared/feedConfig.ts";
+import { resolveFeedConfig } from "./feedConfig.ts";
 
 const paths = resolveBlogPaths();
 

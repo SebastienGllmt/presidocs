@@ -42,17 +42,17 @@ import { join } from "node:path";
 import { parseHTML } from "linkedom";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { isPrivateBlog } from "../shared/blogPrivacy.ts";
-import { resolveFeedConfig } from "../shared/feedConfig.ts";
+import { resolveFeedConfig } from "./feedConfig.ts";
 import { buildAuthorMap } from "../shared/authorProfile.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
-import { decodeHtmlEntities } from "../shared/htmlEntities.ts";
+import { decodeHtmlEntities } from "./htmlEntities.ts";
 import { findManifestName } from "../shared/manifestFile.ts";
-import { injectSiteFooterFromEnv } from "../shared/bunFooterPlugin.ts";
+import { injectSiteFooterFromEnv } from "./bunFooterPlugin.ts";
 // Typed Schema.org vocabulary (Apache-2.0), `import type` only → erased at
 // compile time, never bundled. Catches a misspelled `@type`/property in the
 // FAQ graph at `tsc` instead of in Google's validator post-deploy.
 import type { WithContext, FAQPage, Question } from "schema-dts";
-import { injectPwaHead } from "../shared/injectPwaHead.ts";
+import { injectPwaHead } from "./injectPwaHead.ts";
 import { readSiteMeta } from "./feeds.ts";
 import { KEY_BINDINGS } from "../client/narratorDom.ts";
 

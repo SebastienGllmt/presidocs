@@ -25,7 +25,7 @@
 // <script src> into a hashed chunk). Idempotent via the `presidocs-ai-search`
 // marker — a second pass is a no-op.
 
-import { escapeHtmlAttr } from "./htmlEscape.ts";
+import { escapeHtmlAttr } from "../shared/htmlEscape.ts";
 
 // Relative to the landing entry (contentRoot/index.html); `engine/` is the
 // per-blog symlink to this package, so this resolves to client/aiSearch.ts —

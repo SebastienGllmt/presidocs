@@ -15,9 +15,9 @@
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, readdirSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import { stripServedHtml } from "../shared/stripServedHtml.ts";
-import { injectSiteFooter } from "../shared/injectFooter.ts";
-import { injectPwaHead, type PwaHeadOptions } from "../shared/injectPwaHead.ts";
+import { stripServedHtml } from "./stripServedHtml.ts";
+import { injectSiteFooter } from "./injectFooter.ts";
+import { injectPwaHead, type PwaHeadOptions } from "./injectPwaHead.ts";
 // W3C-accurate type for the authored manifest.webmanifest (DefinitelyTyped,
 // MIT, types-only — erased at compile time, never shipped). One shared spec
 // interface for both manifest readers (here + e2e/serviceWorker.ts) instead of
@@ -28,7 +28,7 @@ import {
   injectSiteStructuredData,
   type StructuredDataContext,
   type SiteStructuredDataContext,
-} from "../shared/injectStructuredData.ts";
+} from "./injectStructuredData.ts";
 import { buildAuthorMap, type PublicAuthorProfile } from "../shared/authorProfile.ts";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { collectHtmlFiles } from "../shared/walkHtml.ts";

@@ -21,6 +21,6 @@ pathIgnorePatterns = ["**/engine/**"]
 # the site footer. The same plugin runs in the prod build (build-html.ts), so
 # dev and prod render identically. Required — without it, dev's module-eval CSS
 # injection order can invert the layers AND posts lose their footer. See the
-# engine's shared/bunHtmlHeadPlugin.ts and methodology → Cascade-layer
+# engine's generate/bunHtmlHeadPlugin.ts and methodology → Cascade-layer
 # architecture. (createDevServer asserts this line is present at startup.)
-plugins = ["presidocs/shared/bunHtmlHeadPlugin.ts"]
+plugins = ["presidocs/generate/bunHtmlHeadPlugin.ts"]
