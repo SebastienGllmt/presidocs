@@ -39,7 +39,7 @@ function distFileToPostPath(distDir: string, file: string): string {
 async function main(): Promise<void> {
   const paths = resolveBlogPaths();
   const distPostsDir = join(paths.distDir, "posts");
-  const files = collectHtmlFiles(distPostsDir, { onMissing: "empty" });
+  const files = collectHtmlFiles(distPostsDir, { onMissing: "empty", recursive: false });
   if (files.length === 0) {
     console.warn(
       `Markdown export: no built posts under ${relative(paths.contentRoot, distPostsDir)} — did the earlier build steps run?`,

@@ -186,7 +186,7 @@ export async function validateHtmlStructure(
 async function main(): Promise<void> {
   const paths = resolveBlogPaths();
   const postsDir = join(paths.distDir, "posts");
-  const files = collectHtmlFiles(postsDir, { onMissing: "empty" });
+  const files = collectHtmlFiles(postsDir, { onMissing: "empty", recursive: false });
   if (files.length === 0) {
     console.warn(
       `Post audit: no built posts under ${relative(paths.contentRoot, postsDir)} — did \`bun run build\` run the earlier steps?`,

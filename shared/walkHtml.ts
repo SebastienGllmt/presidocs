@@ -25,17 +25,25 @@
 import { Glob } from "bun";
 
 const HTML_GLOB = new Glob("**/*.html");
+// `recursive: false` — top-level `*.html` only. Restores the exact behavior of
+// the old non-recursive `postHtmlFiles` readdir walker for callers that scan a
+// posts dir: source `posts/` is flat, and `dist/posts/` has `<slug>/figures/`
+// subdirs whose (non-.html today) contents must NOT be swept into post auditing
+// / markdown-export if a future artifact ever lands an .html there.
+const HTML_GLOB_FLAT = new Glob("*.html");
 
 /**
- * Absolute paths of every `*.html` under `dir` (recursive), sorted. Throws on a
- * missing `dir` unless `onMissing: "empty"` is passed (then returns `[]`).
+ * Absolute paths of every `*.html` under `dir`, sorted. Recursive by default;
+ * pass `recursive: false` for top-level `*.html` only. Throws on a missing
+ * `dir` unless `onMissing: "empty"` is passed (then returns `[]`).
  */
 export function collectHtmlFiles(
   dir: string,
-  opts: { onMissing?: "throw" | "empty" } = {},
+  opts: { onMissing?: "throw" | "empty"; recursive?: boolean } = {},
 ): string[] {
+  const glob = opts.recursive === false ? HTML_GLOB_FLAT : HTML_GLOB;
   try {
-    return [...HTML_GLOB.scanSync({ cwd: dir, absolute: true })].sort();
+    return [...glob.scanSync({ cwd: dir, absolute: true })].sort();
   } catch (err) {
     if (opts.onMissing === "empty" && (err as { code?: string }).code === "ENOENT") {
       return [];

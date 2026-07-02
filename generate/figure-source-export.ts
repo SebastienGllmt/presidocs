@@ -56,7 +56,7 @@ export function collectFigureSrc(html: string): string[] {
 async function main(): Promise<void> {
   const paths = resolveBlogPaths();
   const distPostsDir = join(paths.distDir, "posts");
-  const files = collectHtmlFiles(distPostsDir, { onMissing: "empty" });
+  const files = collectHtmlFiles(distPostsDir, { onMissing: "empty", recursive: false });
   if (files.length === 0) {
     console.warn(
       `Figure-source export: no built posts under ${relative(paths.contentRoot, distPostsDir)} — did \`bun run build\` run the earlier steps?`,

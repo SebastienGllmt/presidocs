@@ -54,7 +54,7 @@ export function auditSourceIds(html: string): AuditViolation[] {
 
 async function main(): Promise<void> {
   const paths = resolveBlogPaths();
-  const files = collectHtmlFiles(paths.postsDir, { onMissing: "empty" });
+  const files = collectHtmlFiles(paths.postsDir, { onMissing: "empty", recursive: false });
   if (files.length === 0) {
     console.warn(`Source-id audit: no source posts under ${relative(paths.contentRoot, paths.postsDir)}.`);
     return;
