@@ -48,12 +48,6 @@ import { aggregateOtherReaders } from "./commentsAggregator.ts";
 import { CommentPolling } from "./commentsPolling.ts";
 import { ResolutionStore } from "./resolutionsStore.ts";
 import type { ResolutionEnvelope } from "./resolutionsApi.ts";
-import {
-  fetchPostVersion,
-  getLastSeenVersion,
-  setLastSeenVersion,
-  type PostVersionResponse,
-} from "./postVersion.ts";
 import { compareSegmentHashes } from "./commentsStale.ts";
 import {
   loadHighlightsHidden,
@@ -77,6 +71,8 @@ import {
 } from "./comments/blockIndex.ts";
 import { SelectionBar, type SelectionCapture } from "./comments/selectionBar.ts";
 import { DraftManager } from "./comments/draftManager.ts";
+import { VersionBanner } from "./comments/versionBanner.ts";
+import { UnresolvedNav } from "./comments/unresolvedNav.ts";
 
 // Build-time define (Bun.build `define` map) — `undefined` under the fast
 // `bun run dev` server, `"false"` in built/dev:edge/prod. Used only to gate
@@ -121,6 +117,10 @@ export class CommentSystem {
   // Draft lifecycle (create / discard / persist / surface) + the per-textarea
   // body buffers. Constructed inert.
   readonly draftMgr = new DraftManager(this);
+  // Document-version banner + history disclosure. Constructed inert.
+  readonly version = new VersionBanner(this);
+  // Author-only unresolved-count badge + cycle navigation. Constructed inert.
+  readonly unresolvedNav = new UnresolvedNav(this);
 
   articleRoot: HTMLElement | null = null;
 
@@ -137,7 +137,7 @@ export class CommentSystem {
   // store. Stays null when not logged in — the store is keyed by user id,
   // so we can't create it until identity is known.
   private store: CommentStore | null = null;
-  private snapshot: Thread[] = [];
+  snapshot: Thread[] = [];
 
   // Owns the network push/pull for the logged-in user's blob. Lives
   // alongside the store so a single mutation triggers persist (in the
@@ -154,29 +154,6 @@ export class CommentSystem {
   // render alongside threads with their own resolvedAt timestamp.
   // Hydrate-and-poll like the CommentStore. Null when not logged in.
   private resolutions: ResolutionStore | null = null;
-
-  // Document-version state. The current SHA-256 of the post HTML
-  // and (for the author) the history of past hashes. Set once on
-  // boot; the "your comments may no longer apply" banner is rendered
-  // when the previously-stored last-seen hash differs from the
-  // server's currentHash.
-  private docVersion: PostVersionResponse | null = null;
-  private previousVersionHash: string | null = null;
-  private versionBannerEl: HTMLElement | null = null;
-  private versionHistoryEl: HTMLElement | null = null;
-  // Author-only at-a-glance unresolved-thread count. Lives in the
-  // column header alongside the version history so the author can see
-  // "are there comments I haven't dealt with yet?" without scrolling
-  // the post. Clicking it cycles through the unresolved threads in
-  // document order. Re-rendered on every renderAll() so polls and
-  // mutations keep it current.
-  private unresolvedCountEl: HTMLButtonElement | null = null;
-  // Index into the document-order list of unresolved threads, used so
-  // repeated clicks on the badge step through them rather than
-  // re-snapping to the same one. Reset whenever the underlying set
-  // shifts (resolved, deleted, …) so we don't index off the end.
-  private unresolvedCycleIndex = 0;
-  private lastUnresolvedIds: string[] = [];
 
   // Below the mobile breakpoint, cards render as fixed-position
   // overlays (popovers) rather than as a stacked column. Tracked
@@ -220,7 +197,7 @@ export class CommentSystem {
   // Header in the column showing "Signed in as ..." or the login pane
   // when not authenticated. Rendered once at init, re-rendered on
   // identity change (currently only at boot).
-  private identityHeader: HTMLElement | null = null;
+  identityHeader: HTMLElement | null = null;
   // The fixed top-of-gutter rail that hosts the permanent header surfaces
   // (identity card, version banner, version history, unresolved count). The
   // stack pass treats its occupied band as an obstacle so top-of-article
@@ -231,7 +208,7 @@ export class CommentSystem {
   // card back, so you can't accidentally lose track of comments by
   // hiding them all and forgetting. Restored by clicking the anchor's
   // highlight (text) or graphic indicator (figures).
-  private hiddenCardIds = new Set<string>();
+  hiddenCardIds = new Set<string>();
 
   // The right-margin column hosting all cards. One card per thread/draft.
   column: HTMLElement | null = null;
@@ -361,7 +338,7 @@ export class CommentSystem {
       // isAuthor` is what every author-only branch downstream gates
       // on. Failures degrade gracefully — `isAuthorMode()` defaults
       // to false, suppressing aggregator + author-resolve + history.
-      await this.initDocVersion(postPath);
+      await this.version.initDocVersion(postPath);
 
       // Author-only: refresh every other reader's blob in the background.
       // Fire-and-forget (not awaited) so the first render isn't gated on
@@ -475,252 +452,8 @@ export class CommentSystem {
   // tag is stripped from served HTML and a DOM-based check would
   // return false). False until docVersion has been fetched; if the
   // fetch fails we stay non-author, which is the safe default.
-  private isAuthorMode(): boolean {
-    return this.docVersion?.isAuthor ?? false;
-  }
-
-  // One-shot at boot: fetch the post's current hash + (author-only)
-  // history, compare to the last hash this user saw, and mount the
-  // banner / history UI accordingly. Failures degrade gracefully —
-  // a missing endpoint or rejected response just means no banner.
-  private async initDocVersion(postPath: string) {
-    const version = await fetchPostVersion(postPath);
-    if (!version) return;
-    this.docVersion = version;
-
-    const lastSeen = getLastSeenVersion(postPath);
-    // Banner only when the user has been here before AND the hash
-    // changed. First-ever visits don't show the banner (there's
-    // nothing to compare against).
-    if (lastSeen && lastSeen !== version.currentHash) {
-      this.previousVersionHash = lastSeen;
-    }
-    // Bump last-seen immediately — the banner gets one render-cycle
-    // of visibility, the user notices, and on next reload it's gone.
-    // Persisting on dismiss-only would risk users missing the
-    // banner if they re-open the page in two tabs.
-    setLastSeenVersion(postPath, version.currentHash);
-
-    this.renderVersionUI();
-  }
-
-  // (Re-)mount the banner + history elements. Idempotent — wipes
-  // and replaces. Cards live in the same column but are CSS-anchor-
-  // positioned to their highlights, so the inserted-after-header
-  // pattern doesn't disturb their layout.
-  private renderVersionUI() {
-    if (!this.column) return;
-    this.versionBannerEl?.remove();
-    this.versionBannerEl = null;
-    this.versionHistoryEl?.remove();
-    this.versionHistoryEl = null;
-
-    let insertAfter: Element | null = this.identityHeader;
-
-    if (this.previousVersionHash && this.docVersion) {
-      const banner = document.createElement("div");
-      banner.className = "cmt-version-banner";
-      banner.setAttribute("role", "status");
-
-      const text = document.createElement("p");
-      text.className = "cmt-version-banner-text";
-      text.textContent =
-        "The post has been updated since your last visit. " +
-        "Some comments may no longer apply.";
-      banner.appendChild(text);
-
-      const dismiss = document.createElement("button");
-      dismiss.type = "button";
-      dismiss.className = "cmt-version-banner-dismiss";
-      dismiss.setAttribute("aria-label", "Dismiss");
-      dismiss.textContent = "×";
-      dismiss.addEventListener("click", (e) => {
-        e.stopPropagation();
-        banner.remove();
-        this.versionBannerEl = null;
-        this.updateBottomSpacer();
-        // The rail just shrank — re-cascade so top cards that were sitting
-        // below the banner reclaim the freed space.
-        this.adjustCardStacking();
-      });
-      banner.appendChild(dismiss);
-
-      insertAfter!.after(banner);
-      insertAfter = banner;
-      this.versionBannerEl = banner;
-    }
-
-    if (this.docVersion?.history && this.docVersion.history.length > 0) {
-      const details = document.createElement("details");
-      details.className = "cmt-version-history";
-      // Expanding / collapsing changes the rail's height, so re-cascade the
-      // cards against the new rail bottom.
-      details.addEventListener("toggle", () => this.adjustCardStacking());
-
-      const summary = document.createElement("summary");
-      summary.className = "cmt-version-history-summary";
-      const count = this.docVersion.history.length;
-      summary.textContent = `Document versions (${count})`;
-      details.appendChild(summary);
-
-      const list = document.createElement("ol");
-      list.className = "cmt-version-history-list";
-      for (const entry of this.docVersion.history) {
-        const li = document.createElement("li");
-        li.className = "cmt-version-history-item";
-        const time = document.createElement("time");
-        time.dateTime = entry.builtAt;
-        time.textContent = new Date(entry.builtAt).toLocaleString();
-        const hash = document.createElement("code");
-        hash.className = "cmt-version-history-hash";
-        hash.textContent = entry.hash.slice(0, 8);
-        hash.title = entry.hash;
-        const isCurrent = entry.hash === this.docVersion.currentHash;
-        if (isCurrent) li.classList.add("cmt-version-history-current");
-        li.appendChild(time);
-        li.appendChild(document.createTextNode(" "));
-        li.appendChild(hash);
-        if (isCurrent) {
-          const tag = document.createElement("span");
-          tag.className = "cmt-version-history-tag";
-          tag.textContent = "current";
-          li.appendChild(document.createTextNode(" "));
-          li.appendChild(tag);
-        }
-        list.appendChild(li);
-      }
-      details.appendChild(list);
-
-      insertAfter!.after(details);
-      this.versionHistoryEl = details;
-    }
-
-    this.updateBottomSpacer();
-    // The banner / history mount here (after the boot-time renderAll, since
-    // initDocVersion awaits a fetch), growing the rail — re-cascade so cards
-    // anchored near the top fall below the now-taller rail.
-    this.adjustCardStacking();
-  }
-
-  // Author-only at-a-glance counter of unresolved threads, mounted in
-  // the column header. The intent is "did I miss any comments?"
-  // surfacing — without it the author has to scroll the whole post to
-  // be sure. Hidden for non-authors and when there's nothing to report
-  // (no saved thread AND no unsent draft — a bare "0 unresolved" on a
-  // fresh post is just noise). When the post has threads we keep it
-  // mounted even at 0 so the author sees explicit confirmation that
-  // everything's been dealt with; it also calls out unsent drafts via a
-  // "(+N draft)" suffix (or "N unsent drafts" when nothing's posted yet)
-  // so a half-written-but-never-submitted comment can't masquerade as
-  // done. Clicks cycle through the unresolved threads and unsent drafts in
-  // document order.
-  private renderUnresolvedCount() {
-    if (!this.column) return;
-    const author = this.isAuthorMode();
-    const totalThreads = this.snapshot.length;
-    const drafts = this.draftMgr.drafts.length;
-    // Show the badge for the author whenever there's something to report: any
-    // saved thread, OR any unsent draft. The draft case surfaces a "you have
-    // unposted comments" nudge even before the first one is published — the
-    // exact trap where a half-written comment that was never submitted looks
-    // done but doesn't count. Nothing at all → no badge (a bare "0 unresolved"
-    // on a fresh post is just noise).
-    if (!author || (totalThreads === 0 && drafts === 0)) {
-      this.unresolvedCountEl?.remove();
-      this.unresolvedCountEl = null;
-      this.lastUnresolvedIds = [];
-      this.unresolvedCycleIndex = 0;
-      return;
-    }
-
-    const unresolved = this.snapshot.filter((t) => !this.threadIsResolved(t));
-    const count = unresolved.length;
-    const draftNote = drafts > 0
-      ? ` (+${drafts} draft${drafts === 1 ? "" : "s"})`
-      : "";
-
-    if (!this.unresolvedCountEl) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "cmt-unresolved-count";
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        this.jumpToNextUnresolved();
-      });
-      // Mount after the version history (when present), else after the
-      // version banner, else after the identity header. Mirrors the
-      // insertion order renderVersionUI uses so the column header reads
-      // top-to-bottom: identity → banner → version history → unresolved.
-      const insertAfter: Element =
-        this.versionHistoryEl ?? this.versionBannerEl ?? this.identityHeader!;
-      insertAfter.after(btn);
-      this.unresolvedCountEl = btn;
-    }
-
-    const el = this.unresolvedCountEl;
-    if (totalThreads === 0) {
-      // Only unsent drafts exist — nothing has been posted yet. The cycle
-      // still visits them, so the badge stays clickable.
-      el.dataset.state = "drafts";
-      el.textContent = `${drafts} unsent draft${drafts === 1 ? "" : "s"}`;
-      el.title = "Jump to the next unsent draft";
-      el.disabled = false;
-    } else if (count === 0) {
-      el.dataset.state = "clear";
-      el.textContent = "All comments resolved" + draftNote;
-      // Resolved threads aren't in the cycle, but unsent drafts are — so the
-      // badge stays clickable iff there's still a draft to jump to.
-      el.title = drafts > 0
-        ? "No unresolved threads; jump to the next unsent draft"
-        : "No unresolved threads on this post";
-      el.disabled = drafts === 0;
-    } else {
-      el.dataset.state = "pending";
-      el.textContent =
-        `${count} unresolved comment${count === 1 ? "" : "s"}` + draftNote;
-      el.title = "Jump to the next unresolved comment";
-      el.disabled = false;
-    }
-  }
-
-  // Step through unresolved threads AND unsent drafts in document order on
-  // each click. Drafts are full Thread objects (just not in the CRDT), so they
-  // carry their own highlight + card and slot into the same document-order
-  // walk — including them keeps the cycle honest with the badge, which already
-  // counts drafts in its "(+N draft)" suffix. The set is recomputed every call
-  // (poll/mutation may have shifted it) and the cycle index is reset whenever
-  // the membership changes so we never index off the end.
-  private jumpToNextUnresolved() {
-    const ordered = [
-      ...this.snapshot.filter((t) => !this.threadIsResolved(t)),
-      ...this.draftMgr.drafts,
-    ]
-      .map((t) => ({ thread: t, top: this.computeAnchorTop(t) ?? Infinity }))
-      .sort((a, b) => a.top - b.top)
-      .map((x) => x.thread);
-    if (ordered.length === 0) return;
-
-    const ids = ordered.map((t) => t.id);
-    const sameSet =
-      ids.length === this.lastUnresolvedIds.length &&
-      ids.every((id, i) => id === this.lastUnresolvedIds[i]);
-    if (!sameSet) {
-      this.lastUnresolvedIds = ids;
-      this.unresolvedCycleIndex = 0;
-    }
-
-    const target = ordered[this.unresolvedCycleIndex % ordered.length]!;
-    this.unresolvedCycleIndex =
-      (this.unresolvedCycleIndex + 1) % ordered.length;
-
-    // Surface the card if the author had previously hidden it, so
-    // clicking the badge always brings them to something visible.
-    if (this.hiddenCardIds.has(target.id)) {
-      this.hiddenCardIds.delete(target.id);
-      this.renderAll();
-    }
-    this.scrollAnchorIntoView(target);
-    this.scrollCardIntoView(target.id);
+  isAuthorMode(): boolean {
+    return this.version.docVersion?.isAuthor ?? false;
   }
 
   // ===== Mobile popover + hide-all FAB =====
@@ -1092,7 +825,7 @@ export class CommentSystem {
   // resolvedAt (self-resolve via CommentStore) OR the per-post
   // resolutions store has an entry (author-resolve). Author wins
   // any tie at the display layer; both states equivalently hide.
-  private threadIsResolved(thread: Thread): boolean {
+  threadIsResolved(thread: Thread): boolean {
     if (isResolved(thread)) return true;
     if (this.resolutions?.isResolved(thread.id)) return true;
     return false;
@@ -1238,7 +971,7 @@ export class CommentSystem {
     }
 
     this.updateGraphicIndicators();
-    this.renderUnresolvedCount();
+    this.unresolvedNav.renderUnresolvedCount();
     this.updateCommentsBtnCount(
       this.snapshot.filter((t) => !this.threadIsResolved(t)).length,
     );
@@ -1829,7 +1562,7 @@ export class CommentSystem {
   private computeRenderSignature(): string {
     const parts: string[] = [
       this.isAuthorMode() ? "a1" : "a0",
-      this.previousVersionHash ? "v1" : "v0",
+      this.version.previousVersionHash ? "v1" : "v0",
     ];
     for (const thread of [...this.snapshot, ...this.draftMgr.drafts]) {
       const isDraft = this.draftMgr.drafts.includes(thread);
@@ -1889,7 +1622,7 @@ export class CommentSystem {
   // mobile popover rule. Scroll-tracking, cross-element flipping,
   // anchor resolution all happen in the layout engine. This pass only
   // reads the resulting geometry to size the spacer.
-  private updateBottomSpacer() {
+  updateBottomSpacer() {
     if (!this.column || !this.bottomSpacer) return;
     // Mobile is popover-based; cards render in the top layer when
     // open and don't extend the document flow. No spacer needed.
@@ -1932,7 +1665,7 @@ export class CommentSystem {
   // scrollY=0 (the resting reference) — we deliberately do NOT add `scrollY` to
   // it. That keeps the seed scroll-invariant, just like the cards' own
   // positions, so the pass stays a per-render / per-resize job.
-  private adjustCardStacking(): void {
+  adjustCardStacking(): void {
     const cards = [...this.cardEls.values()];
     // Mobile cards are top-layer popovers (one at a time) — never stacked in
     // flow, and the rail is hidden there. Clear any offset a prior desktop
@@ -2014,7 +1747,7 @@ export class CommentSystem {
     return this.articleRoot.querySelector<HTMLElement>(`#${CSS.escape(markName)}`);
   }
 
-  private computeAnchorTop(thread: Thread): number | null {
+  computeAnchorTop(thread: Thread): number | null {
     if (isTextTarget(thread.target)) {
       // Narration comments align to the article position their segment
       // refers to (see narrationArticleAnchor). No paired article element
@@ -2059,7 +1792,7 @@ export class CommentSystem {
   // narration comment that's the article element its segment refers to
   // (where the card is now positioned) — playback is on the separate
   // speaker button, so this gesture only navigates, never plays.
-  private scrollAnchorIntoView(thread: Thread) {
+  scrollAnchorIntoView(thread: Thread) {
     let target: HTMLElement | null = null;
     if (isTextTarget(thread.target)) {
       if (contextOf(thread.target) === "narration") {
@@ -2093,7 +1826,7 @@ export class CommentSystem {
 
   // Scroll the column so the given thread's card is visible, and pulse
   // it. Used when the user clicks on a highlight in the article.
-  private scrollCardIntoView(threadId: string) {
+  scrollCardIntoView(threadId: string) {
     const card = this.cardEls.get(threadId);
     if (!card) return;
     card.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
