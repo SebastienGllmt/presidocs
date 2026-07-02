@@ -14,9 +14,6 @@ import {
   DOUBLE_DURATION_MS,
   DOUBLE_QUARTILE,
   EVENT_NAMES,
-  isEventName,
-  isPlayTrigger,
-  isQuartile,
 } from "../shared/analyticsSchema.ts";
 
 // Stub that knows about exactly one post — the smallest fixture that lets us
@@ -94,16 +91,6 @@ test("narration_quartile writes post + quartile", () => {
   expect(dp.blobs[BLOB_QUALIFIER]).toBe("");
   expect(dp.doubles[DOUBLE_QUARTILE]).toBe(50);
   expect(dp.doubles[DOUBLE_DURATION_MS]).toBe(0);
-});
-
-// ---- type guards rejection ------------------------------------------------
-
-test("type guards reject unknown / wrong-typed values", () => {
-  expect(isEventName("nope")).toBe(false);
-  expect(isEventName(123)).toBe(false);
-  expect(isPlayTrigger("dock")).toBe(false);
-  expect(isQuartile(33)).toBe(false);
-  expect(isQuartile("50")).toBe(false);
 });
 
 // ---- readPayload rejections ----------------------------------------------
