@@ -16,7 +16,7 @@
 import "./shikwasa-vendor.css";
 import { Player, Chapter } from "shikwasa";
 import { asMs, msToSeconds, secondsToMs, asSeconds, type Milliseconds } from "../shared/time.ts";
-import { computeActiveMark, findActiveWord, stagedFigureAt, figureSeekPlan } from "../shared/narratorTiming.ts";
+import { computeActiveMark, findActiveWord, stagedFigureAt, figureSeekPlan } from "./narratorTiming.ts";
 import { getFigureJourney, type FigureJourney } from "./figureAnimation.ts";
 import { emitNarrationPlay, emitNarrationQuartile } from "./analytics.ts";
 import { copyToClipboard } from "./clipboard.ts";

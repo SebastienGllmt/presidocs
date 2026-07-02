@@ -1,15 +1,15 @@
 // One-shot decoder for an .amrg file. Loads the Automerge doc and
 // prints it as JSON so you can see what's actually in there.
 //
-// Usage:  bun scripts/inspect-comment.ts <path-to-.amrg>
-// Example: bun scripts/inspect-comment.ts \
+// Usage:  bun authoring/inspect-comment.ts <path-to-.amrg>
+// Example: bun authoring/inspect-comment.ts \
 //   generated/.comments-dev/comments/posts/hash-functions/google:1234567890.amrg
 
 import { next as Automerge } from "@automerge/automerge";
 
 const path = process.argv[2];
 if (!path) {
-  console.error("usage: bun scripts/inspect-comment.ts <path-to-.amrg>");
+  console.error("usage: bun authoring/inspect-comment.ts <path-to-.amrg>");
   process.exit(1);
 }
 

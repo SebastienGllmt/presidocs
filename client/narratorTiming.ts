@@ -9,7 +9,7 @@
 // past-EOF) without standing up a DOM or stubbing a Player. The DOM-bound
 // "apply the active class" half stays in narrator.ts where it belongs.
 
-import type { Milliseconds } from "./time.ts";
+import type { Milliseconds } from "../shared/time.ts";
 
 // Structural shape we need: anything carrying a numeric `time` field works.
 // `ManifestMark` in narrator.ts satisfies this; the test can satisfy it

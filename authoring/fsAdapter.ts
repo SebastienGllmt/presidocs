@@ -17,7 +17,7 @@ import {
   type CommentChangeStore,
   type PutChangeResult,
   type ResolutionListEntry,
-} from "./store.ts";
+} from "../server/comments/store.ts";
 
 function safeResolve(rootDir: string, key: string): string {
   const safe = normalize(key);

@@ -31,7 +31,7 @@ import {
   loadUnresolvedThreads,
   type UnresolvedThread,
 } from "./loadUnresolvedThreads.ts";
-import { snapshotToAnnotationCollection } from "../shared/annotationExport.ts";
+import { snapshotToAnnotationCollection } from "./annotationExport.ts";
 
 const paths = resolveBlogPaths();
 

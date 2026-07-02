@@ -14,7 +14,7 @@
 //     styles only into those unwrapped HTML routes, so a tight `style-src`
 //     never collides with HMR.
 
-import { isProd } from "./isProd.ts";
+import { isProd } from "../shared/isProd.ts";
 
 // sha256 of the cascade-layer-order inline <style>'s content
 // (CSS_LAYER_ORDER_STATEMENT in shared/cssLayers.ts), base64 — the CSP hash

@@ -48,7 +48,7 @@ const DEFERRED_RULES = new Set(["label-content-name-mismatch"]);
 // "the faintness is the deliberate point," and each entry is a known special
 // case the figure-authoring guidance (DESIGN.md §1, figure-journey Rule 17)
 // explicitly says NOT to imitate. If you're tempted to add another, fix the
-// colour instead — `bun run e2e/contrastReport.ts` shows you exactly what to fix.
+// colour instead — `bun run scripts/contrastReport.ts` shows you exactly what to fix.
 //
 // (The logged-out comments identity card — `.cmt-identity-loggedout` — used to
 // live here while it sat at a dim opacity .35 at rest. It now starts at opacity

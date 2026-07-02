@@ -30,19 +30,19 @@ import { StatusCodes } from "http-status-codes";
 import { join } from "node:path";
 import { existsSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { findManifestName } from "../shared/manifestFile.ts";
-import { getSessionFromRequest } from "./auth/routes.ts";
-import { isPostAuthor, type PostMetaIndex } from "./postMeta.ts";
-import { matchesAnyGrapheme, parseLexicon, type LexEntry } from "../generate/pronunciation.ts";
-import { extractNarration, splitChapter } from "../generate/narration.ts";
+import { findManifestName } from "../../shared/manifestFile.ts";
+import { getSessionFromRequest } from "../auth/routes.ts";
+import { isPostAuthor, type PostMetaIndex } from "../postMeta.ts";
+import { matchesAnyGrapheme, parseLexicon, type LexEntry } from "../../generate/pronunciation.ts";
+import { extractNarration, splitChapter } from "../../generate/narration.ts";
 import {
   SOUND_TEST_DIR,
   audioFileName,
   mossVoiceId,
   synthTextFor,
   type SoundTestVoice,
-} from "../shared/soundTest.ts";
-import { resolveAuthorVoice } from "../shared/voiceResolution.ts";
+} from "../../shared/soundTest.ts";
+import { resolveAuthorVoice } from "../../shared/voiceResolution.ts";
 
 export type SoundTestDeps = {
   // Content repo root (its posts/ + generated/ live here; the spawned CLI's

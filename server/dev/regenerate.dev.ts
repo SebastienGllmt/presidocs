@@ -26,9 +26,9 @@
 // don't fit a closed problem-type slug taxonomy.
 
 import { StatusCodes } from "http-status-codes";
-import { getSessionFromRequest } from "./auth/routes.ts";
-import { isPostAuthor, type PostMetaIndex } from "./postMeta.ts";
-import { resolveAuthorVoice } from "../shared/voiceResolution.ts";
+import { getSessionFromRequest } from "../auth/routes.ts";
+import { isPostAuthor, type PostMetaIndex } from "../postMeta.ts";
+import { resolveAuthorVoice } from "../../shared/voiceResolution.ts";
 import { join } from "node:path";
 
 export type RegenerateDeps = {

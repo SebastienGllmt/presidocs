@@ -36,7 +36,7 @@ import {
 import { handlePostVersionRequest } from "./postVersionsRoute.ts";
 import { buildOpenApiDocument } from "./openapi.ts";
 import { handleAnalyticsRequest } from "./analyticsRoute.ts";
-import { withNoindexOffCanonicalHost, withSecurityHeaders } from "../shared/securityHeaders.ts";
+import { withNoindexOffCanonicalHost, withSecurityHeaders } from "./securityHeaders.ts";
 import {
   contentRangeHeader,
   isResolvableRangeHeader,

@@ -58,8 +58,8 @@ import {
   type R2ListEntry as ListEntry,
 } from "../shared/commentSchemas.ts";
 import { createSessionToken } from "../server/auth/session.ts";
-import { loadDevPostMetaIndex } from "../server/postMeta.dev.ts";
-import { fsAdapter } from "../server/comments/fsAdapter.ts";
+import { loadDevPostMetaIndex } from "../server/dev/postMeta.dev.ts";
+import { fsAdapter } from "./fsAdapter.ts";
 
 const R2List = z.array(R2ListEntry);
 

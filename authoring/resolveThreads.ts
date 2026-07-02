@@ -25,7 +25,7 @@
 // the version bump happens when the edited post is next built.
 
 import { join } from "node:path";
-import { fsAdapter } from "../server/comments/fsAdapter.ts";
+import { fsAdapter } from "./fsAdapter.ts";
 import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { ResolutionEnvelope } from "../shared/commentSchemas.ts";
 
