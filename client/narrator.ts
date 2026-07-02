@@ -29,16 +29,14 @@ import {
   parseSpokenHash,
   loadCaptureControls,
   saveCaptureControls,
-  topLevelChapterByNumber,
-  shouldIgnoreKeyboardShortcut,
-  KEY_BINDINGS,
-  matchesKeyBinding,
 } from "./narratorDom.ts";
 import {
   DRAWER_BODY_WANTED_ATTR,
   REQUEST_DRAWER_BODY_EVENT,
   DRAWER_BODY_READY_EVENT,
 } from "./drawerBodyContract.ts";
+import { MediaSessionController } from "./narrator/mediaSession.ts";
+import { NarratorKeyboard } from "./narrator/keyboard.ts";
 
 // The manifest shape (`ManifestWord`/`ManifestMark`/`ManifestChapter`/
 // `Manifest`) is declared once in `shared/manifestSchema.ts` and shared with the
@@ -95,9 +93,12 @@ type DrawerPanel = "script" | "outline";
 // outline panel's current-section highlight.
 const OUTLINE_ACTIVE_OFFSET_PX = 120;
 
-class Narrator {
-  private manifest: Manifest | null = null;
-  private player: InstanceType<typeof Player> | null = null;
+export class Narrator {
+  readonly media = new MediaSessionController(this);
+  readonly keys = new NarratorKeyboard(this);
+
+  manifest: Manifest | null = null;
+  player: InstanceType<typeof Player> | null = null;
   private activeId: string | null = null;
   private rafHandle = 0;
   private playing = false;
@@ -140,7 +141,7 @@ class Narrator {
   // explicitly attributed lands as the "in-dock click" case. Reset to
   // "button" on every pause so a Space-pause followed by a dock-click
   // doesn't carry the stale "space" attribution forward.
-  private lastPlayTrigger: PlayTrigger = "button";
+  lastPlayTrigger: PlayTrigger = "button";
   // Quartiles (25 / 50 / 75 / 100 % of master-track duration) we've already
   // emitted for this page session. The rAF tick consults this on every
   // frame after `hasPlayed`; first cross of each threshold sends a beacon,
@@ -155,7 +156,7 @@ class Narrator {
   // `narrate-capture-controls` (absent ⇒ ON; "off" ⇒ OFF); applied
   // before the first-play arming so a returning reader who released
   // last session stays released without having to re-toggle.
-  private captureControls = true;
+  captureControls = true;
   private captureBtn: HTMLButtonElement | null = null;
   // Script-&-outline drawer + per-mark segment elements. One drawer element,
   // two panels (`drawerPanel` picks which body is shown); two edge tabs open
@@ -237,8 +238,8 @@ class Narrator {
     private playerContainer: HTMLElement,
     private chapterContainer: HTMLElement | null,
     private narrationRoot: HTMLElement,
-    private title: string,
-    private artist: string,
+    public title: string,
+    public artist: string,
   ) {}
 
   // `pendingKey`: the cold-start keyboard shortcut the lazy loader captured and
@@ -325,7 +326,7 @@ class Narrator {
     this.setupHighlightToggle();
     this.setupCloseButton();
     this.setupSmoothBar();
-    this.setupKeyboardShortcuts();
+    this.keys.setupKeyboardShortcuts();
     this.buildDrawer();
     this.setupDividerSpeakers();
     this.setupHeadingSpeakers();
@@ -352,7 +353,7 @@ class Narrator {
     // Replay the cold-start key the loader captured (Space/1-9/arrow pressed
     // before Shikwasa finished loading) now that the player + manifest exist —
     // so a reader who started the talk cold isn't left having to press twice.
-    if (pendingKey) this.handleKeyboardEvent(pendingKey);
+    if (pendingKey) this.keys.handleKeyboardEvent(pendingKey);
 
     // Media Session arming deferred to `onPlay` — see `hasPlayed`. A
     // tab isn't the OS session target until audio actually plays
@@ -360,92 +361,7 @@ class Narrator {
     // pollute the lock screen for a reader who never starts.
   }
 
-  // Wire the OS-level "now playing" surfaces (lock screen, macOS menu-bar
-  // widget + Control Center, Android/Chrome notification tile, Windows SMTC)
-  // and route hardware/OS media controls (Bluetooth headset taps, keyboard
-  // media keys) into the same player calls the in-page dock and keyboard
-  // shortcuts already use. Entirely additive and feature-detected: a no-op on
-  // browsers without `navigator.mediaSession`. No build/manifest changes — the
-  // manifest already carries title/artist/duration/chapters.
-  private setupMediaSession() {
-    if (!("mediaSession" in navigator) || !this.manifest) return;
-    const ms = navigator.mediaSession;
-
-    ms.metadata = new MediaMetadata({
-      title: this.title,
-      artist: this.artist,
-      // Site/publisher label; becomes the grouping line on the iOS lock screen.
-      album: this.artist,
-      artwork: [], // see methodology — no site cover art asset yet
-    });
-
-    // setActionHandler throws for actions a given UA doesn't support; swallow
-    // per-action so one unsupported action doesn't block the rest (notably
-    // previoustrack/nexttrack on Firefox/Linux without MPRIS).
-    const safeSet = (
-      action: MediaSessionAction,
-      handler: ((d: MediaSessionActionDetails) => void) | null,
-    ) => {
-      try {
-        ms.setActionHandler(action, handler);
-      } catch {
-        /* unsupported action — ignore */
-      }
-    };
-
-    safeSet("play", () => {
-      this.lastPlayTrigger = "media-key";
-      this.player?.play();
-    });
-    safeSet("pause", () => this.player?.pause());
-    // No real "stop" concept for a single track; pause matches user intent.
-    safeSet("stop", () => this.player?.pause());
-    safeSet("seekbackward", (d) => this.skipBy(asMs(-((d.seekOffset ?? 10) * 1000))));
-    safeSet("seekforward", (d) => this.skipBy(asMs((d.seekOffset ?? 10) * 1000)));
-    safeSet("seekto", (d) => {
-      if (d.seekTime == null) return;
-      this.seekToMs(asMs(d.seekTime * 1000));
-    });
-    // On a chaptered talk the user's "track" is the LEAF chapter: one skip
-    // gesture advances one spoken section. Deliberately FINER than the keyboard
-    // 1-9 map (which jumps between top-level parts) — each input surface matched
-    // to its idiom. No wraparound at the ends.
-    safeSet("previoustrack", () => this.jumpToChapterDelta(-1));
-    safeSet("nexttrack", () => this.jumpToChapterDelta(1));
-  }
-
-  // Exact inverse of setupMediaSession: null every action handler (so the
-  // OS stops routing media keys / headset taps to this tab), drop the
-  // metadata (so the OS "now playing" widget no longer shows the blog),
-  // and set playbackState back to "none". Paired with the `captureControls`
-  // gate on `setPlaybackState` and the rAF push so a running ticker can't
-  // re-acquire the session a frame after we release it.
-  private teardownMediaSession() {
-    if (!("mediaSession" in navigator)) return;
-    const ms = navigator.mediaSession;
-    for (
-      const a of [
-        "play",
-        "pause",
-        "stop",
-        "seekbackward",
-        "seekforward",
-        "seekto",
-        "previoustrack",
-        "nexttrack",
-      ] as MediaSessionAction[]
-    ) {
-      try {
-        ms.setActionHandler(a, null);
-      } catch {
-        /* unsupported action — ignore, mirrors `safeSet` */
-      }
-    }
-    ms.metadata = null;
-    ms.playbackState = "none";
-  }
-
-  private jumpToChapter(chapter: ManifestChapter) {
+  jumpToChapter(chapter: ManifestChapter) {
     if (!this.player) return;
     // Seek a hair past startTime so the chapter plugin reliably considers
     // us inside the new chapter for `chapterchange` (its check is t >=
@@ -457,7 +373,7 @@ class Narrator {
 
   // Jump to the neighbouring chapter (MediaSession previoustrack/nexttrack).
   // Silent no-op at the first/last chapter — same feel as the 1-9 shortcuts.
-  private jumpToChapterDelta(delta: -1 | 1) {
+  jumpToChapterDelta(delta: -1 | 1) {
     if (!this.manifest || !this.player) return;
     const tMs = secondsToMs(asSeconds(this.player.currentTime));
     const idx = this.manifest.chapters.findIndex(
@@ -549,72 +465,6 @@ class Narrator {
     dock.dataset.hidden = "false";
     dock.setAttribute("aria-hidden", "false");
     this.toggleBtn?.setAttribute("aria-expanded", "true");
-  }
-
-  // Page-global keyboard shortcuts (Space / arrows / 1-9). Armed from
-  // init, not gated on engagement — Space/1-9 are how a reader who
-  // knows the shortcut starts the talk cold, mirroring the in-page
-  // play button. Skipped while typing in a form field or with a
-  // modifier held.
-  //
-  // The narrator now boots lazily (`client/narratorLoader.ts`), so the loader
-  // *also* arms these keys from page load off the SAME `narratorDom` table and
-  // hands the first one to `init(pendingKey)`, which replays it here once the
-  // player exists (see `handleKeyboardEvent`). So the cold-start press still
-  // controls playback even though Shikwasa hadn't loaded when the key was hit.
-  private setupKeyboardShortcuts() {
-    document.addEventListener("keydown", (e) => this.handleKeyboardEvent(e));
-  }
-
-  // The per-event dispatch, shared by the live document listener and the
-  // boot-time replay of the loader's captured cold-start key. Idempotent and
-  // self-guarding: a no-op until the player + manifest are ready.
-  private handleKeyboardEvent(e: KeyboardEvent) {
-    if (!this.player || !this.manifest) return;
-    // Modifier-and-focus filter lives in ./narratorDom.ts so the unit
-    // tests can exercise it directly without spinning up the rest of
-    // the narrator.
-    if (shouldIgnoreKeyboardShortcut(e.target, e)) return;
-
-    // Dispatch off the shared KEY_BINDINGS table (narratorDom.ts) — the same
-    // declaration the build-time help page renders, so the bindings and their
-    // documentation can't drift. Run the first matching binding and stop.
-    for (const binding of KEY_BINDINGS) {
-      if (!matchesKeyBinding(binding, e)) continue;
-      switch (binding.id) {
-        case "play-pause":
-          // Override the default Space-activates-focused-button behavior so a
-          // focused chapter pill or the visibility toggle doesn't intercept
-          // playback control. Buttons remain activatable via Enter.
-          e.preventDefault();
-          this.lastPlayTrigger = "space";
-          this.player.toggle();
-          return;
-        case "skip-back":
-          e.preventDefault();
-          this.skipBy(asMs(-10_000));
-          return;
-        case "skip-forward":
-          e.preventDefault();
-          this.skipBy(asMs(10_000));
-          return;
-        case "jump-chapter": {
-          // 1-9 index the TOP-LEVEL chapters (parts + flat chapters),
-          // matching the number shown on the level-1 pills. Sub-chapters are
-          // reached by click or MediaSession next-track, not by number.
-          // Resolution (including the >9 truncation rule, and declining when
-          // there's no Nth chapter) lives in topLevelChapterByNumber — so a
-          // digit with no matching chapter falls through doing nothing, as
-          // before.
-          const chapter = topLevelChapterByNumber(this.manifest.chapters, e.key);
-          if (chapter) {
-            e.preventDefault();
-            this.jumpToChapter(chapter);
-          }
-          return;
-        }
-      }
-    }
   }
 
   // Injects a toggle inside Shikwasa's basic controls row that releases
@@ -775,9 +625,9 @@ class Narrator {
       // pre-firstplay would silently arm metadata + handlers for a talk
       // that hasn't started, exactly what the first-play deferral exists
       // to prevent.
-      if (this.hasPlayed) this.setupMediaSession();
+      if (this.hasPlayed) this.media.setupMediaSession();
     } else {
-      this.teardownMediaSession();
+      this.media.teardownMediaSession();
     }
     if (typeof localStorage !== "undefined") {
       // Persist via the pure helper (handles "absent ⇒ ON" by removing
@@ -786,7 +636,7 @@ class Narrator {
     }
   }
 
-  private skipBy(ms: Milliseconds) {
+  skipBy(ms: Milliseconds) {
     if (!this.player || !this.manifest) return;
     // Read currentTime from the underlying audio element rather than
     // player.currentTime so we share the same code path as seekToMs()
@@ -1124,7 +974,7 @@ class Narrator {
   // Write directly to the underlying HTMLAudioElement (exposed as
   // `player.audio`) for sample-accurate seeking. Falls back to the broken
   // API if a future Shikwasa version hides the element.
-  private seekToMs(ms: Milliseconds) {
+  seekToMs(ms: Milliseconds) {
     const seconds = msToSeconds(ms);
     const audio = (this.player as unknown as { audio?: HTMLAudioElement }).audio;
     if (audio) {
@@ -1244,20 +1094,6 @@ class Narrator {
     }
   }
 
-  // Set the OS "now playing" state explicitly rather than letting the UA infer
-  // it from the <audio> element — the heuristic can disagree with reality after
-  // a programmatic `currentTime` write (which seekToMs does), leaving the lock
-  // screen showing Play while audio plays.
-  //
-  // The `captureControls` guard is load-bearing: this helper is the SINGLE
-  // chokepoint for `playbackState` writes (called from onPlay/onPause/onEnded),
-  // so gating it here means the next play after a teardown can't silently
-  // re-acquire the session a frame later.
-  private setPlaybackState(state: MediaSessionPlaybackState) {
-    if (!this.captureControls) return;
-    if ("mediaSession" in navigator) navigator.mediaSession.playbackState = state;
-  }
-
   private onPlay() {
     if (!this.hasPlayed) {
       // First explicit play: arm the OS surface (metadata + action handlers
@@ -1273,12 +1109,12 @@ class Narrator {
       // field (today there is none — the latch above is one-way) gets
       // accurate "no explicit intent" attribution.
       this.lastPlayTrigger = "button";
-      if (this.captureControls) this.setupMediaSession();
+      if (this.captureControls) this.media.setupMediaSession();
     }
     this.playing = true;
     if (this.highlightEnabled) this.narrationRoot.classList.add("narrating");
     this.startTicker();
-    this.setPlaybackState("playing");
+    this.media.setPlaybackState("playing");
   }
   private onPause() {
     this.playing = false;
@@ -1288,7 +1124,7 @@ class Narrator {
     // handler has set the trigger first. Only matters between page load and
     // the first-play latch firing — once `hasPlayed` is true, the field is dead.
     this.lastPlayTrigger = "button";
-    this.setPlaybackState("paused");
+    this.media.setPlaybackState("paused");
   }
   private onEnded() {
     this.playing = false;
@@ -1296,7 +1132,7 @@ class Narrator {
     this.narrationRoot.classList.remove("narrating");
     this.setActive(null);
     this.releaseStagedFigure();
-    this.setPlaybackState("none");
+    this.media.setPlaybackState("none");
   }
 
   // Send a `narration_quartile` analytics beacon the first frame after the
