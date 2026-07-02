@@ -55,23 +55,15 @@ import type { WithContext, FAQPage, Question } from "schema-dts";
 import { injectPwaHead } from "./injectPwaHead.ts";
 import { readSiteMeta } from "./feeds.ts";
 import { KEY_BINDINGS } from "../client/narratorDom.ts";
+import { escapeHtmlAttr as escAttr, escapeHtmlText as escHtml } from "../shared/htmlEscape.ts";
 
 const paths = resolveBlogPaths();
 
 // ---- escaping ---------------------------------------------------------------
-
-// HTML text-node escape (for content between tags).
-export function escHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-// HTML double-quoted-attribute escape.
-function escAttr(s: string): string {
-  return escHtml(s).replace(/"/g, "&quot;");
-}
+// Build-time HTML escapers: the one dep-free pair in shared/htmlEscape.ts,
+// aliased to the local `escHtml`/`escAttr` names so the call sites here stay
+// untouched. `escHtml` is re-exported because licenses-page.ts imports it.
+export { escHtml };
 
 // ---- feature model ----------------------------------------------------------
 

@@ -28,7 +28,7 @@ import faFile from "@fortawesome/fontawesome-free/svgs/solid/file-lines.svg" wit
 import faChevron from "@fortawesome/fontawesome-free/svgs/solid/chevron-down.svg" with { type: "text" };
 import faExternal from "@fortawesome/fontawesome-free/svgs/solid/up-right-from-square.svg" with { type: "text" };
 
-import { copyToClipboard } from "./clipboard.ts";
+import { copyWithFeedback } from "./copyFeedback.ts";
 import { iconSpan } from "./iconSpan.ts";
 
 // How long the "Copied!" state (icon swap + label) stays after a successful copy.
@@ -71,19 +71,11 @@ function buildMenuItem(
   return el;
 }
 
-let feedbackTimer: number | null = null;
-
-// Toggle the copied state. The label/icon cross-fade is purely CSS off the
-// `.copy-md-copied` class (both states are always in the DOM), so this just
-// flips the class and schedules the reset — no text mutation, no resize.
-function flashCopied(primary: HTMLButtonElement): void {
-  primary.classList.add("copy-md-copied");
-  if (feedbackTimer !== null) window.clearTimeout(feedbackTimer);
-  feedbackTimer = window.setTimeout(() => {
-    primary.classList.remove("copy-md-copied");
-    feedbackTimer = null;
-  }, FEEDBACK_MS);
-}
+// Copy the article Markdown and flash the copied state. The label/icon
+// cross-fade is purely CSS off the `.copy-md-copied` class (both states are
+// always in the DOM), so this just flips the class and schedules the reset —
+// no text mutation, no resize.
+const copyMd = copyWithFeedback("copy-md-copied", FEEDBACK_MS);
 
 export function installCopyMarkdown(article: HTMLElement): void {
   // Idempotent — never render two controls.
@@ -225,7 +217,7 @@ export function installCopyMarkdown(article: HTMLElement): void {
         return;
       }
       const md = await res.text();
-      if (await copyToClipboard(md)) flashCopied(primary);
+      await copyMd(md, primary);
     } catch {
       group.remove();
     } finally {

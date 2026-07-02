@@ -16,6 +16,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { asMs, type Milliseconds } from "../shared/time.ts";
+import { LongLivedJsonWorker } from "./longLivedJsonWorker.ts";
 
 // One aligned token. Granularity is the aligner's choice — for Qwen3 it's
 // roughly word-level on English (sub-word BPE pieces are merged by the model
@@ -89,49 +90,10 @@ type AlignRequest = { audio: string; text: string; language: string };
 type AlignToken = { start: number; end: number; text: string };
 type AlignResponse = { ready?: boolean; ok?: boolean; tokens?: AlignToken[]; error?: string };
 
-// Reads the worker's stdout as newline-delimited JSON, handing out one object
-// per call in FIFO order so each request we write pairs with its single
-// response. Mirrors jsonLineReader in tts-providers.ts; kept local so the two
-// worker integrations stay independent. If the stream closes (worker died),
-// pending and future reads reject with a clear error.
-function jsonLineReader(stream: ReadableStream<Uint8Array>) {
-  const queued: AlignResponse[] = [];
-  const waiters: { resolve: (v: AlignResponse) => void; reject: (e: Error) => void }[] = [];
-  let closed: Error | null = null;
-  (async () => {
-    const reader = stream.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let nl: number;
-        while ((nl = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!line) continue;
-          const obj = JSON.parse(line) as AlignResponse;
-          const w = waiters.shift();
-          if (w) w.resolve(obj);
-          else queued.push(obj);
-        }
-      }
-      closed = new Error("qwen3 align worker stdout closed (process exited)");
-    } catch (err) {
-      closed = err instanceof Error ? err : new Error(String(err));
-    }
-    while (waiters.length) waiters.shift()!.reject(closed!);
-  })();
-  return () =>
-    new Promise<AlignResponse>((resolve, reject) => {
-      const q = queued.shift();
-      if (q) resolve(q);
-      else if (closed) reject(closed);
-      else waiters.push({ resolve, reject });
-    });
-}
+// The long-lived subprocess + newline-delimited-JSON scaffold lives in
+// generate/longLivedJsonWorker.ts (shared with the MOSS TTS provider). This
+// file keeps only the qwen3 protocol: the message shapes above, the spawn
+// command, and the ready-handshake check below.
 
 // Map the worker's seconds-based tokens to the pipeline's ms AlignedToken.
 // Exported for tests — this is where the seconds→ms rounding lives now that
@@ -231,56 +193,32 @@ export function createQwen3Aligner(config: ForcedAlignerConfig = {}): ForcedAlig
   const device = process.env.QWEN3_ALIGNER_DEVICE ?? "cpu";
   const workerScript = join(import.meta.dir, "align_worker.py");
 
-  // Lazily-spawned worker. `null` until the first align; started at most once,
-  // so a fully-cached build never loads the model. Mirrors the MOSS provider.
-  type Worker = {
-    proc: Bun.Subprocess<"pipe", "pipe", "inherit">;
-    stdin: Bun.FileSink;
-    readResponse: () => Promise<AlignResponse>;
-  };
-  let worker: Worker | null = null;
-  let starting: Promise<Worker> | null = null;
-
-  async function startWorker(): Promise<Worker> {
-    const cmd = [python, workerScript, "--model", modelDir, "--device", device];
-    const proc = Bun.spawn({
-      cmd,
-      cwd: dir, // run from the checkout so qwen_asr / its model resolve
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "inherit", // model-load progress + errors stream to the terminal
-    });
-    // Don't let the live worker keep the build process alive past its work,
-    // and make sure it dies with us rather than leaking a loaded model.
-    proc.unref();
-    process.once("exit", () => proc.kill());
-    const readResponse = jsonLineReader(proc.stdout);
-    console.log(`  · qwen3: loading aligner model on ${device} (first segment only)…`);
-    const ready = await readResponse();
-    if (!ready.ready) {
-      throw new Error(`qwen3 align worker: expected ready handshake, got ${JSON.stringify(ready)}`);
-    }
-    return { proc, stdin: proc.stdin, readResponse };
-  }
-
-  async function ensureWorker(): Promise<Worker> {
-    if (worker) return worker;
-    if (!starting) starting = startWorker().then((w) => (worker = w));
-    return starting;
-  }
-
-  // Serialize requests: one model, one stdin/stdout channel, one in-flight
-  // alignment at a time. Chaining onto a tail promise turns concurrent
-  // `align` calls into a FIFO queue (today's caller is already serial, but
-  // this keeps us correct if that changes). Mirrors the MOSS provider.
-  let tail: Promise<unknown> = Promise.resolve();
+  // Lazily-spawned long-lived worker (shared scaffold): `null` until the first
+  // align, started at most once, so a fully-cached build never loads the model.
+  // Mirrors the MOSS provider.
+  const worker = new LongLivedJsonWorker<AlignRequest, AlignResponse>({
+    name: "qwen3 align worker",
+    spawn: () => {
+      const cmd = [python, workerScript, "--model", modelDir, "--device", device];
+      const proc = Bun.spawn({
+        cmd,
+        cwd: dir, // run from the checkout so qwen_asr / its model resolve
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "inherit", // model-load progress + errors stream to the terminal
+      });
+      console.log(`  · qwen3: loading aligner model on ${device} (first segment only)…`);
+      return proc;
+    },
+    onReady: (ready) => {
+      if (!ready.ready) {
+        throw new Error(`qwen3 align worker: expected ready handshake, got ${JSON.stringify(ready)}`);
+      }
+    },
+  });
 
   async function doAlign(audioPath: string, text: string, language: string) {
-    const w = await ensureWorker();
-    const req: AlignRequest = { audio: audioPath, text, language };
-    w.stdin.write(JSON.stringify(req) + "\n");
-    await w.stdin.flush();
-    const res = await w.readResponse();
+    const res = await worker.request({ audio: audioPath, text, language });
     if (!res.ok) {
       throw new Error(`qwen3 alignment failed: ${res.error ?? "unknown error"}`);
     }
@@ -299,30 +237,9 @@ export function createQwen3Aligner(config: ForcedAlignerConfig = {}): ForcedAlig
         throw new Error(`qwen3 aligner: audio file not found at ${audioPath}`);
       }
       const language = opts?.language ?? defaultLanguage;
-      const result = tail.then(() => doAlign(audioPath, text, language));
-      tail = result.catch(() => {});
-      return result;
+      return doAlign(audioPath, text, language);
     },
-    // Shut the worker down so the build process can exit. Like MOSS's worker,
-    // the never-ending stdout read keeps Bun's event loop alive, so without
-    // this `generate` (and align-check) would hang after their last output.
-    // Closing stdin signals EOF to the worker's read loop; the kill is a
-    // backstop. Idempotent and safe if the worker never started.
-    async close() {
-      const w = worker;
-      worker = null;
-      starting = null;
-      if (!w) return;
-      try {
-        w.stdin.end();
-      } catch {}
-      try {
-        w.proc.kill();
-      } catch {}
-      try {
-        await w.proc.exited;
-      } catch {}
-    },
+    close: () => worker.close(),
   };
 }
 

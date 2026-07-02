@@ -39,7 +39,7 @@ import {
 } from "./figureCacheKey.ts";
 import { resolveAuthorProfile } from "../shared/authorProfile.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
-import { decodeHtmlEntities } from "./htmlEntities.ts";
+import { extractPostMeta, readSiteMeta } from "./feeds.ts";
 // The manifest timeline shape is the shared one (single source of truth with
 // the producer + the live narrator). Aliased to this file's existing local
 // names. Time fields carry the `Milliseconds` brand; this file reads them as
@@ -568,30 +568,15 @@ function slidePlate(_ctx: PostCtx, chapter: Chapter, parentTitle: string | null)
 
 // --- post metadata helpers ---------------------------------------------------
 
+// Post <title> and blog name: one source of truth with the feed extractors in
+// generate/feeds.ts (HTMLRewriter + entity decode; a real parser handles tag
+// attributes, RCDATA, and entity boundaries a regex would miss).
 function extractTitle(html: string): string {
-  // HTMLRewriter (a Bun built-in, same as feeds.ts's extractPostMeta) rather
-  // than a `<title>…</title>` regex: a real parser handles attributes on the
-  // tag, RCDATA content, and entity boundaries correctly. Text arrives raw, so
-  // we decode entities ourselves afterward (matching the feeds.ts extractor).
-  let title = "";
-  let inTitle = false;
-  new HTMLRewriter()
-    .on("title", {
-      element() {
-        inTitle = true;
-      },
-      text(t) {
-        if (inTitle) title += t.text;
-        if (t.lastInTextNode) inTitle = false;
-      },
-    })
-    .transform(html);
-  return decodeHtmlEntities(title.replace(/\s+/g, " ").trim());
+  return extractPostMeta(html).title;
 }
 
 async function readSiteName(): Promise<string> {
-  const p = join(paths.contentRoot, "index.html");
-  return existsSync(p) ? extractTitle(await Bun.file(p).text()) : "";
+  return (await readSiteMeta()).title;
 }
 
 async function avatarDataUri(srcPath: string | null): Promise<string | null> {

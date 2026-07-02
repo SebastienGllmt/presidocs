@@ -24,7 +24,6 @@ import { isPostAuthor, type PostMetaIndex } from "../postMeta.ts";
 import {
   problem,
   RATE_LIMIT_WINDOW_SECONDS,
-  type ProblemSlug,
 } from "../../shared/problemDetails.ts";
 import { CommentsQuery, zodBadRequest } from "../requestSchemas.ts";
 import { csvList } from "../../shared/envSchemas.ts";
@@ -48,26 +47,6 @@ export type CommentsDeps = {
   rateLimiter: RateLimit | null;
 };
 
-function unauthorized(): Response {
-  return problem(StatusCodes.UNAUTHORIZED, "auth/unauthenticated");
-}
-function forbidden(): Response {
-  return problem(StatusCodes.FORBIDDEN, "auth/forbidden");
-}
-function badRequest(
-  slug: Extract<ProblemSlug, `request/${string}`>,
-  detail: string,
-  extensions?: Record<string, unknown>,
-): Response {
-  return problem(StatusCodes.BAD_REQUEST, slug, detail, extensions);
-}
-function methodNotAllowed(): Response {
-  return problem(StatusCodes.METHOD_NOT_ALLOWED, "about:blank");
-}
-function notFound(): Response {
-  return problem(StatusCodes.NOT_FOUND, "about:blank");
-}
-
 // Author moderation list: comma-separated `<provider>:<sub>` userIds
 // whose PUTs are silently dropped. See methodology.md → Hardening.
 // Shares the `csvList` env transform with notifyConfig so the comma-split-and-
@@ -82,7 +61,7 @@ export async function handleCommentsRequest(
   deps: CommentsDeps,
 ): Promise<Response> {
   const session = await getSessionFromRequest(req);
-  if (!session) return unauthorized();
+  if (!session) return problem(StatusCodes.UNAUTHORIZED, "auth/unauthenticated");
 
   const url = new URL(req.url);
   const parsed = CommentsQuery.safeParse(Object.fromEntries(url.searchParams));
@@ -91,8 +70,8 @@ export async function handleCommentsRequest(
 
   // No `user` → list users (author only).
   if (user === undefined) {
-    if (req.method !== "GET") return methodNotAllowed();
-    if (!isPostAuthor(session, deps.postMeta.get(post))) return forbidden();
+    if (req.method !== "GET") return problem(StatusCodes.METHOD_NOT_ALLOWED, "about:blank");
+    if (!isPostAuthor(session, deps.postMeta.get(post))) return problem(StatusCodes.FORBIDDEN, "auth/forbidden");
     const users = await deps.store.listUsers(post);
     return Response.json(users, {
       headers: { "Cache-Control": "private, no-store" },
@@ -101,12 +80,12 @@ export async function handleCommentsRequest(
 
   // `user` but no `change` → list change hashes for that user.
   if (change === undefined) {
-    if (req.method !== "GET") return methodNotAllowed();
+    if (req.method !== "GET") return problem(StatusCodes.METHOD_NOT_ALLOWED, "about:blank");
     if (
       session.userId !== user &&
       !isPostAuthor(session, deps.postMeta.get(post))
     ) {
-      return forbidden();
+      return problem(StatusCodes.FORBIDDEN, "auth/forbidden");
     }
     const entries: ChangeListEntry[] = await deps.store.listChanges(post, user);
     return Response.json(entries, {
@@ -121,7 +100,7 @@ export async function handleCommentsRequest(
     case "PUT":
       return await handlePutChange(req, post, user, change, origin, session, deps);
     default:
-      return methodNotAllowed();
+      return problem(StatusCodes.METHOD_NOT_ALLOWED, "about:blank");
   }
 }
 
@@ -136,10 +115,10 @@ async function handleGetChange(
     session.userId !== user &&
     !isPostAuthor(session, deps.postMeta.get(post))
   ) {
-    return forbidden();
+    return problem(StatusCodes.FORBIDDEN, "auth/forbidden");
   }
   const bytes = await deps.store.getChange(post, user, changeHash);
-  if (!bytes) return notFound();
+  if (!bytes) return problem(StatusCodes.NOT_FOUND, "about:blank");
   return new Response(bytes as BodyInit, {
     status: StatusCodes.OK,
     headers: {
@@ -164,7 +143,7 @@ async function handlePutChange(
   // PUT is allowed only by the user themselves — content isolation
   // between blobs. The author has no special PUT power; they only
   // ever upload to their own folder.
-  if (session.userId !== user) return forbidden();
+  if (session.userId !== user) return problem(StatusCodes.FORBIDDEN, "auth/forbidden");
 
   // Block-list check: silently accept-but-discard. Attacker gets a
   // success response, no R2 op, no rate-limit budget burned.
@@ -198,7 +177,7 @@ async function handlePutChange(
     });
   }
   if (body.byteLength === 0) {
-    return badRequest("request/empty-body", "request body is required");
+    return problem(StatusCodes.BAD_REQUEST, "request/empty-body", "request body is required");
   }
 
   await deps.store.putChange(post, user, changeHash, new Uint8Array(body), origin);

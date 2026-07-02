@@ -33,10 +33,12 @@ import {
   shouldIgnoreKeyboardShortcut,
   KEY_BINDINGS,
   matchesKeyBinding,
+} from "./narratorDom.ts";
+import {
   DRAWER_BODY_WANTED_ATTR,
   REQUEST_DRAWER_BODY_EVENT,
   DRAWER_BODY_READY_EVENT,
-} from "./narratorDom.ts";
+} from "./drawerBodyContract.ts";
 
 // The manifest shape (`ManifestWord`/`ManifestMark`/`ManifestChapter`/
 // `Manifest`) is declared once in `shared/manifestSchema.ts` and shared with the

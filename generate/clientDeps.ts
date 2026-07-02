@@ -30,6 +30,7 @@ import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
 import { Glob } from "bun";
 import { type BlogPaths, resolveBlogPaths } from "../shared/blogPaths.ts";
+import { clientBuildOptions } from "./clientBuildOptions.ts";
 
 /**
  * Extract the npm package name from a `node_modules`-relative input path,
@@ -88,11 +89,11 @@ export async function deriveShippedClientPackages(
   }
   const result = await Bun.build({
     entrypoints,
-    target: "browser",
-    splitting: true,
-    minify: true,
-    external: ["*.woff2"],
-    define: { __BUN_DEV__: "false" },
+    // Shared client-bundle options (target/splitting/minify/external/define) —
+    // one source of truth with build-html.ts (generate/clientBuildOptions.ts),
+    // so this probe tree-shakes identically to the real build. `metafile` is the
+    // only addition; no `outdir`, so nothing is written to disk.
+    ...clientBuildOptions(),
     metafile: true,
   });
   if (!result.success) {

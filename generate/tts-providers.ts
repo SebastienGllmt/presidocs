@@ -25,6 +25,7 @@ import {
   truncateToMs,
 } from "./audio-pipeline.ts";
 import { parseLexicon, applyLexicon, type LexEntry } from "./pronunciation.ts";
+import { LongLivedJsonWorker } from "./longLivedJsonWorker.ts";
 
 export interface PlsLexicon {
   // Where the lexemes came from, in merge order. Used for log messages and
@@ -292,48 +293,10 @@ type MossResponse = {
   error?: string;
 };
 
-// Reads a child's stdout as a stream of newline-delimited JSON objects,
-// handing them out one-per-call in FIFO order. Used to pair each request we
-// write to the worker with its single response line. If the stream closes
-// (worker died), pending and future reads reject with a clear error.
-function jsonLineReader(stream: ReadableStream<Uint8Array>) {
-  const queued: MossResponse[] = [];
-  const waiters: { resolve: (v: MossResponse) => void; reject: (e: Error) => void }[] = [];
-  let closed: Error | null = null;
-  (async () => {
-    const reader = stream.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let nl: number;
-        while ((nl = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!line) continue;
-          const obj = JSON.parse(line) as MossResponse;
-          const w = waiters.shift();
-          if (w) w.resolve(obj);
-          else queued.push(obj);
-        }
-      }
-      closed = new Error("MOSS worker stdout closed (process exited)");
-    } catch (err) {
-      closed = err instanceof Error ? err : new Error(String(err));
-    }
-    while (waiters.length) waiters.shift()!.reject(closed!);
-  })();
-  return () =>
-    new Promise<MossResponse>((resolve, reject) => {
-      const q = queued.shift();
-      if (q) resolve(q);
-      else if (closed) reject(closed);
-      else waiters.push({ resolve, reject });
-    });
-}
+// The long-lived subprocess + newline-delimited-JSON scaffold lives in
+// generate/longLivedJsonWorker.ts (shared with the qwen3 aligner). This file
+// keeps only the MOSS protocol: the message shapes above, the spawn command +
+// FFmpeg-loader env below, and the ready-handshake check.
 
 // MOSS's processor decodes the reference clip (and torchaudio in general)
 // through torchcodec, which dlopen's the system FFmpeg shared libraries at
@@ -462,61 +425,44 @@ export function createMossProvider(config: TtsProviderConfig): TtsProvider {
     );
   }
 
-  // Lazily-spawned worker. `null` until the first synth; started at most once.
-  type Worker = {
-    proc: Bun.Subprocess<"pipe", "pipe", "inherit">;
-    stdin: Bun.FileSink;
-    readResponse: () => Promise<MossResponse>;
-    // MOSS's native output rate (from the ready handshake). When it already
-    // equals the working rate we hand the worker's WAV straight to concat —
-    // no resample, no quality loss. The ffmpeg resample only runs when the
-    // rates genuinely differ.
-    nativeSampleRate: number;
-  };
-  let worker: Worker | null = null;
-  let starting: Promise<Worker> | null = null;
+  // MOSS's native output rate, learned from the ready handshake. When it
+  // already equals the working rate we hand the worker's WAV straight to concat
+  // — no resample, no quality loss. The ffmpeg resample only runs when the
+  // rates genuinely differ.
+  let nativeSampleRate = 0;
 
-  async function startWorker(): Promise<Worker> {
-    const cmd = [
-      python,
-      workerScript,
-      "--model",
-      MOSS_MODEL_ID,
-      "--reference",
-      reference,
-      ...(device ? ["--device", device] : []),
-    ];
-    const proc = Bun.spawn({
-      cmd,
-      cwd: mossDir, // run from the MOSS repo so its trust_remote_code modules resolve
-      env: mossWorkerEnv(), // put FFmpeg's libs on the loader path for torchcodec
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "inherit", // model-load progress + errors stream to the terminal
-    });
-    // Don't let the live worker keep the build process alive past its work,
-    // and make sure it dies with us rather than leaking a loaded model.
-    proc.unref();
-    process.once("exit", () => proc.kill());
-    const readResponse = jsonLineReader(proc.stdout);
-    console.log(`  · moss: loading model ${MOSS_MODEL_ID} (first segment only)…`);
-    const ready = await readResponse();
-    if (!ready.ready || typeof ready.samplingRate !== "number") {
-      throw new Error(`moss worker: expected ready handshake, got ${JSON.stringify(ready)}`);
-    }
-    return {
-      proc,
-      stdin: proc.stdin,
-      readResponse,
-      nativeSampleRate: ready.samplingRate,
-    };
-  }
-
-  async function ensureWorker(): Promise<Worker> {
-    if (worker) return worker;
-    if (!starting) starting = startWorker().then((w) => (worker = w));
-    return starting;
-  }
+  // Lazily-spawned long-lived worker (shared scaffold): `null` until the first
+  // synth, started at most once. Mirrors the qwen3 aligner.
+  const worker = new LongLivedJsonWorker<MossRequest, MossResponse>({
+    name: "MOSS worker",
+    spawn: () => {
+      const cmd = [
+        python,
+        workerScript,
+        "--model",
+        MOSS_MODEL_ID,
+        "--reference",
+        reference,
+        ...(device ? ["--device", device] : []),
+      ];
+      const proc = Bun.spawn({
+        cmd,
+        cwd: mossDir, // run from the MOSS repo so its trust_remote_code modules resolve
+        env: mossWorkerEnv(), // put FFmpeg's libs on the loader path for torchcodec
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "inherit", // model-load progress + errors stream to the terminal
+      });
+      console.log(`  · moss: loading model ${MOSS_MODEL_ID} (first segment only)…`);
+      return proc;
+    },
+    onReady: (ready) => {
+      if (!ready.ready || typeof ready.samplingRate !== "number") {
+        throw new Error(`moss worker: expected ready handshake, got ${JSON.stringify(ready)}`);
+      }
+      nativeSampleRate = ready.samplingRate;
+    },
+  });
 
   const tmpWav = (label: string) =>
     join(
@@ -539,19 +485,13 @@ export function createMossProvider(config: TtsProviderConfig): TtsProvider {
     }
   }
 
-  // Serialize requests: one model, one stdin/stdout channel, one in-flight
-  // generation at a time. Chaining onto a tail promise turns concurrent
-  // `synthesize` calls into a FIFO queue (today's caller is already serial,
-  // but this keeps us correct if that changes).
-  let tail: Promise<unknown> = Promise.resolve();
+  // Request serialization (one model, one in-flight generation at a time) lives
+  // in worker.request(); the caller-side pre/post processing runs around it.
   function synthesize(text: string, context?: SegmentContext): Promise<Uint8Array> {
-    const result = tail.then(() => doSynthesize(text, context));
-    tail = result.catch(() => {});
-    return result;
+    return doSynthesize(text, context);
   }
 
   async function doSynthesize(text: string, context?: SegmentContext): Promise<Uint8Array> {
-    const w = await ensureWorker();
     // Apply the pronunciation lexicon (no-op when none) before anything else,
     // so the empty-input check and the worker both see the substituted text.
     const pronounced = pronounce(text);
@@ -579,9 +519,7 @@ export function createMossProvider(config: TtsProviderConfig): TtsProvider {
         prev_text: useAcoustic ? pronounce(context!.previousText ?? "") : undefined,
         prev_audio: prevAudioPath ?? undefined,
       };
-      w.stdin.write(JSON.stringify(req) + "\n");
-      await w.stdin.flush();
-      const res = await w.readResponse();
+      const res = await worker.request(req);
       if (!res.ok) {
         throw new Error(`moss synthesis failed: ${res.error ?? "unknown error"}`);
       }
@@ -590,7 +528,7 @@ export function createMossProvider(config: TtsProviderConfig): TtsProvider {
       // worker always writes), concat can byte-splice it directly — only a
       // rate mismatch forces the ffmpeg resample.
       const working =
-        w.nativeSampleRate === format.sampleRate
+        nativeSampleRate === format.sampleRate
           ? new Uint8Array(await Bun.file(rawPath).arrayBuffer())
           : await resampleToWorkingFormat(rawPath);
       // Drop MOSS's trailing garbage-audio blip (see trailingArtifactTrimMs).
@@ -604,30 +542,6 @@ export function createMossProvider(config: TtsProviderConfig): TtsProvider {
     }
   }
 
-  // Shut the worker down so the build process can exit. The worker is a
-  // long-lived Python child whose stdout we read in a never-ending loop
-  // (jsonLineReader); that pending read keeps Bun's event loop alive, so
-  // without this `generate` hangs forever after writing its output (the
-  // benign "leaked semaphore" warning is torch's own shutdown noise). Closing
-  // stdin signals EOF to the worker's read loop; the kill is a backstop in
-  // case torch's teardown is slow. Idempotent and safe if the worker never
-  // started (a fully-cached or `--mock` run never spawns it).
-  async function close() {
-    const w = worker;
-    worker = null;
-    starting = null;
-    if (!w) return;
-    try {
-      w.stdin.end();
-    } catch {}
-    try {
-      w.proc.kill();
-    } catch {}
-    try {
-      await w.proc.exited;
-    } catch {}
-  }
-
   return {
     name: "moss",
     outputFormat: format,
@@ -638,7 +552,10 @@ export function createMossProvider(config: TtsProviderConfig): TtsProvider {
     requiredBinaries: ["ffmpeg"],
     cacheVoiceId,
     synthesize,
-    close,
+    // Shut the worker down so the build process can exit — the never-ending
+    // stdout read otherwise keeps Bun's event loop alive (the benign "leaked
+    // semaphore" warning is torch's own shutdown noise). Idempotent.
+    close: () => worker.close(),
   };
 }
 

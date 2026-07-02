@@ -22,7 +22,7 @@
 
 import faLink from "@fortawesome/fontawesome-free/svgs/solid/link.svg" with { type: "text" };
 import faCheck from "@fortawesome/fontawesome-free/svgs/solid/check.svg" with { type: "text" };
-import { copyToClipboard } from "./clipboard.ts";
+import { copyWithFeedback } from "./copyFeedback.ts";
 
 // We deep-link <h2>/<h3>/<h4>. <h1> is the post title — the page URL itself
 // already points at it, so a self-link there is noise. <h5>/<h6> are rare
@@ -93,18 +93,7 @@ function buildHeadingLink(id: string): HTMLAnchorElement {
   return a;
 }
 
-let activeFeedbackTimer: number | null = null;
-
-function flashCopiedFeedback(anchor: HTMLAnchorElement): void {
-  anchor.classList.add("heading-link-copied");
-  if (activeFeedbackTimer !== null) {
-    window.clearTimeout(activeFeedbackTimer);
-  }
-  activeFeedbackTimer = window.setTimeout(() => {
-    anchor.classList.remove("heading-link-copied");
-    activeFeedbackTimer = null;
-  }, FEEDBACK_MS);
-}
+const copyHeadingLink = copyWithFeedback("heading-link-copied", FEEDBACK_MS);
 
 // Walk the article, give every <h2>/<h3>/<h4> an id (preserving authored ones),
 // and attach the hover-link anchor to each.
@@ -157,8 +146,7 @@ export function installHeadingLinks(article: HTMLElement): void {
       // works because the anchor's `.href` getter already returns absolute.
       const url = new URL(target.href).toString();
       history.replaceState(null, "", `#${heading.id}`);
-      const ok = await copyToClipboard(url);
-      if (ok) flashCopiedFeedback(target);
+      await copyHeadingLink(url, target);
     });
 
     heading.appendChild(anchor);

@@ -21,10 +21,7 @@
 import { getSessionFromRequest } from "../auth/routes.ts";
 import { StatusCodes } from "http-status-codes";
 import { isPostAuthor, type PostMetaIndex } from "../postMeta.ts";
-import {
-  problem,
-  type ProblemSlug,
-} from "../../shared/problemDetails.ts";
+import { problem } from "../../shared/problemDetails.ts";
 import { ResolutionsQuery, zodBadRequest } from "../requestSchemas.ts";
 import type { CommentChangeStore } from "./store.ts";
 
@@ -39,32 +36,12 @@ export type ResolutionsDeps = {
   postMeta: PostMetaIndex;
 };
 
-function unauthorized(): Response {
-  return problem(StatusCodes.UNAUTHORIZED, "auth/unauthenticated");
-}
-function forbidden(): Response {
-  return problem(StatusCodes.FORBIDDEN, "auth/forbidden");
-}
-function badRequest(
-  slug: Extract<ProblemSlug, `request/${string}`>,
-  detail: string,
-  extensions?: Record<string, unknown>,
-): Response {
-  return problem(StatusCodes.BAD_REQUEST, slug, detail, extensions);
-}
-function methodNotAllowed(): Response {
-  return problem(StatusCodes.METHOD_NOT_ALLOWED, "about:blank");
-}
-function notFound(): Response {
-  return problem(StatusCodes.NOT_FOUND, "about:blank");
-}
-
 export async function handleResolutionsRequest(
   req: Request,
   deps: ResolutionsDeps,
 ): Promise<Response> {
   const session = await getSessionFromRequest(req);
-  if (!session) return unauthorized();
+  if (!session) return problem(StatusCodes.UNAUTHORIZED, "auth/unauthenticated");
 
   const url = new URL(req.url);
   const parsed = ResolutionsQuery.safeParse(Object.fromEntries(url.searchParams));
@@ -73,7 +50,7 @@ export async function handleResolutionsRequest(
 
   // LIST: any logged-in user.
   if (thread === undefined) {
-    if (req.method !== "GET") return methodNotAllowed();
+    if (req.method !== "GET") return problem(StatusCodes.METHOD_NOT_ALLOWED, "about:blank");
     const entries = await deps.store.listResolutions(post);
     return Response.json(entries, {
       headers: { "Cache-Control": "private, no-store" },
@@ -83,7 +60,7 @@ export async function handleResolutionsRequest(
   switch (req.method) {
     case "GET": {
       const bytes = await deps.store.getResolution(post, thread);
-      if (!bytes) return notFound();
+      if (!bytes) return problem(StatusCodes.NOT_FOUND, "about:blank");
       return new Response(bytes as BodyInit, {
         status: StatusCodes.OK,
         headers: {
@@ -103,7 +80,7 @@ export async function handleResolutionsRequest(
       // author themselves. See server/comments/routes.ts and methodology →
       // Hardening.
       if (!isPostAuthor(session, deps.postMeta.get(post))) {
-        return forbidden();
+        return problem(StatusCodes.FORBIDDEN, "auth/forbidden");
       }
       const body = await req.arrayBuffer();
       if (body.byteLength > MAX_RESOLUTION_BYTES) {
@@ -113,12 +90,12 @@ export async function handleResolutionsRequest(
         });
       }
       if (body.byteLength === 0) {
-        return badRequest("request/empty-body", "request body is required");
+        return problem(StatusCodes.BAD_REQUEST, "request/empty-body", "request body is required");
       }
       await deps.store.putResolution(post, thread, new Uint8Array(body));
       return new Response(null, { status: StatusCodes.OK });
     }
     default:
-      return methodNotAllowed();
+      return problem(StatusCodes.METHOD_NOT_ALLOWED, "about:blank");
   }
 }

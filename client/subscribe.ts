@@ -37,7 +37,7 @@ import faComments from "@fortawesome/fontawesome-free/svgs/solid/comments.svg" w
 import faChevron from "@fortawesome/fontawesome-free/svgs/solid/chevron-down.svg" with { type: "text" };
 import faExternal from "@fortawesome/fontawesome-free/svgs/solid/up-right-from-square.svg" with { type: "text" };
 
-import { copyToClipboard } from "./clipboard.ts";
+import { copyWithFeedback } from "./copyFeedback.ts";
 import { iconSpan } from "./iconSpan.ts";
 import { stableEpisodePath } from "../shared/stableAudio.ts";
 
@@ -308,22 +308,14 @@ export function buildControl(cfg: ControlConfig): HTMLElement {
   menu.id = menuId;
   more.setAttribute("aria-controls", menuId);
 
-  let feedbackTimer: number | null = null;
-  function flashCopied(): void {
-    primary.classList.add("subctl-copied");
-    if (feedbackTimer !== null) window.clearTimeout(feedbackTimer);
-    feedbackTimer = window.setTimeout(() => {
-      primary.classList.remove("subctl-copied");
-      feedbackTimer = null;
-    }, FEEDBACK_MS);
-  }
+  const copyLink = copyWithFeedback("subctl-copied", FEEDBACK_MS);
 
   let busy = false;
   async function doCopy(text: string): Promise<void> {
     if (busy) return;
     busy = true;
     try {
-      if (await copyToClipboard(text)) flashCopied();
+      await copyLink(text, primary);
     } finally {
       busy = false;
     }

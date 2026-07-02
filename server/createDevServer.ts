@@ -42,17 +42,23 @@ import { OWN_LICENSE_FILENAME } from "../shared/servedLicense.ts";
 import { isValidFigureSrc, spdxHeader } from "../shared/figureSource.ts";
 import type { BlogPaths } from "../shared/blogPaths.ts";
 import { isPrivateBlog } from "../shared/blogPrivacy.ts";
-import { findFullAudioName, findManifestName } from "../shared/manifestFile.ts";
+import {
+  findFullAudioName,
+  findManifestName,
+  isContentHashedAsset,
+} from "../shared/manifestFile.ts";
 import {
   audioEtag,
-  episodeDownloadName,
   HASHED_AUDIO_RE,
-  ifNoneMatchSatisfied,
-  rangeHonored,
-  stableAudioHeaders,
   stableEpisodePath,
 } from "../shared/stableAudio.ts";
-import { isSha256Hex, reprDigestSha256 } from "../shared/audioDigest.ts";
+import { isSha256Hex } from "../shared/audioDigest.ts";
+import {
+  conditionalNotModified,
+  serveAsset,
+  stableEpisodeResponseHeaders,
+  type AssetSource,
+} from "./serveAsset.ts";
 
 /** Read a post's full audio SHA-256 (for Repr-Digest) from its manifest, or null. */
 async function readEpisodeDigest(dir: string): Promise<string | null> {
@@ -67,11 +73,6 @@ async function readEpisodeDigest(dir: string): Promise<string | null> {
     return null;
   }
 }
-import {
-  contentRangeHeader,
-  resolveRange,
-  unsatisfiedRangeHeader,
-} from "../shared/httpRange.ts";
 // Dev-only sound-test page. A static HTML bundle imported here (not in the
 // content repo's index.ts) because it's an engine surface, not blog content;
 // importing it from createDevServer keeps it out of the prod Worker bundle
@@ -256,32 +257,30 @@ export async function createDevServer(opts: DevServerOptions) {
       // comment store. `no-store` (not `no-cache`: we send no ETag/Last-Modified
       // validator to revalidate against). Refetch cost is nil on localhost.
       //
-      // The `Accept-Ranges`/range handling below lets the media element seek
-      // into (and start playing) large audio: without it a multi-MB track is
-      // served as one unbounded chunked stream with no length, which Chrome
-      // refuses to begin playing. NOTE: prod must implement the same `206`
-      // itself — the Workers `env.ASSETS` binding ignores `Range` and returns
-      // the whole file, which breaks seeking; see `applyRangeSupport` in
-      // createWorker.ts. Small files happened to work anyway because the
-      // browser buffers them whole. The parser is shared with the prod path
-      // via shared/httpRange.ts.
-      const isContentHashed =
-        /(^|\/)(full\.[0-9a-f]{16}\.[a-z0-9]+|manifest\.[0-9a-f]{16}\.json)$/i.test(safe);
+      // The ETag/Range/206/416/If-Range/304 orchestration below lives in
+      // server/serveAsset.ts — the single owner both this dev server and the
+      // prod Worker delegate to. NOTE: prod must implement the same `206`
+      // support itself because the Workers `env.ASSETS` binding ignores `Range`
+      // and returns the whole file, which breaks audio seeking; see
+      // `applyRangeSupport` in createWorker.ts, which wraps the same serveAsset
+      // to reach parity.
+      const isContentHashed = isContentHashedAsset(base); // D3: shared predicate
       // The stable `episode.<ext>` gets the revalidating policy (strong ETag +
-      // no-cache + CDN-Cache-Control) shared with prod; everything else keeps
-      // the immutable-vs-no-store split.
+      // no-cache + CDN-Cache-Control + Repr-Digest) shared with prod; everything
+      // else keeps the immutable-vs-no-store split.
       const baseHeaders: Record<string, string> = isEpisode
-        ? stableAudioHeaders(episodeEtag, episodeDownloadName(basename(dirname(safe)), extname(base)))
+        ? stableEpisodeResponseHeaders({
+            etag: episodeEtag,
+            slug: basename(dirname(safe)),
+            ext: extname(base),
+            digest: episodeDigest,
+          })
         : {
             "Cache-Control": isContentHashed
               ? "public, max-age=31536000, immutable"
               : "no-store",
             "Accept-Ranges": "bytes",
           };
-      // RFC 9530 representation digest on the stable URL (range-independent).
-      if (isEpisode && episodeDigest) {
-        baseHeaders["Repr-Digest"] = reprDigestSha256(episodeDigest);
-      }
       // The hashed audio representation names its stable URL as canonical
       // (RFC 8288 + RFC 6596) — mirrors the prod Worker (createWorker.ts);
       // path-relative URI, resolved against the request URI per RFC 8288.
@@ -289,46 +288,22 @@ export async function createDevServer(opts: DevServerOptions) {
         baseHeaders["Link"] = `<${stableEpisodePath(`/generated/${safe}`)}>; rel="canonical"`;
       }
       // Conditional GET on the stable URL → 304 (echoing the cache headers).
-      if (
-        isEpisode &&
-        ifNoneMatchSatisfied(req.headers.get("if-none-match"), episodeEtag)
-      ) {
-        return new Response(null, {
-          status: StatusCodes.NOT_MODIFIED,
-          headers: baseHeaders,
-        });
-      }
-      // Drop the Range for HEAD (→ the full 200 below; Bun strips the body but
-      // keeps Content-Length, RFC 9110 §9.3.2) and on an If-Range mismatch (so a
-      // mid-seek client can't stitch two versions across a regeneration).
-      const rangeHeader =
-        req.method === "HEAD" ||
-        (isEpisode && !rangeHonored(req.headers.get("if-range"), episodeEtag))
-          ? null
-          : req.headers.get("range");
-      const outcome = resolveRange(rangeHeader, size);
-      if (outcome.kind === "unsatisfiable") {
-        return new Response("range not satisfiable", {
-          status: StatusCodes.REQUESTED_RANGE_NOT_SATISFIABLE,
-          headers: {
-            ...baseHeaders,
-            "Content-Range": unsatisfiedRangeHeader(outcome.size),
-          },
-        });
-      }
-      if (outcome.kind === "satisfiable") {
-        const { start, end } = outcome;
-        return new Response(file.slice(start, end + 1), {
-          status: StatusCodes.PARTIAL_CONTENT,
-          headers: {
-            ...baseHeaders,
-            "Content-Range": contentRangeHeader(start, end, outcome.size),
-            "Content-Length": String(end - start + 1),
-          },
-        });
-      }
-      return new Response(file, {
-        headers: { ...baseHeaders, "Content-Length": String(size) },
+      // episodeEtag is null for non-episode assets ⇒ conditionalNotModified
+      // returns null (same as the old `isEpisode &&` guard).
+      const notMod = conditionalNotModified(req.headers, episodeEtag, baseHeaders);
+      if (notMod) return notMod;
+      const src: AssetSource = {
+        size,
+        slice: (s, e) => file.slice(s, e + 1), // Bun slice end is EXCLUSIVE
+        whole: () => file,
+      };
+      return serveAsset(src, {
+        method: req.method,
+        requestHeaders: req.headers,
+        headers: baseHeaders,
+        ifRange: isEpisode
+          ? { kind: "strong-etag", etag: episodeEtag }
+          : { kind: "ignore" },
       });
     };
   }
