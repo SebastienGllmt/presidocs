@@ -13,14 +13,14 @@ function required(name: string): string {
   return v;
 }
 
-export function getRedirectBase(): string {
+function getRedirectBase(): string {
   return (
     process.env.OAUTH_REDIRECT_BASE ??
     `http://localhost:${process.env.PORT ?? 3000}`
   );
 }
 
-export function redirectUri(provider: ProviderName): string {
+function redirectUri(provider: ProviderName): string {
   return `${getRedirectBase()}/auth/${provider}/callback`;
 }
 

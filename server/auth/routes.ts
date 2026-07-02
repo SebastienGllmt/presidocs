@@ -45,6 +45,7 @@ import {
   type CookieOpts,
 } from "./cookies.ts";
 import { problem } from "../../shared/problemDetails.ts";
+import { isProd } from "../../shared/isProd.ts";
 import type { Identity } from "../../shared/authSchemas.ts";
 
 // RFC 6749 §4.1.2.1 enumerates the legal `error` query values for the
@@ -76,10 +77,6 @@ function safeReturnTo(raw: string | null): string {
   if (!raw.startsWith("/")) return "/";
   if (raw.startsWith("//") || raw.startsWith("/\\")) return "/";
   return raw;
-}
-
-function isProd(): boolean {
-  return process.env.NODE_ENV === "production";
 }
 
 // The `__Host-` prefix pins the cookie to this exact origin: the browser

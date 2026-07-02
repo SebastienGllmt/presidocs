@@ -1030,7 +1030,7 @@ export class CommentStore {
 // `CommentStore.deriveOrigins` (production blobs are dep-closed — a
 // production-born change never depends on a localhost-born one — so the
 // subset applies cleanly on its own).
-export async function replayReplyIds(blobs: Uint8Array[]): Promise<string[]> {
+async function replayReplyIds(blobs: Uint8Array[]): Promise<string[]> {
   if (blobs.length === 0) return [];
   const automerge = await loadAutomerge();
   let doc = automerge.load<CommentDoc>(getSeedBytes(automerge));
