@@ -4,11 +4,11 @@
 //   GET /resolutions?post=X&thread=T       — fetch one body   (any user)
 //   PUT /resolutions?post=X&thread=T       — write one body   (author only)
 //
-// Errors are RFC 9457 problem+json; see commentsApi.ts for the
-// ApiError contract.
+// Built on the shared fetch scaffold in client/apiFetch.ts (ApiError,
+// problem+json wrapping, the GET-and-validate helper) — the same one
+// commentsApi.ts uses.
 
-import { ApiError } from "./commentsApi.ts";
-import { parseProblem } from "../shared/problemDetails.ts";
+import { ACCEPT, apiError, apiGetJson, apiUrl } from "./apiFetch.ts";
 import {
   ResolutionEnvelope as ResolutionEnvelopeSchema,
   ResolutionList,
@@ -24,32 +24,15 @@ import {
 export type ResolutionListEntry = ResolutionListEntryType;
 export type ResolutionEnvelope = ResolutionEnvelopeType;
 
-const ACCEPT = "application/json, application/problem+json";
-
 function resolutionsUrl(post: string, thread?: string): string {
-  const params = new URLSearchParams({ post });
-  if (thread !== undefined) params.set("thread", thread);
-  return `/resolutions?${params.toString()}`;
+  return apiUrl("/resolutions", { post, thread });
 }
 
-async function apiError(res: Response, op: string): Promise<ApiError> {
-  return new ApiError(res.status, await parseProblem(res), op);
-}
-
-export async function listResolutions(
-  post: string,
-): Promise<ResolutionListEntry[]> {
-  const res = await fetch(resolutionsUrl(post), {
-    credentials: "same-origin",
-    headers: { Accept: ACCEPT },
-  });
-  if (!res.ok) throw await apiError(res, "listResolutions");
-  const parsed = ResolutionList.safeParse(await res.json());
-  // A malformed listing is surfaced as an ApiError (status 200 — the request
-  // worked, the body didn't), falling into ResolutionStore.hydrate's existing
+export function listResolutions(post: string): Promise<ResolutionListEntry[]> {
+  // A malformed listing surfaces as a status-200 ApiError (see apiGetJson /
+  // invalidShape), falling into ResolutionStore.hydrate's existing
   // catch-and-skip rather than seeding the cache with garbage.
-  if (!parsed.success) throw new ApiError(200, null, "listResolutions (malformed response body)");
-  return parsed.data;
+  return apiGetJson(resolutionsUrl(post), "listResolutions", ResolutionList);
 }
 
 export async function getResolution(
