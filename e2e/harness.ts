@@ -33,12 +33,24 @@
 
 import { spawn, spawnSync, type Subprocess } from "bun";
 import { chromium, devices, type Browser, type BrowserContext, type BrowserType } from "playwright";
-import { existsSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { parseHTML } from "linkedom";
 import { mkdtemp, rm } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
-import { tmpdir } from "node:os";
-import { resolve, dirname } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
+import { homedir, tmpdir } from "node:os";
+import { relative, resolve, dirname } from "node:path";
 import { createSessionToken } from "../server/auth/session.ts";
 import { parseAuthorEmailFromHtml } from "../server/postMeta.ts";
 
@@ -191,10 +203,12 @@ async function freePort(): Promise<number> {
  * Locate the content repo to drive. The engine itself has no posts, so e2e
  * always runs against a content repo's dev server. Set PRESIDOCS_E2E_BLOG to
  * a real blog's path (a content repo's own e2e script does this); otherwise
- * the default target is the engine's own `templates/content-repo`, made
- * bootable on first use by {@link ensureFixtureBlog}. The fixture default is
- * what lets the engine's CI run the e2e tiers without any private content
- * repo (proposal 22 §3).
+ * the default target is a fixture *materialized into a scratch dir outside the
+ * repo* by {@link ensureFixtureBlog} (template tracked files + the committed
+ * `e2e/fixture-content/` overlay). The fixture default is what lets the
+ * engine's CI run the e2e tiers without any private content repo (proposal 22
+ * §3), and materializing off-repo is what keeps `git status` clean across a
+ * full e2e run (nothing bootstraps or builds inside `templates/`).
  */
 export function resolveBlogDir(): string {
   const fromEnv = process.env.PRESIDOCS_E2E_BLOG;
@@ -209,52 +223,32 @@ export function resolveBlogDir(): string {
 }
 
 /**
- * Materialize the engine's `templates/content-repo` as a bootable blog and
- * return its path. The committed template is content-only; what a real blog
- * gets from its one-time setup (README → Setup) the fixture creates lazily,
- * idempotently, and only inside the template directory (every product is
- * already in the template's .gitignore):
- *
- * - `engine` → `../..` — the symlink posts use for `../engine/client/...`
- *   asset references. Relative, so a moved checkout keeps working.
- * - `node_modules/` via `bun link` (registers the engine as linkable — the
- *   same one-time registration the README asks of a real blog) + `bun install`
- *   (resolves `"presidocs": "link:presidocs"` plus gsap/wrangler). Run only
- *   when `node_modules/presidocs` is missing, so steady-state calls cost two
- *   existsSync checks.
- * - `.env` + `.dev.vars` with a generated SESSION_SECRET — the dev server
- *   reads `.env` (Bun auto-loads it), `mintSessionCookie` reads `.dev.vars`,
- *   and the pair must agree for minted sessions to verify. An existing
- *   secret is reused so the two files never diverge across partial runs.
- *   `.env` also carries a fixture SITE_URL (RFC 2606-reserved host): a
- *   SITE_URL-less `bun run build` fails the post audit by design (no
- *   injected meta description), and setting it makes the fixture exercise
- *   the full discovery pipeline — structured data, feeds, share cards —
- *   the way every deployable repo does. Build-time only; the worker tiers
- *   serve from 127.0.0.1, so the baked SITE_HOST also exercises the
- *   off-canonical-host noindex path for free.
- *
+ * The public fixture blog, materialized into a scratch dir (see
+ * {@link materializeFixture}) and returned as an absolute path. Byte-identical
+ * to what {@link ensurePrivateFixtureBlog} does, minus the private posture.
  * CI can front-load the slow first install with `bun run e2e:fixture`.
  */
 export function ensureFixtureBlog(): string {
-  return ensureFixture("content-repo", {
+  return materializeFixture("blog", {
     SITE_URL: "https://fixture.example.com",
     // A published build (SITE_URL set) hard-fails audit-own-license.ts without a
     // declared content license; CODE_LICENSE silences its companion warning.
-    // The append-only convergence loop retrofits existing fixture .env files.
+    // The append-only convergence loop retrofits an existing fixture .env.
     CONTENT_LICENSE: "CC-BY-4.0",
     CODE_LICENSE: "MIT",
   });
 }
 
 /**
- * The PRIVATE fixture (`templates/private-content-repo`) — same bootstrap,
- * plus `BLOG_PRIVATE=1` so the build runs the discovery inversion +
- * `audit-private.ts` (methodology → Private blogs). Driven only by its own
- * tier (`e2e/privateBlog.ts`); never the `resolveBlogDir()` default.
+ * The PRIVATE fixture — the SAME public template materialized with the private
+ * overlay (`e2e/fixture-content/private-blog/`), `BLOG_PRIVATE=1`, and the
+ * structural `--private` build/deploy scripts (see {@link materializeFixture}
+ * step 5). That mix runs the discovery inversion + `audit-private.ts`
+ * (methodology → Private blogs). Driven only by its own tier
+ * (`e2e/privateBlog.ts`); never the `resolveBlogDir()` default.
  */
 export function ensurePrivateFixtureBlog(): string {
-  return ensureFixture("private-content-repo", {
+  return materializeFixture("private-blog", {
     SITE_URL: "https://private-fixture.example.com",
     BLOG_PRIVATE: "1",
     // See ensureFixtureBlog: audit-own-license.ts hard-fails a published build with
@@ -264,27 +258,178 @@ export function ensurePrivateFixtureBlog(): string {
   });
 }
 
-function ensureFixture(templateName: string, env: Record<string, string>): string {
-  const engineRoot = resolve(dirname(import.meta.dir)); // e2e/ -> engine root
-  const fixtureDir = join(engineRoot, "templates", templateName);
+type FixtureKind = "blog" | "private-blog";
 
-  if (!existsSync(join(fixtureDir, "engine"))) {
-    symlinkSync("../..", join(fixtureDir, "engine"));
+/**
+ * Scratch root for materialized fixtures: `PRESIDOCS_E2E_FIXTURE_ROOT`
+ * override, else `~/.cache/presidocs-e2e/<first 8 hex of sha256(engineRoot)>/`
+ * (D1). The hash keys multiple engine checkouts apart; XDG cache is the right
+ * home for regenerable install state — `os.tmpdir()` was rejected because a
+ * reboot/reaper wipe would force a full `bun install` re-run every time.
+ */
+export function fixtureRoot(): string {
+  const override = process.env.PRESIDOCS_E2E_FIXTURE_ROOT;
+  if (override) return resolve(override);
+  const engineRoot = resolve(dirname(import.meta.dir)); // e2e/ -> engine root
+  const key = createHash("sha256").update(engineRoot).digest("hex").slice(0, 8);
+  return join(homedir(), ".cache", "presidocs-e2e", key);
+}
+
+function isSymlink(p: string): boolean {
+  try {
+    return lstatSync(p).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/** Relative paths of every file under `root` (recursive), or [] if absent. */
+function listFilesRel(root: string): string[] {
+  if (!existsSync(root)) return [];
+  const out: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const abs = join(dir, entry.name);
+      if (entry.isDirectory()) walk(abs);
+      else out.push(relative(root, abs));
+    }
+  };
+  walk(root);
+  return out;
+}
+
+/**
+ * Materialize a bootable fixture blog into a scratch dir outside the engine
+ * repo and return its absolute path. This replaces the old in-place
+ * `templates/` bootstrap (the thing 1.4 kills): nothing here writes inside
+ * `templates/`, so a full `bun run test:e2e*` leaves `git status` clean by
+ * construction.
+ *
+ * The source is always the PUBLIC template `templates/content-repo` (D3 — even
+ * the private fixture builds from it) UNION the kind's committed overlay
+ * `e2e/fixture-content/<kind>/` (overlay wins on collision). Every real-blog
+ * setup product a copied repo makes — the `engine` symlink, `node_modules`, a
+ * generated `.env`/`.dev.vars` secret — the materializer creates lazily in the
+ * scratch dir instead. Concurrency: the wrangler tiers run sequentially (CI
+ * steps / `&&` chains), so no locking is needed.
+ */
+/**
+ * Per-process memo: a fixture is materialized ONCE per `bun test` process, and
+ * every later `resolveBlogDir()` in that process reuses it. This is what
+ * "always-fresh source" means — fresh per materialization run, where the test
+ * process is the run (matching the old idempotent `ensureFixture`). It is NOT a
+ * staleness short-circuit: a genuinely new run (a new process, e.g. the G6
+ * second `test:e2e:sw`) starts with an empty memo and re-copies from source,
+ * resetting a prior build's in-place `posts/*.html` rewrites. Memoizing also
+ * keeps a re-copy from firing mid-run under the live `bun --hot` dev server —
+ * the harness's cookie-minting beforeAll calls `resolveBlogDir()` a second time
+ * while the server is watching the fixture's files.
+ */
+const materializedFixtures = new Map<FixtureKind, string>();
+
+function materializeFixture(kind: FixtureKind, env: Record<string, string>): string {
+  const memo = materializedFixtures.get(kind);
+  if (memo) return memo;
+
+  const engineRoot = resolve(dirname(import.meta.dir)); // e2e/ -> engine root
+  const dir = join(fixtureRoot(), kind);
+  mkdirSync(dir, { recursive: true });
+
+  // 1. SOURCE SET. `git ls-files` is the copy filter: it never lists gitignored
+  //    residue (node_modules/dist/generated/…) and it tracks template file
+  //    deletions for the stale-file sweep. Path-strip the template prefix, then
+  //    union the overlay (overlay wins). Overlay is walked off disk so an
+  //    uncommitted overlay edit still reaches the next materialization.
+  const lsFiles = spawnSync(["git", "-C", engineRoot, "ls-files", "-z", "templates/content-repo"], {
+    cwd: engineRoot,
+  });
+  if (lsFiles.exitCode !== 0) {
+    throw new Error(
+      `\`git ls-files templates/content-repo\` failed (not a git checkout?):\n${lsFiles.stderr.toString()}\n` +
+        `Set PRESIDOCS_E2E_BLOG to a real content repo to bypass fixture materialization.`,
+    );
+  }
+  const templatePrefix = "templates/content-repo/";
+  const sources = new Map<string, string>(); // fixture-relative path -> absolute source
+  for (const path of lsFiles.stdout.toString().split("\0").filter(Boolean)) {
+    sources.set(path.slice(templatePrefix.length), join(engineRoot, path));
+  }
+  const overlayRoot = join(engineRoot, "e2e", "fixture-content", kind);
+  for (const rel of listFilesRel(overlayRoot)) {
+    sources.set(rel, join(overlayRoot, rel)); // overlay wins on collision
   }
 
-  if (!existsSync(join(fixtureDir, "node_modules", "presidocs"))) {
+  // 2. Stale-file sweep + always-copy. `.fixture-manifest.json` records the rel
+  //    paths the previous run copied; delete the ones that dropped out of the
+  //    source set (a template/overlay file was removed), then ALWAYS copy the
+  //    full new set — always-fresh source is the point (a prior build's managed
+  //    `<script>`-tag rewrites in posts/*.html get reset every run). Only
+  //    manifest-listed paths are ever deleted, so gitignored products in `dir`
+  //    (node_modules, dist, .generated, .wrangler, .env, .dev.vars, bun.lock)
+  //    survive untouched.
+  const manifestPath = join(dir, ".fixture-manifest.json");
+  const prev: string[] = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, "utf8")) : [];
+  const next = [...sources.keys()].sort();
+  const nextSet = new Set(next);
+  for (const rel of prev) {
+    if (!nextSet.has(rel)) rmSync(join(dir, rel), { force: true });
+  }
+  for (const [rel, src] of sources) {
+    const dest = join(dir, rel);
+    mkdirSync(dirname(dest), { recursive: true });
+    copyFileSync(src, dest);
+  }
+  writeFileSync(manifestPath, JSON.stringify(next, null, 2) + "\n");
+
+  // 3. engine symlink — ABSOLUTE target (the scratch dir is outside the repo, so
+  //    a relative `../..` wouldn't resolve). Relink if a moved checkout left it
+  //    pointing elsewhere.
+  const engineLink = join(dir, "engine");
+  let linkOk = false;
+  if (isSymlink(engineLink)) {
+    try {
+      linkOk = readlinkSync(engineLink) === engineRoot;
+    } catch {
+      linkOk = false;
+    }
+    if (!linkOk) unlinkSync(engineLink);
+  }
+  if (!linkOk) symlinkSync(engineRoot, engineLink);
+
+  // 4. node_modules via `bun link` (registers the engine as linkable) +
+  //    `bun install` (resolves `"presidocs": "link:presidocs"` plus
+  //    gsap/wrangler). Guarded on `node_modules/presidocs`, so steady-state
+  //    calls cost one existsSync.
+  if (!existsSync(join(dir, "node_modules", "presidocs"))) {
     const link = spawnSync(["bun", "link"], { cwd: engineRoot });
     if (link.exitCode !== 0) {
       throw new Error(`\`bun link\` in ${engineRoot} failed:\n${link.stderr.toString()}`);
     }
-    const install = spawnSync(["bun", "install"], { cwd: fixtureDir });
+    const install = spawnSync(["bun", "install"], { cwd: dir });
     if (install.exitCode !== 0) {
-      throw new Error(`\`bun install\` in ${fixtureDir} failed:\n${install.stderr.toString()}`);
+      throw new Error(`\`bun install\` in ${dir} failed:\n${install.stderr.toString()}`);
     }
   }
 
-  const envFile = join(fixtureDir, ".env");
-  const devVarsFile = join(fixtureDir, ".dev.vars");
+  // 5. Private posture is STRUCTURAL, not env-only (the 1.1 blocker fix): patch
+  //    the copied public package.json so build/deploy carry --private. Re-applied
+  //    every run because step 2 re-copies the public package.json each time.
+  if (kind === "private-blog") {
+    const pkgPath = join(dir, "package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+    pkg.scripts.build = "bun engine/generate/build.ts --private";
+    pkg.scripts.deploy = "bun engine/generate/deploy.ts --private";
+    writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+  }
+
+  // 6. .env + .dev.vars with a generated SESSION_SECRET — the dev server reads
+  //    `.env` (Bun auto-loads it), `mintSessionCookie` reads `.dev.vars`, and
+  //    the pair must agree for minted sessions to verify. An existing secret is
+  //    reused so the two files never diverge across partial runs. `.env` also
+  //    carries a fixture SITE_URL (RFC 2606-reserved host) so the build
+  //    exercises the full discovery pipeline the way every deployable repo does.
+  const envFile = join(dir, ".env");
+  const devVarsFile = join(dir, ".dev.vars");
   if (!existsSync(envFile) || !existsSync(devVarsFile)) {
     const existing = [envFile, devVarsFile]
       .filter((f) => existsSync(f))
@@ -293,19 +438,20 @@ function ensureFixture(templateName: string, env: Record<string, string>): strin
     const secret = existing ?? randomBytes(48).toString("base64");
     for (const f of [envFile, devVarsFile]) {
       if (!existsSync(f)) {
-        writeFileSync(f, `# generated by e2e/harness.ts ensureFixture()\nSESSION_SECRET=${secret}\n`);
+        writeFileSync(f, `# generated by e2e/harness.ts materializeFixture()\nSESSION_SECRET=${secret}\n`);
       }
     }
   }
-  // Converge an older bootstrap's `.env` (append-only, so a hand-edited value
-  // is never overwritten).
+  // Converge an older materialization's `.env` (append-only, so a hand-edited
+  // value is never overwritten).
   for (const [key, value] of Object.entries(env)) {
     if (!new RegExp(`^${key}\\s*=`, "m").test(readFileSync(envFile, "utf8"))) {
       writeFileSync(envFile, readFileSync(envFile, "utf8") + `${key}=${value}\n`);
     }
   }
 
-  return fixtureDir;
+  materializedFixtures.set(kind, dir);
+  return dir;
 }
 
 function join(...parts: string[]): string {

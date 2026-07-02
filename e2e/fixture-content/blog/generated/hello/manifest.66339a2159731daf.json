@@ -1,0 +1,66 @@
+{
+  "slug": "hello",
+  "generatedAt": "2026-06-13T00:26:17.725Z",
+  "audio": "/generated/hello/full.10516d064ad2074a.mp3",
+  "audioDigest": "10516d064ad2074aeae067a0bdd365ccd1d3e3e9324bf5373b352274b408f502",
+  "provenance": {
+    "tts": "espeak-ng",
+    "voice": "en-us",
+    "aligner": null,
+    "alignLanguage": null,
+    "mock": true
+  },
+  "duration": 44167,
+  "chapters": [
+    {
+      "id": "intro",
+      "title": "Welcome",
+      "startTime": 0,
+      "endTime": 13700
+    },
+    {
+      "id": "how",
+      "title": "How it fits together",
+      "startTime": 13900,
+      "endTime": 44167
+    }
+  ],
+  "marks": [
+    {
+      "name": "title",
+      "time": 0,
+      "chapter": "intro",
+      "text": "Hi, and welcome to the first post on this blog."
+    },
+    {
+      "name": "lede",
+      "time": 3783,
+      "chapter": "intro",
+      "text": "This page is running on a shared engine — the same one that powers the presidocs blog — but all of its content lives in a completely separate repository."
+    },
+    {
+      "name": "how-heading",
+      "time": 13900,
+      "chapter": "how",
+      "text": "So how does that work?"
+    },
+    {
+      "name": "how-body",
+      "time": 16017,
+      "chapter": "how",
+      "text": "The engine is a file dependency. The player you're listening to, the commenting system, and the build pipeline all come from it. This repo only holds posts, figures, and a little configuration."
+    },
+    {
+      "name": "figure",
+      "time": 27134,
+      "chapter": "how",
+      "text": "Watch the dot to the side — it's a figure defined right here in this repo, pulsing in time with the narration to prove that custom, content-owned animations work across the engine boundary."
+    },
+    {
+      "name": "closing",
+      "time": 38584,
+      "chapter": "how",
+      "text": "That's the whole idea: write content here, let the engine do the rest. Thanks for listening!"
+    }
+  ]
+}

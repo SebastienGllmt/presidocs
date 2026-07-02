@@ -1,12 +1,8 @@
 # dependencies
 node_modules
-# the lockfile a copied blog generates is its own to commit; here the template
-# doubles as the engine's e2e fixture (e2e/harness.ts ensureFixtureBlog), whose
-# `bun install` must not dirty the engine's tree
-bun.lock
 
-# the symlink to the engine checkout (created per-machine — README → Setup —
-# or by the e2e fixture bootstrap)
+# the per-machine symlink to the engine checkout (created by README → Setup:
+# `ln -sfn ../presidocs engine`)
 engine
 
 # output

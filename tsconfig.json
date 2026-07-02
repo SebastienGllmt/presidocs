@@ -27,8 +27,9 @@
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
   },
-  // The starter templates import `presidocs/...` and `./.generated/...`
-  // paths that only resolve once they've been copied into a consumer repo
-  // (or bootstrapped as e2e fixtures) — they can't typecheck where they live.
-  "exclude": ["templates/content-repo", "templates/private-content-repo"]
+  // The starter templates and the e2e fixture overlay import `presidocs/...`,
+  // `../engine/...`, and `./.generated/...` paths that only resolve once
+  // they've been materialized into a consumer repo (the fixture scratch dir) —
+  // they can't typecheck where they live.
+  "exclude": ["templates/content-repo", "templates/private-content-repo", "e2e/fixture-content"]
 }
