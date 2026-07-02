@@ -29,23 +29,14 @@
 // Idempotent: re-running install is a no-op (each block is tagged with
 // `data-figure-id-copy` / `data-paragraph-id-copy="installed"`).
 
-import { copyToClipboard } from "./clipboard.ts";
+import { copyWithFeedback } from "./copyFeedback.ts";
 import { fetchPostVersion } from "./postVersion.ts";
 
 // How long the "Copied" feedback (green id + trailing check) stays visible
 // after a successful copy. Matches the segment-id label's window in narrator.ts.
 const FEEDBACK_MS = 1000;
 
-let activeFeedbackTimer: number | null = null;
-
-function flashCopied(label: HTMLButtonElement): void {
-  label.classList.add("is-copied");
-  if (activeFeedbackTimer !== null) window.clearTimeout(activeFeedbackTimer);
-  activeFeedbackTimer = window.setTimeout(() => {
-    label.classList.remove("is-copied");
-    activeFeedbackTimer = null;
-  }, FEEDBACK_MS);
-}
+const copyId = copyWithFeedback("is-copied", FEEDBACK_MS);
 
 function buildLabel(id: string, kind: "figure" | "paragraph"): HTMLButtonElement {
   const label = document.createElement("button");
@@ -76,9 +67,7 @@ function buildLabel(id: string, kind: "figure" | "paragraph"): HTMLButtonElement
   label.title = `Copy ${kind} id (${id})`;
   label.setAttribute("aria-label", `Copy ${kind} id ${id}`);
   label.addEventListener("click", () => {
-    void copyToClipboard(id).then((ok) => {
-      if (ok) flashCopied(label);
-    });
+    void copyId(id, label);
   });
   return label;
 }
