@@ -117,7 +117,7 @@ export class SelectionBar {
     }
     // Ignore selections originating inside our own UI (column / cards / menu).
     if (this.sys.column?.contains(range.startContainer)) return null;
-    if (this.sys.menuEl?.contains(range.startContainer)) return null;
+    if (this.sys.menu.menuEl?.contains(range.startContainer)) return null;
     const startBlock = this.blockForNode(range.startContainer);
     const endBlock = this.blockForNode(range.endContainer);
     if (!startBlock || !endBlock || startBlock.context !== endBlock.context) {

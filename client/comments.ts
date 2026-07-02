@@ -46,14 +46,9 @@ import { aggregateOtherReaders } from "./commentsAggregator.ts";
 import { CommentPolling } from "./commentsPolling.ts";
 import { ResolutionStore } from "./resolutionsStore.ts";
 import { compareSegmentHashes } from "./commentsStale.ts";
-import {
-  loadHighlightsHidden,
-  saveHighlightsHidden,
-} from "./commentsDom.ts";
 import { scrollBehavior, uid } from "./comments/util.ts";
 import {
   anchorNameForText,
-  anchorNameForGraphic,
   unwrap,
   wrapRangeInBlock,
 } from "./comments/highlights.ts";
@@ -66,11 +61,13 @@ import {
   BlockIndex,
   requestDrawerBody,
 } from "./comments/blockIndex.ts";
-import { SelectionBar, type SelectionCapture } from "./comments/selectionBar.ts";
+import { SelectionBar } from "./comments/selectionBar.ts";
 import { DraftManager } from "./comments/draftManager.ts";
 import { VersionBanner } from "./comments/versionBanner.ts";
 import { UnresolvedNav } from "./comments/unresolvedNav.ts";
 import { CardRenderer } from "./comments/cards.ts";
+import { FigureTriggers } from "./comments/figureTriggers.ts";
+import { MobileMenu } from "./comments/mobileMenu.ts";
 
 // Build-time define (Bun.build `define` map) — `undefined` under the fast
 // `bun run dev` server, `"false"` in built/dev:edge/prod. Used only to gate
@@ -112,6 +109,10 @@ export class CommentSystem {
   readonly unresolvedNav = new UnresolvedNav(this);
   // Card rendering (preview + replies + composer/mutation routing). Inert.
   readonly cards = new CardRenderer(this);
+  // Per-figure comment triggers + indicator badges. Constructed inert.
+  readonly figures = new FigureTriggers(this);
+  // Mobile button + one-menu popover + highlight-toggle. Constructed inert.
+  readonly menu = new MobileMenu(this);
 
   articleRoot: HTMLElement | null = null;
 
@@ -157,33 +158,13 @@ export class CommentSystem {
   // tap-outside (driven by the card's native `toggle` event so the
   // platform's light-dismiss and ESC stay in sync with our state).
   activeCardId: string | null = null;
-  // Mobile-only: the single small top-right button — the only
-  // comments chrome at rest. Tapping it opens `menuEl`; it pulses while a
-  // selection is held (the "comment on what you selected" cue) and carries a
-  // thread-count badge.
-  private commentsBtn: HTMLButtonElement | null = null;
-  private commentsBtnCount: HTMLElement | null = null;
-  // The one menu popover the button opens — identity / sign-in / compose-entry
-  // / highlight-toggle. Threads and drafts use their own `.cmt-card` popovers
-  // (re-anchored under the button on mobile), so the menu only hosts the
-  // non-thread surfaces; visually they all drop down from the same place.
-  menuEl: HTMLElement | null = null;
-  // The article-text selection captured at button-press time (pointerdown,
-  // before the tap collapses it), so "Leave comment on selection" targets what
-  // the reader had selected when they reached for the button. Null when the
-  // button was pressed with no live selection. Consumed by `composeFromMenu`.
-  private menuComposeCapture: SelectionCapture | null = null;
-  // Highlight-visibility state, mirrored on `body.cmt-highlights-hidden`.
-  // Toggled from a menu item on mobile (was the FAB's one-tap job).
-  private highlightsHidden = false;
-
   // Desktop-only: id of the thread most recently focused via a
   // highlight or graphic-indicator click. A second consecutive click
   // on the same anchor toggles its card hidden. Reset on explicit
   // Hide/Resolve/Cancel, on clicks that brought a hidden card back
   // (so the user gets one tap to navigate before the next would
   // re-hide), and on focusing a different anchor.
-  private lastFocusedThreadId: string | null = null;
+  lastFocusedThreadId: string | null = null;
 
   // Header in the column showing "Signed in as ..." or the login pane
   // when not authenticated. Rendered once at init, re-rendered on
@@ -255,9 +236,9 @@ export class CommentSystem {
 
     this.mountColumn();
     this.selection.mountActionBar();
-    this.mountCommentsButton();
-    this.mountMenu();
-    this.installGraphicTriggers();
+    this.menu.mountCommentsButton();
+    this.menu.mountMenu();
+    this.figures.installGraphicTriggers();
     this.renderIdentityHeader();
 
     // Track mobile mode via a MediaQueryList. The `change` event
@@ -271,7 +252,7 @@ export class CommentSystem {
       this.isMobile = e.matches;
       if (!this.isMobile) {
         this.setActiveCard(null);
-        this.hideMenu();
+        this.menu.hideMenu();
         document.body.classList.remove("cmt-has-selection");
       }
       // Cards built for the previous breakpoint either have or lack
@@ -481,201 +462,6 @@ export class CommentSystem {
     card.querySelector<HTMLTextAreaElement>(".cmt-reply-input")?.focus({ preventScroll: true });
   }
 
-  // ===== Mobile button + menu (methodology → Comments → Responsive) =====
-
-  // The one small top-right button. Mobile-only (CSS hides it ≥1100px, where
-  // the column is the affordance). Tapping it opens the menu; pressing it also
-  // captures the live selection (before the tap collapses it) so the menu can
-  // offer "Leave comment on selection".
-  private mountCommentsButton(): void {
-    // Read the persisted highlight-visibility pref (now toggled from a menu
-    // item) via the pure helper — handles unavailable / throwing storage.
-    this.highlightsHidden = loadHighlightsHidden(
-      typeof localStorage !== "undefined" ? localStorage : null,
-    );
-
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "cmt-comments-btn";
-    btn.setAttribute("aria-label", "Comments");
-    btn.setAttribute("aria-haspopup", "menu");
-    btn.setAttribute("aria-expanded", "false");
-    btn.innerHTML =
-      '<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">' +
-      '<path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H8l-4 4V6a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
-    const count = document.createElement("span");
-    count.className = "cmt-comments-btn-count";
-    count.hidden = true;
-    btn.appendChild(count);
-    // Capture the selection on pointerdown — the EARLIEST point at which the
-    // text the reader selected is still present (the tap that follows collapses
-    // it). Without this the menu would always open with nothing to comment on.
-    btn.addEventListener("pointerdown", () => {
-      this.menuComposeCapture = this.selection.captureSelection();
-    });
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      // Keyboard fallback: pointerdown doesn't fire for Enter/Space activation,
-      // but tabbing to the button doesn't collapse the document selection, so
-      // capture it here if pointerdown didn't (and don't clobber a good touch
-      // capture, which the collapsing tap would have turned into null).
-      if (!this.menuComposeCapture) this.menuComposeCapture = this.selection.captureSelection();
-      this.toggleMenu();
-    });
-    document.body.appendChild(btn);
-    this.commentsBtn = btn;
-    this.commentsBtnCount = count;
-    this.applyHighlightsHidden();
-  }
-
-  private mountMenu(): void {
-    const menu = document.createElement("div");
-    menu.className = "cmt-menu";
-    menu.setAttribute("role", "menu");
-    menu.setAttribute("aria-label", "Comments");
-    menu.popover = "auto";
-    // Anchor under the button (see the mobile `:popover-open` rule).
-    menu.style.setProperty("position-anchor", "--cmt-comments-btn");
-    // Keep the button's aria-expanded in sync with platform-driven dismissal
-    // (light-dismiss / ESC) as well as our own toggle.
-    menu.addEventListener("toggle", (e) => {
-      const open = (e as ToggleEvent).newState === "open";
-      this.commentsBtn?.setAttribute("aria-expanded", String(open));
-      if (!open) this.menuComposeCapture = null;
-    });
-    document.body.appendChild(menu);
-    this.menuEl = menu;
-  }
-
-  private toggleMenu(): void {
-    const menu = this.menuEl;
-    if (!menu) return;
-    if (menu.matches(":popover-open")) {
-      menu.hidePopover();
-      return;
-    }
-    this.renderMenu();
-    menu.showPopover();
-  }
-
-  private hideMenu(): void {
-    if (this.menuEl?.matches(":popover-open")) this.menuEl.hidePopover();
-  }
-
-  // Populate the menu for the current identity + captured selection. Modes:
-  //  - signed out → sign-in only (provider buttons + privacy notice). We do NOT
-  //    show a "Leave comment on selection" entry here: it could only route to
-  //    the sign-in that's already shown (we can't pre-pick the account), so it
-  //    would be a redundant second control. The pitch reflects the intent
-  //    instead ("Sign in to leave your comment…").
-  //  - signed in  → "Signed in as X" + sign out + highlight toggle, plus a
-  //    primary "Leave comment on selection" entry when a selection was captured.
-  private renderMenu(): void {
-    const m = this.menuEl;
-    if (!m) return;
-    m.innerHTML = "";
-
-    // Compose-entry first when the reader pressed the button mid-selection —
-    // signed-in only (see the mode note above).
-    if (this.identity && this.menuComposeCapture) {
-      const compose = document.createElement("button");
-      compose.type = "button";
-      compose.className = "cmt-menu-item cmt-menu-item-primary";
-      compose.setAttribute("role", "menuitem");
-      compose.innerHTML =
-        '<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">' +
-        '<path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H8l-4 4V6a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>' +
-        "<span>Leave comment on selection</span>";
-      compose.addEventListener("click", () => this.composeFromMenu());
-      m.appendChild(compose);
-      const snippet = document.createElement("span");
-      snippet.className = "cmt-menu-snippet";
-      snippet.textContent = `“${this.menuComposeCapture.range.toString().trim().slice(0, 80)}”`;
-      m.appendChild(snippet);
-      m.appendChild(document.createElement("hr"));
-    }
-
-    if (this.identity) {
-      const row = document.createElement("div");
-      row.className = "cmt-menu-identity";
-      row.appendChild(buildAvatar(this.identity.picture, this.identity.name ?? this.identity.email));
-      const name = document.createElement("span");
-      name.className = "cmt-menu-name";
-      name.textContent = this.identity.name ?? this.identity.email;
-      name.title = this.identity.email;
-      row.appendChild(name);
-      m.appendChild(row);
-
-      if (!this.menuComposeCapture) {
-        const hint = document.createElement("p");
-        hint.className = "cmt-menu-hint";
-        hint.textContent = "Select text in the article, then tap this button to comment on it.";
-        m.appendChild(hint);
-      }
-
-      m.appendChild(document.createElement("hr"));
-
-      // Highlight-visibility toggle (folded in from the old FAB).
-      const toggle = document.createElement("button");
-      toggle.type = "button";
-      toggle.className = "cmt-menu-item";
-      toggle.setAttribute("role", "menuitemcheckbox");
-      toggle.setAttribute("aria-checked", String(!this.highlightsHidden));
-      toggle.textContent = this.highlightsHidden
-        ? "Show comment highlights"
-        : "Hide comment highlights";
-      toggle.addEventListener("click", () => {
-        this.setHighlightsHidden(!this.highlightsHidden);
-        this.renderMenu();
-      });
-      m.appendChild(toggle);
-
-      const out = document.createElement("button");
-      out.type = "button";
-      out.className = "cmt-menu-item";
-      out.setAttribute("role", "menuitem");
-      out.textContent = "Sign out";
-      out.addEventListener("click", () => signOut());
-      m.appendChild(out);
-    } else {
-      const pitch = document.createElement("p");
-      pitch.className = "cmt-identity-pitch";
-      pitch.textContent = this.menuComposeCapture
-        ? "Sign in to leave your comment — so I can reply by email."
-        : "Sign in to comment — so I can reply by email.";
-      m.appendChild(pitch);
-      const buttons = document.createElement("div");
-      buttons.className = "cmt-identity-providers";
-      buttons.appendChild(buildProviderLink("google", "Sign in with Google"));
-      buttons.appendChild(buildProviderLink("microsoft", "Sign in with Microsoft"));
-      m.appendChild(buttons);
-      m.appendChild(buildPrivacyNotice());
-    }
-  }
-
-  // "Leave comment on selection" tapped. Promote the captured selection to the
-  // pending range and open a draft, exactly as the desktop action bar does. The
-  // entry is signed-in only (renderMenu), so `!identity` is just a guard.
-  private composeFromMenu(): void {
-    const cap = this.menuComposeCapture;
-    if (!cap || !this.identity) return;
-    this.selection.pendingRange = cap.range;
-    this.selection.pendingStartBlock = cap.startBlock;
-    this.selection.pendingEndBlock = cap.endBlock;
-    this.menuComposeCapture = null;
-    this.hideMenu();
-    this.draftMgr.addDraftForSelection();
-  }
-
-  // Mobile: set the thread-count badge on the button. No-op visual on desktop
-  // (the button is hidden there).
-  private updateCommentsBtnCount(n: number): void {
-    const el = this.commentsBtnCount;
-    if (!el) return;
-    el.textContent = String(n);
-    el.hidden = n <= 0;
-  }
-
   // Point a card at the right anchor for the current layout: desktop anchors to
   // its own highlight/graphic (`top: anchor(top)`); mobile anchors under the
   // button so it drops down as part of the one menu surface.
@@ -686,28 +472,6 @@ export class CommentSystem {
       const own = card.dataset.anchorName;
       if (own) card.style.setProperty("position-anchor", own);
     }
-  }
-
-  private setHighlightsHidden(hidden: boolean): void {
-    this.highlightsHidden = hidden;
-    if (typeof localStorage !== "undefined") {
-      // Persist via the pure helper. The fire-and-forget API matches the
-      // capture-controls pattern in narrator.ts: in-memory state is
-      // authoritative for the live session; storage is the next-page-load
-      // contract.
-      saveHighlightsHidden(localStorage, hidden);
-    }
-    this.applyHighlightsHidden();
-    // Dismiss any popover when hiding — otherwise the overlay
-    // remains on top of the dimmed article, which looks broken.
-    if (hidden && this.activeCardId) this.setActiveCard(null);
-  }
-
-  private applyHighlightsHidden(): void {
-    document.body.classList.toggle(
-      "cmt-highlights-hidden",
-      this.highlightsHidden,
-    );
   }
 
   // ===== Column =====
@@ -961,9 +725,9 @@ export class CommentSystem {
       this.lastFocusedThreadId = null;
     }
 
-    this.updateGraphicIndicators();
+    this.figures.updateGraphicIndicators();
     this.unresolvedNav.renderUnresolvedCount();
-    this.updateCommentsBtnCount(
+    this.menu.updateCommentsBtnCount(
       this.snapshot.filter((t) => !this.threadIsResolved(t)).length,
     );
     this.adjustCardStacking();
@@ -1400,114 +1164,6 @@ export class CommentSystem {
       const start = isFirst ? parts.startOffset : 0;
       const end = isLast ? parts.endOffset : fullLen;
       wrapRangeInBlock(block.element, start, end, thread.id);
-    }
-  }
-
-  // ===== Graphics: hover trigger =====
-
-  private installGraphicTriggers() {
-    for (const [gid, el] of this.index.graphicsById) {
-      // Stamp the graphic root as a CSS anchor so cards on this
-      // graphic can `position-anchor` to it without JS layout math.
-      el.style.setProperty("anchor-name", anchorNameForGraphic(gid));
-
-      // The "+" button (visible on hover) → creates a new draft. Only
-      // mounted when logged in; without identity the comment-creation
-      // path is fully closed off (mirrors the action-bar gate above).
-      let btn: HTMLButtonElement | null = null;
-      if (this.identity) {
-        btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "cmt-graphic-btn";
-        btn.setAttribute("aria-label", "Comment on this graphic");
-        btn.innerHTML =
-          '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
-          '<path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H8l-4 4V6a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
-        btn.addEventListener("click", (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          this.draftMgr.addDraftForGraphic(el);
-        });
-      }
-
-      // Indicator badge (always visible when >0 threads on this graphic).
-      // Click = unhide any hidden cards for the graphic, then scroll to
-      // the first one. Mirrors the "click the highlight to bring text
-      // threads back" affordance.
-      const ind = document.createElement("button");
-      ind.type = "button";
-      ind.className = "cmt-graphic-indicator";
-      ind.hidden = true; // updateGraphicIndicators() shows it when threads exist
-      ind.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const gid = el.dataset.commentGraphicId;
-        if (!gid) return;
-        const matching = this.snapshot.filter(
-          (t) => !this.threadIsResolved(t)
-            && !isTextTarget(t.target)
-            && graphicTargetId(t.target) === gid,
-        );
-        let didUnhide = false;
-        for (const t of matching) {
-          if (this.hiddenCardIds.has(t.id)) {
-            this.hiddenCardIds.delete(t.id);
-            didUnhide = true;
-          }
-        }
-        if (didUnhide) this.renderAll();
-        const first = matching[0];
-        if (!first) return;
-        if (this.isMobile) {
-          // Same toggle behavior as the text-highlight tap: a second
-          // tap on the same indicator closes the popover.
-          if (this.activeCardId === first.id) {
-            this.setActiveCard(null);
-          } else {
-            this.setActiveCard(first.id);
-          }
-        } else {
-          // Desktop toggle (mirrors the highlight-click path):
-          // navigate on first click, hide on the second.
-          if (didUnhide) {
-            this.scrollCardIntoView(first.id);
-            this.lastFocusedThreadId = first.id;
-          } else if (this.lastFocusedThreadId === first.id) {
-            this.hiddenCardIds.add(first.id);
-            this.lastFocusedThreadId = null;
-            this.renderAll();
-          } else {
-            this.scrollCardIntoView(first.id);
-            this.lastFocusedThreadId = first.id;
-          }
-        }
-      });
-
-      const cs = getComputedStyle(el);
-      if (cs.position === "static") el.style.position = "relative";
-      if (btn) el.appendChild(btn);
-      el.appendChild(ind);
-    }
-  }
-
-  // Keep each graphic's indicator badge in sync with the thread count.
-  // Called from renderAll so it stays correct after submits / deletes.
-  private updateGraphicIndicators() {
-    for (const [gid, el] of this.index.graphicsById) {
-      const count = this.snapshot.filter(
-        (t) => !this.threadIsResolved(t)
-          && !isTextTarget(t.target)
-          && graphicTargetId(t.target) === gid,
-      ).length;
-      const ind = el.querySelector<HTMLElement>(".cmt-graphic-indicator");
-      if (!ind) continue;
-      if (count > 0) {
-        ind.textContent = String(count);
-        ind.title = `${count} comment${count === 1 ? "" : "s"} on this graphic`;
-        ind.hidden = false;
-      } else {
-        ind.hidden = true;
-      }
     }
   }
 
