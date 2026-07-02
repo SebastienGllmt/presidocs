@@ -37,25 +37,21 @@ import { handlePostVersionRequest } from "./postVersionsRoute.ts";
 import { buildOpenApiDocument } from "./openapi.ts";
 import { handleAnalyticsRequest } from "./analyticsRoute.ts";
 import { withNoindexOffCanonicalHost, withSecurityHeaders } from "./securityHeaders.ts";
-import {
-  contentRangeHeader,
-  isResolvableRangeHeader,
-  resolveRange,
-  unsatisfiedRangeHeader,
-} from "../shared/httpRange.ts";
+import { isResolvableRangeHeader } from "../shared/httpRange.ts";
 import { problem } from "../shared/problemDetails.ts";
 import {
   audioEtag,
-  episodeDownloadName,
   HASHED_AUDIO_RE,
-  ifNoneMatchSatisfied,
-  rangeHonored,
-  stableAudioHeaders,
   stableEpisodePath,
   stableEpisodeSlug,
 } from "../shared/stableAudio.ts";
-import { isSha256Hex, reprDigestSha256 } from "../shared/audioDigest.ts";
 import { isContentHashedAsset } from "../shared/manifestFile.ts";
+import {
+  conditionalNotModified,
+  serveAsset,
+  stableEpisodeResponseHeaders,
+  type IfRangePolicy,
+} from "./serveAsset.ts";
 
 // The two build-time maps, supplied by the content repo's `worker.ts` from its
 // own `.generated/` directory. Structural types (not the engine's `PostMeta` /
@@ -102,8 +98,13 @@ export type WorkerContent = {
 // non-range requests pass straight through (we only add `Accept-Ranges` so
 // the media element knows it *may* seek). Range parsing lives in
 // shared/httpRange.ts, shared with the dev path.
-async function applyRangeSupport(req: Request, res: Response): Promise<Response> {
-  // Only meaningful for a successful, bodied GET. ASSETS returns 200 for hits.
+async function applyRangeSupport(
+  req: Request,
+  res: Response,
+  ifRange: IfRangePolicy = { kind: "ignore" },
+): Promise<Response> {
+  // Only meaningful for a successful, bodied GET; non-200 (binding 304/404)
+  // passes through untouched. ASSETS returns 200 for hits.
   if (res.status !== 200 || (req.method !== "GET" && req.method !== "HEAD")) {
     return res;
   }
@@ -118,42 +119,24 @@ async function applyRangeSupport(req: Request, res: Response): Promise<Response>
       headers,
     });
   }
-
-  // Skip buffering if the header is unparseable — same posture as before the
-  // shared-parser refactor: a request we can't slice gets the original 200
-  // back, body untouched.
+  // D2 preserved: an unparseable Range gets the original 200 back, unbuffered —
+  // same posture as before the shared-parser refactor.
   if (!isResolvableRangeHeader(range)) return res;
 
+  // Satisfy the range by buffering the (cached, fast-to-read) asset and handing
+  // it to the shared serving engine, which owns 206/416/If-Range shaping. The
+  // 416 gains policy headers here (D1) vs the old fresh-Response 416.
   const buf = new Uint8Array(await res.arrayBuffer());
-  const outcome = resolveRange(range, buf.byteLength);
   const headers = new Headers(res.headers);
   headers.set("Accept-Ranges", "bytes");
-
-  if (outcome.kind === "none") {
-    // Zero-size asset that nonetheless had a parseable Range — match the
-    // pre-refactor "let the full 200 stand" branch.
-    return new Response(buf, {
-      status: res.status,
-      statusText: res.statusText,
-      headers,
-    });
-  }
-  if (outcome.kind === "unsatisfiable") {
-    // Per RFC 9110 §15.5.17, the 416 SHOULD carry Content-Range with
-    // the selected representation's size. The body is `about:blank`
-    // (problem details §4: generic status-code-only).
-    const res = problem(StatusCodes.REQUESTED_RANGE_NOT_SATISFIABLE, "about:blank");
-    res.headers.set("Content-Range", unsatisfiedRangeHeader(outcome.size));
-    return res;
-  }
-  const { start, end, size } = outcome;
-  headers.set("Content-Range", contentRangeHeader(start, end, size));
-  headers.set("Content-Length", String(end - start + 1));
-  return new Response(buf.subarray(start, end + 1), {
-    status: StatusCodes.PARTIAL_CONTENT,
-    statusText: "Partial Content",
-    headers,
-  });
+  return serveAsset(
+    {
+      size: buf.byteLength,
+      slice: (s, e) => buf.subarray(s, e + 1),
+      whole: () => buf,
+    },
+    { method: req.method, requestHeaders: req.headers, headers, ifRange },
+  );
 }
 
 // Fetch the bytes for an audio path from R2 (`env.AUDIO`) when bound, else the
@@ -326,26 +309,21 @@ export function createWorkerHandler(content: WorkerContent) {
     const audioPath = entry.audio;
 
     const etag = audioEtag(audioPath);
-    // Per-post download name (`<slug>.<ext>`) for the inline Content-Disposition,
-    // so a manual save isn't `episode.mp3` for every post (methodology.md →
-  // Stable shareable episode URL).
-    const downloadName = episodeDownloadName(slug, audioPath.split(".").pop() ?? "mp3");
-    // RFC 9530 representation digest (range-independent) — valid on 200/206/304.
-    const reprDigest =
-      entry.digest && isSha256Hex(entry.digest) ? reprDigestSha256(entry.digest) : null;
-    const withDigest = (h: Headers): Headers => {
-      if (reprDigest) h.set("Repr-Digest", reprDigest);
-      return h;
-    };
+    // The stable-episode header contract (strong ETag + no-cache +
+    // CDN-Cache-Control + inline per-post Content-Disposition + Repr-Digest),
+    // shared verbatim with the dev server. See server/serveAsset.ts.
+    const policy = stableEpisodeResponseHeaders({
+      etag,
+      slug,
+      ext: audioPath.split(".").pop() ?? "mp3",
+      digest: entry.digest,
+    });
 
-    // Conditional GET: a matching validator short-circuits to 304 (RFC 9110
-    // §15.4.5 — echo the cache-affecting headers a 200 would carry).
-    if (ifNoneMatchSatisfied(req.headers.get("If-None-Match"), etag)) {
-      return new Response(null, {
-        status: StatusCodes.NOT_MODIFIED,
-        headers: withDigest(new Headers(stableAudioHeaders(etag, downloadName))),
-      });
-    }
+    // Conditional GET short-circuits to 304 BEFORE the R2/ASSETS read (RFC 9110
+    // §15.4.5 — echo the cache-affecting headers a 200 would carry). Keeping
+    // this out of serveAsset preserves prod's fetch-avoidance cost model.
+    const notMod = conditionalNotModified(req.headers, etag, policy);
+    if (notMod) return notMod;
 
     // Resolve the stable name to the live track bytes — from R2 when bound, else
     // the asset bundle (fetchAudioBytes). The source returns the whole body and
@@ -356,11 +334,8 @@ export function createWorkerHandler(content: WorkerContent) {
     // Our validator + cache policy REPLACE whatever the binding emitted; we
     // validate on the strong content-hash ETag only.
     const headers = new Headers(asset.headers);
-    for (const [k, v] of Object.entries(stableAudioHeaders(etag, downloadName))) {
-      headers.set(k, v);
-    }
+    for (const [k, v] of Object.entries(policy)) headers.set(k, v);
     headers.delete("Last-Modified");
-    withDigest(headers); // Repr-Digest rides onto 200/206 (and HEAD via the runtime)
 
     const full = new Response(asset.body, {
       status: StatusCodes.OK,
@@ -373,12 +348,11 @@ export function createWorkerHandler(content: WorkerContent) {
     // Content-Length. (Returning `Response(null, …)` here would make the
     // runtime drop Content-Length — RFC 9110 §9.3.2 wants HEAD to carry it.)
 
-    // Honor Range, but drop it on an If-Range mismatch (→ full 200) so a client
-    // mid-seek can't stitch bytes across a regeneration. The strong ETag rides
-    // onto the 206 via applyRangeSupport, which lets caches combine ranges only
-    // within one version (RFC 9110 §13.1.5 / §15.3.7, RFC 9111 §3.4).
-    if (!rangeHonored(req.headers.get("If-Range"), etag)) return full;
-    return applyRangeSupport(req, full);
+    // If-Range now lives inside serveAsset (strong-etag policy): a mismatch
+    // serves the full 200; a match lets the range through. The strong ETag
+    // rides onto the 206 so caches combine ranges only within one version (RFC
+    // 9110 §13.1.5 / §15.3.7, RFC 9111 §3.4).
+    return applyRangeSupport(req, full, { kind: "strong-etag", etag });
   }
 
   return {
