@@ -24,10 +24,8 @@ import {
   SPOKEN_ID_PREFIX,
   spokenSegmentId,
   collectOutline,
-  firstMarkAfter,
   parseSpokenHash,
   loadCaptureControls,
-  saveCaptureControls,
 } from "./narratorDom.ts";
 import {
   DRAWER_BODY_WANTED_ATTR,
@@ -38,6 +36,8 @@ import { MediaSessionController } from "./narrator/mediaSession.ts";
 import { NarratorKeyboard } from "./narrator/keyboard.ts";
 import { FigureDriver } from "./narrator/figureDriver.ts";
 import { ChapterStrip } from "./narrator/chapterStrip.ts";
+import { DockControls } from "./narrator/dockControls.ts";
+import { Speakers } from "./narrator/speakers.ts";
 
 // The manifest shape (`ManifestWord`/`ManifestMark`/`ManifestChapter`/
 // `Manifest`) is declared once in `shared/manifestSchema.ts` and shared with the
@@ -67,20 +67,6 @@ function formatClockTime(ms: Milliseconds) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-// Speaker-with-waves glyph, drawn in `currentColor` so it inherits whatever
-// muted tone its host (a labeled divider or a heading) carries and the hover
-// rule can brighten it. Shared by the two "play narration from here" buttons —
-// the divider speaker (`.divider-speaker`) and the heading speaker
-// (`.heading-speaker`) — so the icon can't drift between them. The intrinsic
-// 14px size suits the divider; heading CSS overrides it to an em size so it
-// scales with the heading it sits beside.
-const SPEAKER_GLYPH_SVG =
-  '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">' +
-  '<path d="M8 2.2 4.3 5.3H1.6v5.4h2.7L8 13.8z" fill="currentColor"/>' +
-  '<path d="M10.6 5.4a3.3 3.3 0 0 1 0 5.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>' +
-  '<path d="M12.4 3.4a5.8 5.8 0 0 1 0 9.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>' +
-  "</svg>";
-
 // Register the chapter plugin once for the lifetime of the page.
 Player.use(Chapter);
 
@@ -99,19 +85,17 @@ export class Narrator {
   readonly keys = new NarratorKeyboard(this);
   readonly figures = new FigureDriver(this);
   readonly strip = new ChapterStrip(this);
+  readonly dock = new DockControls(this);
+  readonly speakers = new Speakers(this);
 
   manifest: Manifest | null = null;
   player: InstanceType<typeof Player> | null = null;
-  private activeId: string | null = null;
+  activeId: string | null = null;
   private rafHandle = 0;
-  private playing = false;
+  playing = false;
   // Timer that clears the transient "Copied" state on a dev-only segment-name
   // label after a click. One shared handle: only one label flashes at a time.
   private nameCopyTimer: number | null = null;
-  private dockEl: HTMLElement | null = null;
-  private toggleBtn: HTMLButtonElement | null = null;
-  private highlightEnabled = true;
-  private highlightBtn: HTMLButtonElement | null = null;
   // One-shot latch flipped on the user's first play, so
   // setupMediaSession() arms exactly once (idempotent in principle,
   // but no point re-running it). Defers OS "now playing" metadata +
@@ -120,7 +104,7 @@ export class Narrator {
   // on first <audio>.play() anyway, so this just aligns our
   // registration with the platform behaviour and keeps the lock
   // screen clean for talks that never start.
-  private hasPlayed = false;
+  hasPlayed = false;
   // What the user did to start playback, captured by the most-recent
   // intent-bearing handler (Space, MediaSession `play`, chapter jump…)
   // and consumed once by the first-play latch in `onPlay` to attribute the
@@ -145,7 +129,6 @@ export class Narrator {
   // before the first-play arming so a returning reader who released
   // last session stays released without having to re-toggle.
   captureControls = true;
-  private captureBtn: HTMLButtonElement | null = null;
   // Script-&-outline drawer + per-mark segment elements. One drawer element,
   // two panels (`drawerPanel` picks which body is shown); two edge tabs open
   // it straight to a panel, the header panel-tabs switch in place.
@@ -187,15 +170,12 @@ export class Narrator {
   // `/post-version` and `/dev/regenerate` expect (the server indexes posts by
   // URL path, not bare slug; matches how comments.ts identifies the post).
   private postPath = "";
-  // Cached progress-bar element so the rAF ticker can update its width directly
-  // (see comment on `updateBar` for why we drive the bar ourselves).
-  private playedBarEl: HTMLElement | null = null;
 
   constructor(
     private manifestUrl: string,
-    private playerContainer: HTMLElement,
+    public playerContainer: HTMLElement,
     public chapterContainer: HTMLElement | null,
-    private narrationRoot: HTMLElement,
+    public narrationRoot: HTMLElement,
     public title: string,
     public artist: string,
   ) {}
@@ -222,7 +202,7 @@ export class Narrator {
         "Narration unavailable — run `bun run generate`.";
       this.playerContainer.classList.add("narrate-player-error");
       // Reveal the (build-hidden) dock so the nudge is actually visible.
-      this.revealDock();
+      this.dock.revealDock();
       return;
     }
     this.manifest = manifest;
@@ -274,20 +254,20 @@ export class Narrator {
 
     this.strip.renderChapters(manifest);
     this.strip.setupChapterStrip();
-    this.setupVisibilityToggle();
+    this.dock.setupVisibilityToggle();
     // Capture goes in BEFORE highlight: both `insertBefore(.shk-btn_more)`,
     // so the one that arrives last sits just left of `.shk-btn_more` (i.e.
     // rightmost interactive control). Keeping highlight rightmost preserves
     // the existing `padding-right: 44px` × collision fix in the 641-1000px
     // band — see methodology's Audio Player section.
-    this.setupCaptureToggle();
-    this.setupHighlightToggle();
-    this.setupCloseButton();
-    this.setupSmoothBar();
+    this.dock.setupCaptureToggle();
+    this.dock.setupHighlightToggle();
+    this.dock.setupCloseButton();
+    this.dock.setupSmoothBar();
     this.keys.setupKeyboardShortcuts();
     this.buildDrawer();
-    this.setupDividerSpeakers();
-    this.setupHeadingSpeakers();
+    this.speakers.setupDividerSpeakers();
+    this.speakers.setupHeadingSpeakers();
     void this.maybeEnableAuthorTools();
     this.applyHashIfMatching();
     window.addEventListener("hashchange", () => this.applyHashIfMatching());
@@ -306,7 +286,7 @@ export class Narrator {
     // bunHtmlHeadPlugin in both dev and prod) so it never painted its empty box;
     // revealing it here slides it up via transform/opacity — neither of which
     // triggers layout shift — so the player costs zero CLS.
-    this.revealDock();
+    this.dock.revealDock();
 
     // Replay the cold-start key the loader captured (Space/1-9/arrow pressed
     // before Shikwasa finished loading) now that the player + manifest exist —
@@ -343,257 +323,6 @@ export class Narrator {
     this.jumpToChapter(target);
   }
 
-  // Injects a "Listen" pill in the viewport's bottom-right corner that
-  // re-opens the dock after the in-player × has dismissed it. Hidden
-  // while the dock is open (see `narrate-toggle[aria-expanded="true"]`
-  // in narrator.css) and only revealed once `setDockHidden(true)` runs;
-  // the in-player × (`setupCloseButton`) is the always-visible close
-  // partner. The split-affordance shape — × on the player, pill in the
-  // corner — keeps the pill from colliding with the dock on narrow
-  // viewports AND avoids two on-screen headphones glyphs at once (the
-  // pill's glyph and the capture toggle's glyph would otherwise both
-  // be visible inside the open dock).
-  //
-  // The dock's measured height is mirrored into a CSS custom property
-  // (`--narrate-dock-height`) for downstream consumers — notably the
-  // comments mobile-popover positioner, which reserves
-  // bottom-of-viewport space above the dock. ResizeObserver keeps the
-  // variable in sync as the player or chapter strip changes height
-  // (e.g. on orientation change or when a wrapping chapter row
-  // materializes).
-  private setupVisibilityToggle() {
-    const dock = this.playerContainer.closest(".narrate-dock") as HTMLElement | null;
-    if (!dock) return;
-    this.dockEl = dock;
-
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "narrate-toggle";
-    btn.setAttribute("aria-label", "Toggle narration player");
-    btn.setAttribute("aria-expanded", "true");
-    btn.innerHTML =
-      '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
-      '<path d="M12 2a9 9 0 0 0-9 9v6a3 3 0 0 0 3 3h2v-7H5v-2a7 7 0 0 1 14 0v2h-3v7h2a3 3 0 0 0 3-3v-6a9 9 0 0 0-9-9z" fill="currentColor"/>' +
-      '</svg><span>Listen</span>';
-    btn.addEventListener("click", () => {
-      this.setDockHidden(dock.dataset.hidden !== "true" ? true : false);
-    });
-    dock.parentNode?.insertBefore(btn, dock.nextSibling);
-    this.toggleBtn = btn;
-
-    // Mirror the dock's measured height into a CSS variable on the
-    // document root. We read it from CSS (see narrator.css) only when
-    // the toggle is expanded on a narrow viewport, but it's cheap to
-    // maintain unconditionally.
-    const writeDockHeight = (h: number) => {
-      document.documentElement.style.setProperty(
-        "--narrate-dock-height",
-        `${Math.round(h)}px`,
-      );
-    };
-    writeDockHeight(dock.offsetHeight);
-    if (typeof ResizeObserver !== "undefined") {
-      const ro = new ResizeObserver((entries) => {
-        const entry = entries[0];
-        if (!entry) return;
-        writeDockHeight(entry.contentRect.height);
-      });
-      ro.observe(dock);
-    }
-  }
-
-  private setDockHidden(hidden: boolean) {
-    if (!this.dockEl || !this.toggleBtn) return;
-    this.dockEl.dataset.hidden = String(hidden);
-    this.dockEl.setAttribute("aria-hidden", String(hidden));
-    this.toggleBtn.setAttribute("aria-expanded", String(!hidden));
-    // Audio intentionally keeps playing — the user may be hiding the UI to
-    // read along undistracted. They can pause with Space if they want.
-  }
-
-  // Reveal the dock once it's fully built (or on error, so the nudge shows).
-  // Independent of the visibility toggle so the error path — which returns
-  // before setupVisibilityToggle wires `toggleBtn` — can still reveal it. The
-  // build ships the dock `data-hidden="true"` in both dev and prod; this clears
-  // it. (A harmless no-op if some context served the dock un-hidden.)
-  private revealDock() {
-    const dock =
-      this.dockEl ?? (this.playerContainer.closest(".narrate-dock") as HTMLElement | null);
-    if (!dock) return;
-    dock.dataset.hidden = "false";
-    dock.setAttribute("aria-hidden", "false");
-    this.toggleBtn?.setAttribute("aria-expanded", "true");
-  }
-
-  // Injects a toggle inside Shikwasa's basic controls row that releases
-  // (or re-acquires) the OS media-session surface — lock screen, hardware
-  // media keys, Bluetooth-headset taps. When OFF the metadata, action
-  // handlers, and rAF position-state pushes are all torn down; when ON
-  // the surface is armed exactly as it is by default after first play.
-  // Persisted globally in localStorage (`narrate-capture-controls`), so
-  // the choice carries between posts — the pref is about the reader's
-  // relationship to their own music, not about any one talk.
-  private setupCaptureToggle() {
-    const basic = this.playerContainer.querySelector(".shk-controls_basic");
-    if (!basic) return;
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "shk-btn narrate-capture-btn";
-    btn.setAttribute("aria-label", "Toggle media key capture");
-    btn.setAttribute("aria-pressed", String(this.captureControls));
-    btn.title = this.captureControls
-      ? "Release media keys & headset controls"
-      : "Capture media keys & headset controls";
-    // Headphones glyph — the surface this toggle governs is specifically
-    // about audio devices (lock screen, hardware media keys, Bluetooth
-    // headset). State is signalled by color only (see narrator.css),
-    // mirroring the highlight button — no second SVG variant to keep
-    // in sync.
-    btn.innerHTML =
-      '<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">' +
-      '<path d="M12 1C7.03 1 3 5.03 3 10v7a3 3 0 0 0 3 3h3v-9H5v-1a7 7 0 1 1 14 0v1h-4v9h3a3 3 0 0 0 3-3v-7c0-4.97-4.03-9-9-9z" fill="currentColor"/>' +
-      "</svg>";
-    btn.addEventListener("click", () => {
-      this.setCaptureControls(!this.captureControls);
-    });
-    // Insert before the highlight button (which insertBefore-s `.shk-btn_more`
-    // when it runs immediately after this in init). That keeps highlight
-    // rightmost and preserves the existing corner-× collision fix.
-    const moreBtn = basic.querySelector(".shk-btn_more");
-    if (moreBtn) basic.insertBefore(btn, moreBtn);
-    else basic.appendChild(btn);
-    this.captureBtn = btn;
-  }
-
-  // Injects a toggle inside Shikwasa's basic controls row that turns
-  // narration highlighting on/off. When off:
-  //   - `.narration-active` is not applied to any element
-  //   - the `article.narrating` dim class is not applied
-  //   - auto-scroll while playing is suppressed
-  // Useful for taking screenshots of the article in its "clean" state
-  // while audio is playing. Active marks are still tracked internally so
-  // re-enabling resumes from the correct position.
-  private setupHighlightToggle() {
-    const basic = this.playerContainer.querySelector(".shk-controls_basic");
-    if (!basic) return;
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "shk-btn narrate-highlight-btn";
-    btn.setAttribute("aria-label", "Toggle narration highlighting");
-    btn.setAttribute("aria-pressed", "true");
-    btn.title = "Hide highlighting";
-    btn.innerHTML =
-      '<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">' +
-      '<path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5C21.27 7.61 17 4.5 12 4.5zM12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z" fill="currentColor"/>' +
-      '</svg>';
-    btn.addEventListener("click", () => {
-      this.setHighlightEnabled(!this.highlightEnabled);
-    });
-    // Place after Shikwasa's "forward" button (and before the hidden "more"
-    // button) so it sits at the right end of the visible controls row.
-    const moreBtn = basic.querySelector(".shk-btn_more");
-    if (moreBtn) basic.insertBefore(btn, moreBtn);
-    else basic.appendChild(btn);
-    this.highlightBtn = btn;
-  }
-
-  // Inject a close × in the top-right corner of the player card —
-  // always visible. The Listen pill (`setupVisibilityToggle`) is the
-  // re-open partner and is hidden while the dock is open, so × and
-  // pill never coexist on screen. Two side effects of always-on ×:
-  // it avoids a second on-screen headphones glyph competing with the
-  // capture toggle, and the corner-clearing `padding-right` rule on
-  // `.shk-player` now applies across the whole horizontal-layout band
-  // (see narrator.css's `@media (min-width: 641px)`), not just the
-  // 641-1000px slice it covered when × was viewport-conditional.
-  private setupCloseButton() {
-    const player = this.playerContainer.querySelector(".shk-player") as HTMLElement | null;
-    if (!player) return;
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "narrate-close-btn";
-    btn.setAttribute("aria-label", "Close narration player");
-    btn.title = "Close player";
-    btn.innerHTML =
-      '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">'
-      + '<path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
-    btn.addEventListener("click", () => this.setDockHidden(true));
-    player.appendChild(btn);
-  }
-
-  // Shikwasa updates `.shk-bar_played` on `timeupdate`, which fires ~4×/sec.
-  // The default CSS transition (width .1s ease-in) smooths each step but
-  // still leaves a visible ~150ms idle between updates, so playback looks
-  // steppy. We cache the bar element here, disable its transition, and let
-  // `updateBar` (called from our existing rAF tick) write the width 60×/sec
-  // straight from `audio.currentTime`. Shikwasa's own timeupdate write still
-  // runs — it just gets overwritten on the next animation frame.
-  private setupSmoothBar() {
-    const bar = this.playerContainer.querySelector(".shk-bar_played") as HTMLElement | null;
-    if (!bar) return;
-    bar.style.transition = "none";
-    this.playedBarEl = bar;
-  }
-
-  private updateBar() {
-    if (!this.playedBarEl || !this.player) return;
-    const audio = (this.player as unknown as { audio?: HTMLAudioElement }).audio;
-    if (!audio) return;
-    const duration = audio.duration;
-    if (!duration || !isFinite(duration)) return;
-    const pct = Math.max(0, Math.min(1, audio.currentTime / duration));
-    this.playedBarEl.style.width = pct * 100 + "%";
-  }
-
-  private setHighlightEnabled(enabled: boolean) {
-    this.highlightEnabled = enabled;
-    if (this.highlightBtn) {
-      this.highlightBtn.setAttribute("aria-pressed", String(enabled));
-      this.highlightBtn.title = enabled ? "Hide highlighting" : "Show highlighting";
-    }
-    if (enabled) {
-      // Re-apply the visuals from current state.
-      if (this.playing) this.narrationRoot.classList.add("narrating");
-      if (this.activeId) {
-        const el = this.narrationRoot.querySelector(`#${CSS.escape(this.activeId)}`);
-        el?.classList.add("narration-active");
-      }
-    } else {
-      // Strip every visual artifact so the page looks unhooked from the player.
-      this.narrationRoot.classList.remove("narrating");
-      if (this.activeId) {
-        const el = this.narrationRoot.querySelector(`#${CSS.escape(this.activeId)}`);
-        el?.classList.remove("narration-active");
-      }
-    }
-  }
-
-  private setCaptureControls(enabled: boolean) {
-    this.captureControls = enabled;
-    if (this.captureBtn) {
-      this.captureBtn.setAttribute("aria-pressed", String(enabled));
-      this.captureBtn.title = enabled
-        ? "Release media keys & headset controls"
-        : "Capture media keys & headset controls";
-    }
-    if (enabled) {
-      // Re-arm only if we've already played at least once — otherwise the
-      // next onPlay() will arm via the deferred-first-play path (which is
-      // also gated on `captureControls`). Calling setupMediaSession
-      // pre-firstplay would silently arm metadata + handlers for a talk
-      // that hasn't started, exactly what the first-play deferral exists
-      // to prevent.
-      if (this.hasPlayed) this.media.setupMediaSession();
-    } else {
-      this.media.teardownMediaSession();
-    }
-    if (typeof localStorage !== "undefined") {
-      // Persist via the pure helper (handles "absent ⇒ ON" by removing
-      // the key, and swallows storage-disabled throws).
-      saveCaptureControls(localStorage, enabled);
-    }
-  }
-
   skipBy(ms: Milliseconds) {
     if (!this.player || !this.manifest) return;
     // Read currentTime from the underlying audio element rather than
@@ -621,96 +350,6 @@ export class Narrator {
     }
   }
 
-  // A labeled section divider (`.section-divider-labeled`) acts as a prose
-  // chapter boundary that, by convention, mirrors a narration part — its text
-  // is the same string as the part's chapter-strip pill. Progressively enhance
-  // each one with a speaker button that jumps the narration to the first spoken
-  // segment about content *below* the divider. Because narration is non-linear
-  // (a segment can reference an earlier or later section than where it sits),
-  // "first" is defined off the highlighted element's DOM position, not the
-  // chapter the segment belongs to: the earliest mark, in narration time, whose
-  // highlighted element follows the divider in document order. A divider with no
-  // following narration (e.g. a trailing one) gets no button.
-  private setupDividerSpeakers() {
-    if (!this.manifest) return;
-    const dividers = this.narrationRoot.querySelectorAll<HTMLElement>(
-      ".section-divider-labeled",
-    );
-    for (const divider of dividers) {
-      if (divider.querySelector(".divider-speaker")) continue; // idempotent
-      if (!this.firstMarkAfter(divider)) continue; // no narration below → no button
-      const label = (divider.textContent ?? "").trim();
-      // The divider is a presentational labeled `<div>` — the prose face of a
-      // narration part, deliberately NOT a heading (the prose outline must not
-      // depend on whether a post has narration; see methodology) and NOT a
-      // `role="separator"` (a widget role can't host a control). A plain `<div>`
-      // isn't a widget role, so it validly hosts this button; the button's own
-      // aria-label ("Play narration from …") carries the part name to AT.
-      divider.appendChild(this.buildSpeakerButton("divider-speaker", divider, label));
-    }
-  }
-
-  // The article's headings (`<h2>`/`<h3>`/`<h4>`, matching headerLinks.ts) get
-  // the same "play narration from here" affordance the labeled dividers carry —
-  // a speaker button to the heading's right that seeks to the first narration
-  // covering content at or below the heading, then plays. Headings aren't
-  // guaranteed to be a narration entry point (only part dividers anchor a mark
-  // by convention), but `firstMarkAfter` is defined for any element, so a
-  // heading with no `<mark>` of its own simply routes to the first spoken
-  // segment that follows it in document order. A heading with nothing narrated
-  // below it (e.g. a trailing one) gets no button. Mirrors setupDividerSpeakers.
-  private setupHeadingSpeakers() {
-    if (!this.manifest) return;
-    const headings = this.narrationRoot.querySelectorAll<HTMLElement>(
-      "h2, h3, h4",
-    );
-    for (const heading of headings) {
-      if (heading.querySelector(".heading-speaker")) continue; // idempotent
-      if (!this.firstMarkAfter(heading)) continue; // no narration below → no button
-      const label = (heading.textContent ?? "").trim();
-      heading.appendChild(this.buildSpeakerButton("heading-speaker", heading, label));
-    }
-  }
-
-  // Build a "play narration from here" speaker button anchored to `target`.
-  // Both the divider and heading speakers share this so the glyph, labelling,
-  // and seek behaviour can't drift between them. `firstMarkAfter` is recomputed
-  // on every click (not cached at setup) so the target stays correct if the
-  // article DOM changes after enhancement — e.g. a figure enhancing
-  // asynchronously, shifting which mark element is "first below".
-  private buildSpeakerButton(
-    className: string,
-    target: Element,
-    label: string,
-  ): HTMLButtonElement {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = className;
-    btn.title = "Play narration from here";
-    btn.setAttribute(
-      "aria-label",
-      label ? `Play narration from "${label}"` : "Play narration from here",
-    );
-    btn.innerHTML = SPEAKER_GLYPH_SVG;
-    btn.addEventListener("click", () => {
-      const m = this.firstMarkAfter(target);
-      if (!m) return;
-      // Nudge past the mark time, matching the chapter-jump offset, so a mark
-      // sitting exactly on a chapter boundary still lands inside the new chapter
-      // for the chapter plugin's `t >= startTime` range check.
-      this.seekToMs(asMs(m.time + 10));
-      this.player?.play();
-    });
-    return btn;
-  }
-
-  // Thin wrapper around the pure helper in ./narratorDom.ts — keeps the
-  // `this.firstMarkAfter(el)` call sites (dividers and headings) readable.
-  private firstMarkAfter(el: Element): ManifestMark | null {
-    if (!this.manifest) return null;
-    return firstMarkAfter(el, this.manifest.marks, this.narrationRoot);
-  }
-
   private onPlay() {
     if (!this.hasPlayed) {
       // First explicit play: arm the OS surface (metadata + action handlers
@@ -729,7 +368,7 @@ export class Narrator {
       if (this.captureControls) this.media.setupMediaSession();
     }
     this.playing = true;
-    if (this.highlightEnabled) this.narrationRoot.classList.add("narrating");
+    if (this.dock.highlightEnabled) this.narrationRoot.classList.add("narrating");
     this.startTicker();
     this.media.setPlaybackState("playing");
   }
@@ -793,7 +432,7 @@ export class Narrator {
     // Keep chapter pills in sync alongside the per-mark highlight; on raw
     // seeks Shikwasa may not always emit chapterchange before the tick.
     this.strip.updateActiveChapter();
-    this.updateBar();
+    this.dock.updateBar();
     const tMs = secondsToMs(asSeconds(this.player.currentTime));
     // Pure bisect — works for both linear playback AND backward seeks
     // because nothing is cached. See client/narratorTiming.ts.
@@ -844,7 +483,7 @@ export class Narrator {
     if (id) {
       const el = this.narrationRoot.querySelector(`#${CSS.escape(id)}`);
       if (el) {
-        if (this.highlightEnabled) {
+        if (this.dock.highlightEnabled) {
           el.classList.add("narration-active");
           // Only auto-scroll while playing AND highlighting is enabled;
           // unsolicited scroll defeats the screenshot-friendly mode.
