@@ -160,6 +160,15 @@ test("prod: the hashed player URL is served immutable (Worker override) + range-
   expect(ranged.headers.get("content-range")).toMatch(/^bytes 0-99\/\d+$/);
   // The override survives the 206 (set on a fresh Response before applyRangeSupport).
   expect(ranged.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+
+  // Row-11 guard at the wire: a MISMATCHED If-Range on a hashed asset must still
+  // yield 206 (If-Range policy "ignore"), never a full 200 — otherwise every
+  // browser media seek re-downloads the whole multi-MB file.
+  const staleRanged = await fetch(hashedUrl, {
+    headers: { Range: "bytes=0-99", "If-Range": '"stale-validator"' },
+  });
+  expect(staleRanged.status).toBe(206);
+  expect(staleRanged.headers.get("content-range")).toMatch(/^bytes 0-99\/\d+$/);
 });
 
 test("prod: a hashed JS/CSS bundle is served immutable too (site-wide, not just media)", async () => {

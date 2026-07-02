@@ -106,15 +106,18 @@ export function serveAsset(source: AssetSource, opts: ServeAssetOptions): Respon
 
   // unsatisfiable → 416. D1 reconciled shape: RFC 9457 problem+json body (prod's
   // everywhere-contract) PLUS the policy headers merged on (dev's RFC-friendlier
-  // Accept-Ranges/ETag/CC survival), skipping Content-Type/Content-Length which
-  // the problem body owns. Content-Range carries the selected size (RFC 9110
-  // §15.5.17).
+  // Accept-Ranges/ETag survival), skipping Content-Type/Content-Length which the
+  // problem body owns. Cache-Control is also skipped and forced to no-store: an
+  // asset's `immutable, max-age=1yr` header must NOT ride onto its 416 error, or
+  // RFC 9111 lets an intermediary cache the error and serve it for later full
+  // GETs of that URL. Content-Range carries the selected size (RFC 9110 §15.5.17).
   const res = problem(StatusCodes.REQUESTED_RANGE_NOT_SATISFIABLE, "about:blank");
   for (const [k, v] of new Headers(headers)) {
     const lower = k.toLowerCase();
-    if (lower === "content-type" || lower === "content-length") continue;
+    if (lower === "content-type" || lower === "content-length" || lower === "cache-control") continue;
     res.headers.set(k, v);
   }
+  res.headers.set("Cache-Control", "no-store");
   res.headers.set("Content-Range", unsatisfiedRangeHeader(outcome.size));
   return res;
 }

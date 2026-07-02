@@ -122,8 +122,10 @@ test("416: out-of-bounds start → problem+json (D1 contract)", async () => {
   // problem+json body owns Content-Type; policy CT is skipped.
   expect(res.headers.get("Content-Type")).toBe("application/problem+json");
   expect(res.headers.get("Content-Range")).toBe(`bytes */${SIZE}`);
-  // Policy headers merged on (RFC-friendlier) except the problem-owned CT/CL.
-  expect(res.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+  // Policy headers merged on (RFC-friendlier) except problem-owned CT/CL and
+  // Cache-Control, which is forced to no-store so the 416 can't be cached and
+  // replayed for later full GETs of an immutable asset URL.
+  expect(res.headers.get("Cache-Control")).toBe("no-store");
   expect(res.headers.get("ETag")).toBe('"deadbeefdeadbeef"');
   expect(res.headers.get("Accept-Ranges")).toBe("bytes");
   // Content-Length is the problem body's own, NOT the policy's SIZE.
