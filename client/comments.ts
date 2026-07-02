@@ -72,7 +72,7 @@ import {
   DRAWER_BODY_WANTED_ATTR,
   REQUEST_DRAWER_BODY_EVENT,
   DRAWER_BODY_READY_EVENT,
-} from "./narratorDom.ts";
+} from "./drawerBodyContract.ts";
 import { copyToClipboard } from "./clipboard.ts";
 // The action bar hosts a "Copy link" button alongside "Comment" — see
 // citationLink.ts. `setCommentBarActive` tells the standalone citation button to
