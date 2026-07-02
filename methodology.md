@@ -518,7 +518,7 @@ Served identically in both runtimes, headers computed in shared code (`shared/st
 
 ## Video export
 
-Code: `generate/render-video.ts`.
+Code: `generate/render-video.ts` (orchestrator) + `generate/video-*.ts` (`video-constants`, `video-captions`, `video-timeline`, `video-plates`, `video-plan`, `video-filtergraph`).
 
 A narrated post renders offline into a content-addressed `video.<hash>.mp4` — narration with burned karaoke captions, a centred voice equalizer, chapter chrome, and every [figure](#the-figurejourney-contract) animated, driven, and stepped exactly as on the live page. **Local-only**: the author uploads to platforms and prunes by hand; it is never served ([Copying static artifacts](#copying-static-artifacts-into-dist)). The renderer consumes only artifacts the build already emits (manifest, audio track, `captions.vtt`) plus one headless figure-capture pass, and composites with an ffmpeg filtergraph — no per-frame JS render loop.
 
