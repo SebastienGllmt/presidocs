@@ -12,7 +12,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createQwen3Aligner,
-  forcedAligners,
   alignedTokensFromWorker,
 } from "./aligner.ts";
 import { asMs } from "../shared/time.ts";
@@ -49,11 +48,6 @@ function withAlignerEnv<T>(env: AlignerEnv, fn: () => T): T {
     }
   }
 }
-
-test("forcedAligners registry contains qwen3", () => {
-  expect(Object.keys(forcedAligners)).toContain("qwen3");
-  expect(forcedAligners.qwen3).toBe(createQwen3Aligner);
-});
 
 test("createQwen3Aligner errors clearly when QWEN3_ALIGNER_DIR is unset", () => {
   withAlignerEnv({}, () => {

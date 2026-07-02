@@ -18,7 +18,6 @@ import {
   type ChangeListEntry,
   type ChangeOrigin,
   type CommentChangeStore,
-  type PutChangeResult,
   type ResolutionListEntry,
 } from "./store.ts";
 
@@ -66,7 +65,7 @@ export function r2Adapter(bucket: R2Bucket): CommentChangeStore {
       return new Uint8Array(buf);
     },
 
-    async putChange(post, userId, changeHash, bytes, origin): Promise<PutChangeResult> {
+    async putChange(post, userId, changeHash, bytes, origin): Promise<void> {
       const key = changeKey(post, userId, changeHash);
       const options = {
         httpMetadata: { contentType: "application/octet-stream" as const },
@@ -89,10 +88,9 @@ export function r2Adapter(bucket: R2Bucket): CommentChangeStore {
         ) {
           await bucket.put(key, bytes, options);
         }
-        return { kind: "already_present" };
+        return;
       }
       await bucket.put(key, bytes, options);
-      return { kind: "ok" };
     },
 
     async listChanges(post, userId): Promise<ChangeListEntry[]> {

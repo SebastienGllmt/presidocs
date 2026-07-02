@@ -39,13 +39,6 @@ export type ChangeListEntry = {
   origin?: ChangeOrigin;
 };
 
-export type PutChangeResult =
-  | { kind: "ok" }
-  // The change is already there (same key, same bytes). Idempotent.
-  // We treat this as success; the client doesn't care that the bytes
-  // were already on disk.
-  | { kind: "already_present" };
-
 export interface CommentChangeStore {
   // Returns the bytes of one specific change, or null if it doesn't
   // exist.
@@ -65,7 +58,7 @@ export interface CommentChangeStore {
     changeHash: string,
     bytes: Uint8Array,
     origin?: ChangeOrigin,
-  ): Promise<PutChangeResult>;
+  ): Promise<void>;
 
   // Lists all change hashes under one (post, user). Returns the
   // ordered metadata so callers can also know sizes / upload times

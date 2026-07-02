@@ -64,12 +64,6 @@ export function getFigureJourney(id: string): FigureJourney | undefined {
   return registry().get(id);
 }
 
-/** Enumerate registered journeys (à la `document.getAnimations()`), so a driver
- *  or the conformance test needn't be handed an id list. */
-export function listFigureJourneys(): string[] {
-  return [...registry().keys()];
-}
-
 /**
  * Project a GSAP timeline's labels into the `steps` shape. Kept dependency-free:
  * pass `timeline.labels` (a `{ label: seconds }` record) and `timeline.duration()`
