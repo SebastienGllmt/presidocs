@@ -315,8 +315,11 @@ test("property: 416 forces no-store + problem+json even under an immutable polic
         expect(res.headers.get("Cache-Control")).toBe("no-store");
         expect(res.headers.get("Content-Type")).toBe("application/problem+json");
         expect(res.headers.get("Content-Range")).toBe(`bytes */${bytes.length}`);
-        // Content-Length is the problem body's own, not the policy's size.
-        expect(res.headers.get("Content-Length")).not.toBe(String(bytes.length));
+        // The 416 path SKIPS the policy's Content-Length (the problem body owns
+        // CT/CL; the runtime fills CL at serialization) — so the header must be
+        // absent here, proving the policy's size never rode onto the error.
+        // (`not.toBe(String(bytes.length))` would be vacuous: null ≠ any string.)
+        expect(res.headers.get("Content-Length")).toBeNull();
         // Non-owned policy headers survive.
         expect(res.headers.get("ETag")).toBe(etag);
         expect(res.headers.get("Accept-Ranges")).toBe("bytes");
