@@ -220,7 +220,7 @@ One source, three readers, kept in agreement by construction: the manifest emits
 
 #### Live figure driving (the narration driver)
 
-The live narrator drives each staged figure off the audio clock in the same rAF tick that tracks the active mark (`client/narrator.ts` `updateActiveFigure`, backed by pure unit-tested helpers in `client/narratorTiming.ts`) — the live-page twin of the video capture driver.
+The live narrator drives each staged figure off the audio clock in the same rAF tick that tracks the active mark (`client/narrator/figureDriver.ts` `updateActiveFigure`, backed by pure unit-tested helpers in `client/narratorTiming.ts`) — the live-page twin of the video capture driver.
 
 - **Keys off the staged figure, not the mark name.** Each tick resolves `stagedFigureAt(marks, tMs)`; on a staged-id change it releases the old journey and **claims** the new one (`reset()` trips the figure's exclusive-control guard so self-play stands down); `null` releases. The highlight path stays independent.
 - **Elapsed time is measured from the true span start** (`sinceMs` — the staging mark's time, continuous across attr-less carries), so scrubbing into mid-span resumes mid-animation, still forward-only via `reset()` + replay.
@@ -415,7 +415,7 @@ Like the comments split, this only works under **`Bun.build({ splitting: true })
 
 ### Chapter strip
 
-Code: `client/narrator.ts` + `client/narrator.css`.
+Code: `client/narrator.ts` (orchestrator) + `client/narrator/*.ts` + `client/narrator.css`.
 
 One pill per chapter in a **single horizontally-scrolling, fixed-height row** (a multi-row wrap would shove the article down). Scrolling is discoverable three ways: native touch swipe; wheel-over-strip (vertical wheel translated to horizontal — browsers don't do it reliably); and press-and-hold ‹/› arrows on fine-pointer devices when the strip actually overflows (eased-in speed, active pill auto-scrolled into view, edge fade hinting more content).
 
@@ -428,7 +428,7 @@ Shikwasa notes: its `seek()` calls `parseInt` (truncating fractions) — bypasse
 
 ### Script & outline drawer: two panels, one slot
 
-Code: `client/narrator.ts` + `client/narrator.css`.
+Code: `client/narrator.ts` (orchestrator) + `client/narrator/*.ts` + `client/narrator.css`.
 
 The left-edge drawer hosts the spoken **script** and the article **outline**. Their exclusivity is **a DOM shape, not a rule**: one `<aside id="narrate-drawer">` with one `data-panel` attribute and two sibling bodies, exactly one non-`hidden` — a second drawer would make "only one open" a two-component protocol; one element makes it unrepresentable.
 
@@ -440,7 +440,7 @@ Closed, two stacked edge tabs open the drawer straight to a panel (both fold awa
 
 ## Player & sync
 
-Code: `client/narrator.ts`.
+Code: `client/narrator.ts` (orchestrator) + `client/narrator/*.ts` + `client/narrator.css`.
 
 Highlight/scroll must stay in sync with the player through every control path. Two architectural points:
 

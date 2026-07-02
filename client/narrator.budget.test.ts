@@ -23,7 +23,7 @@ test("narratorLoader.ts (the eager entry) has NO static imports of the heavy gra
   // A static `import ... from "./narrator.ts"` (or "shikwasa") in the loader
   // would defeat the split. `narrator` itself is included: the loader must
   // `import()` it, not statically import it.
-  const heavy = ["narrator.ts", "shikwasa", "shikwasa-vendor.css", "figureAnimation"];
+  const heavy = ["narrator.ts", "narrator/", "shikwasa", "shikwasa-vendor.css", "figureAnimation"];
   // Match only STATIC import statements (`import ... "x"` / `import "x"`), not
   // the dynamic `import("x")` call form — those are the whole point.
   const staticImport = /^\s*import\s+(?:[^;]*?\sfrom\s+)?["']([^"']+)["']/gm;

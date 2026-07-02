@@ -899,7 +899,7 @@ export class CommentSystem {
     this.renderAll();
   }
 
-  // Player dock height (px) published by narrator.ts as the
+  // Player dock height (px) published by narrator/dockControls.ts as the
   // `--narrate-dock-height` custom property, or 0 if absent.
   private dockHeightPx(): number {
     const raw = getComputedStyle(document.documentElement)

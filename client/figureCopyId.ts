@@ -1,5 +1,5 @@
 // Block-id copy affordance — an author/dev-only debugging aid that mirrors the
-// narration drawer's per-segment id label (narrator.ts → maybeEnableAuthorTools
+// narration drawer's per-segment id label (narrator/authorTools.ts → maybeEnableAuthorTools
 // / addSegmentName). Every `<figure id>` and every `<p id>` in the article body
 // gets a small monospace id label that floats in the left gutter. Clicking it
 // copies the bare id to the clipboard and briefly flips to a green check — the
@@ -33,7 +33,7 @@ import { copyWithFeedback } from "./copyFeedback.ts";
 import { fetchPostVersion } from "./postVersion.ts";
 
 // How long the "Copied" feedback (green id + trailing check) stays visible
-// after a successful copy. Matches the segment-id label's window in narrator.ts.
+// after a successful copy. Matches the segment-id label's window in narrator/authorTools.ts.
 const FEEDBACK_MS = 1000;
 
 const copyId = copyWithFeedback("is-copied", FEEDBACK_MS);

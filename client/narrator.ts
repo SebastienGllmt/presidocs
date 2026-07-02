@@ -47,7 +47,8 @@ import {
 
 // SPOKEN_ID_PREFIX / spokenSegmentId are imported from ./narratorDom.ts —
 // re-export here so any in-file uses don't need to re-import.
-// (Both are used by both the drawer DOM build and applyHashIfMatching.)
+// (SPOKEN_ID_PREFIX is used by narrator/authorTools.ts, spokenSegmentId by
+// narrator/drawer.ts.)
 
 // Register the chapter plugin once for the lifetime of the page.
 Player.use(Chapter);

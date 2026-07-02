@@ -229,7 +229,7 @@ export class MobileMenu {
     this.highlightsHidden = hidden;
     if (typeof localStorage !== "undefined") {
       // Persist via the pure helper. The fire-and-forget API matches the
-      // capture-controls pattern in narrator.ts: in-memory state is
+      // capture-controls pattern in narrator/dockControls.ts: in-memory state is
       // authoritative for the live session; storage is the next-page-load
       // contract.
       saveHighlightsHidden(localStorage, hidden);
