@@ -29,10 +29,6 @@ export const EVENT_NAMES = [
 ] as const;
 export type EventName = (typeof EVENT_NAMES)[number];
 
-// The set form is what the Worker route uses for membership tests.
-// Frozen so a bug-driven `add()` upstream can't extend the wire allowlist.
-export const EVENT_NAME_SET: ReadonlySet<EventName> = new Set(EVENT_NAMES);
-
 // What kicked off the very first play this session, captured by the player
 // at the call site and emitted once via narration_play.
 export const PLAY_TRIGGERS = [
@@ -43,11 +39,9 @@ export const PLAY_TRIGGERS = [
   "seek",
 ] as const;
 export type PlayTrigger = (typeof PLAY_TRIGGERS)[number];
-export const PLAY_TRIGGER_SET: ReadonlySet<PlayTrigger> = new Set(PLAY_TRIGGERS);
 
 export const QUARTILES = [25, 50, 75, 100] as const;
 export type Quartile = (typeof QUARTILES)[number];
-export const QUARTILE_SET: ReadonlySet<Quartile> = new Set(QUARTILES);
 
 // Wire payloads. Discriminated union on `event` so the Worker route can
 // narrow before reading the event-specific fields without `any`.
@@ -91,18 +85,6 @@ export const DOUBLE_DURATION_MS = 1;
 export const BLOB_COUNT = 2;
 export const DOUBLE_COUNT = 2;
 
-// Type-guard helpers. Standalone membership tests against the frozen sets
-// above — narrow predicates kept for direct use (and unit-tested in isolation).
-export function isEventName(s: unknown): s is EventName {
-  return typeof s === "string" && EVENT_NAME_SET.has(s as EventName);
-}
-export function isPlayTrigger(s: unknown): s is PlayTrigger {
-  return typeof s === "string" && PLAY_TRIGGER_SET.has(s as PlayTrigger);
-}
-export function isQuartile(n: unknown): n is Quartile {
-  return typeof n === "number" && QUARTILE_SET.has(n as Quartile);
-}
-
 // --- Wire-body schema (the JSON the `/_a` beacon POSTs) ---
 //
 // The single validator the Worker route runs against an untrusted beacon body
@@ -111,13 +93,14 @@ export function isQuartile(n: unknown): n is Quartile {
 // the event ⇄ qualifier relationship directly, and `z.object` strips unknown
 // keys so a probe can't smuggle extra fields into a row.
 //
-// The enums are derived from the SAME frozen arrays the guards use, so there's
-// still one source of truth for the allowlists. The per-field `.catch()`
-// normalisations preserve the route's previous lenient coercion exactly:
+// The enums are derived from the SAME frozen `EVENT_NAMES` / `PLAY_TRIGGERS` /
+// `QUARTILES` arrays, so there's still one source of truth for the allowlists.
+// The per-field `.catch()` normalisations preserve the route's previous lenient
+// coercion exactly:
 //   - referrerHost: non-string / missing → "", then capped at 253 chars.
 //   - durationMs:   non-finite / missing → 0, else max(0, round).
 // trigger and quartile are strict — an invalid value rejects the whole body
-// (the route then 204s), matching the old `isPlayTrigger` / `isQuartile` gates.
+// (the route then 204s).
 const PostField = z.string().min(1);
 
 const PageViewSchema = z.object({
