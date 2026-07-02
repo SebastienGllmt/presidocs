@@ -10,7 +10,7 @@
     "dev:reset-comments": "bun engine/scripts/clean-dev-comments.ts",
     "start": "bun engine/generate/post-routes.ts && bun index.ts",
     "generate": "bun engine/generate/generate.ts",
-    "generate:prod": "bun engine/generate/generate.ts --tts=moss",
+    "generate:prod": "bun engine/generate/generate.ts --tts=moss --align=qwen3",
     "sound-test": "bun engine/generate/sound-test.ts posts/common-terms.pls --tts=moss --all",
     "video": "bun engine/generate/render-video.ts",
     "clean": "bun engine/generate/clean.ts",
