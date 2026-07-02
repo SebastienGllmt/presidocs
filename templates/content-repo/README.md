@@ -45,6 +45,7 @@ cp .env.example .env                  # fill in secrets for OAuth/comments
 
 ```sh
 bun run dev          # dev server with HMR (regenerates the dev route table)
+bun run new-post <slug> # scaffold a new post (posts/<slug>.html + author wiring)
 bun run generate posts/hello.html       # build narration audio (say, fast)
 bun run generate:prod posts/hello.html  # production voice (MOSS clone)
 bun run build        # bundle to dist/

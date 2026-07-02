@@ -16,13 +16,20 @@ The user gives a post **slug** (the stem under `posts/`, e.g. `hash-functions`).
 
 ## Flow
 
-1. **Pull the production comments** into the local store first, so you work against what readers actually left — not just localhost test data:
+1. **Pull the comments** into the local store first, so you work against what was actually left:
 
    ```bash
-   bun run pull-comments <slug>
+   bun run pull-comments <slug>            # production comments (readers)
+   bun run pull-comments <slug> --local    # comments left on the LOCALHOST dev server
    ```
 
-   This briefly runs a bucket-bound Worker via `wrangler dev --remote` using the author's existing wrangler login (no extra credential to set up), mirrors R2 → `generated/.comments-dev/`, then tears down. It's additive, scoped to this slug, and a harmless no-op for a post with no production comments yet. (If it errors, the author may not be logged in — `wrangler whoami` — or the post may be localhost-only; report and ask rather than guessing.) See `engine/methodology.md` → "Syncing production comments".
+   The production pull briefly runs a bucket-bound Worker via `wrangler dev --remote` using the author's existing wrangler login (no extra credential to set up), mirrors R2 → `generated/.comments-dev/`, then tears down. It's additive, scoped to this slug, and a harmless no-op for a post with no production comments yet. (If it errors, the author may not be logged in — `wrangler whoami`; report and ask rather than guessing.)
+
+   Comments left through a **running localhost dev server** live in its own store (Miniflare R2), not in `generated/.comments-dev/` — the `--local` pull mirrors them down over the dev server's HTTP API. See `engine/methodology.md` → "Syncing production comments".
+
+   **Decision rule: run both pulls.** Both are additive into the same local store, so running both is always safe, and you can't tell from the outside which store holds comments. The `--local` pull fails fast with "no dev server reachable" when none is running — that means "nothing to pull from localhost", so note it and move on (don't debug it, don't ask). The production pull likewise no-ops for an unpublished post.
+
+   Related (not part of this flow): `bun run seed-comments <slug>` copies the pulled production comments INTO the running dev server so they render in the author's localhost browser (where they get a `production` origin tag, and the author can reply locally with context for you). Run it only if the author asks to see prod comments on localhost — it changes their browser view, not your working set.
 
 2. **Fetch the open comments** as a Web Annotation collection:
 
@@ -34,6 +41,7 @@ The user gives a post **slug** (the stem under `posts/`, e.g. `hash-functions`).
    - `id` — `urn:blog:<slug>:thread:<threadId>`. Track this; it's the key you'll resolve by.
    - `target` — a selector pinpointing the comment's anchor. `target.selector` holds a `RangeSelector` (which block, via `FragmentSelector`/`CssSelector`) and a `TextQuoteSelector` whose `exact` is the verbatim quoted text. `target.source` ending in `#narration` means the comment is on the spoken-script drawer, not the article body. `x-blog:segmentHashes` lists the touched block ids.
    - `body` — the reply thread (`TextualBody[]`), the actual feedback to act on.
+   - `x-blog:origin` (on the annotation and on each body) — which live store the thread/reply was born in. **Use this to read intent:** a `localhost` reply on a `production` thread is the author's scaffolding, left to give *you* extra context about the reader's feedback — it is never published to prod (the author follows up with commenters by email; never treat such a reply as something to answer). Origins also help debugging (e.g. "why doesn't this thread show on prod?"). `unknown` = pre-provenance data; treat as ordinary feedback.
 
    If the collection is empty (`total: 0`), tell the user there's nothing to process and stop.
 
@@ -62,7 +70,9 @@ The user gives a post **slug** (the stem under `posts/`, e.g. `hash-functions`).
    bun run push-resolutions <slug>
    ```
 
-   Same `wrangler dev --remote` mechanism as the pull (fenced to resolution keys), so prod hides the resolved threads for the original commenters. On a localhost-only post there's no bucket to push to — skip it.
+   Same `wrangler dev --remote` mechanism as the pull (fenced to resolution keys), so prod hides the resolved threads for the original commenters. `bun run push-resolutions <slug> --local` pushes to the **running dev server** instead, where the author's open browser tab hides them on its next poll — no restart needed.
+
+   **Decision rule: push to each store whose pull found comments.** Each pull printed `Pulled N comment change-object(s) …` — a store that reported 0 holds no thread for this post, so skip its push (likewise skip `--local` if no dev server was running). Push to every store that reported >0: the merged local store doesn't record which individual thread came from which store, and a resolution envelope for a thread a store doesn't know is a harmless orphan (opaque threadId, opaque body), so over-pushing is safe — only *skipping* a store that has comments can leave a thread visible to its commenter.
 
 7. **Remind the author of the follow-up steps** (don't run these yourself unless asked):
 
