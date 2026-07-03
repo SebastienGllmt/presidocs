@@ -72,6 +72,7 @@ export function wrapRangeInBlock(
   start: number,
   end: number,
   threadId: string,
+  isSuggestion = false,
 ) {
   if (start >= end) return;
   const s = nodeAtOffset(block, start);
@@ -84,10 +85,10 @@ export function wrapRangeInBlock(
   } catch {
     return;
   }
-  wrapRange(range, threadId);
+  wrapRange(range, threadId, isSuggestion);
 }
 
-function wrapRange(range: Range, threadId: string) {
+function wrapRange(range: Range, threadId: string, isSuggestion: boolean) {
   const anchorEl =
     range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
       ? (range.commonAncestorContainer as Element)
@@ -112,6 +113,10 @@ function wrapRange(range: Range, threadId: string) {
     if (startInNode > 0) target = target.splitText(startInNode);
     const span = document.createElement("span");
     span.className = "cmt-highlight";
+    // Suggestions get a distinct tint (green family) so a propose-an-edit
+    // range reads apart from a plain comment (blue). Class, not a separate
+    // element, so nested/overlapping highlights still compose.
+    if (isSuggestion) span.classList.add("cmt-highlight--suggestion");
     span.dataset.threadId = threadId;
     target.parentNode!.insertBefore(span, target);
     span.appendChild(target);

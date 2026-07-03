@@ -17,6 +17,7 @@ import {
 import type { ResolutionEnvelope } from "../resolutionsApi.ts";
 import { buildAvatar } from "./identityUi.ts";
 import { anchorNameForGraphic, anchorNameForText } from "./highlights.ts";
+import { buildDiffPreview } from "./suggestionDiff.ts";
 import { uid } from "./util.ts";
 
 function formatRelative(timestamp: number): string {
@@ -93,10 +94,19 @@ export class CardRenderer {
     const preview = document.createElement("div");
     preview.className = "cmt-anchor-preview";
     if (isTextTarget(thread.target)) {
-      const quote = document.createElement("span");
-      quote.className = "cmt-quote-text";
-      quote.textContent = textTargetParts(thread.target).quote;
-      preview.appendChild(quote);
+      // A SAVED suggestion shows the diff (struck original, inserted proposed)
+      // right in the anchor preview; a draft shows the plain quote here and the
+      // live-updating diff lives in the composer's editor below.
+      if (thread.suggestion && !isDraft) {
+        preview.appendChild(
+          buildDiffPreview(textTargetParts(thread.target).quote, thread.suggestion.proposed),
+        );
+      } else {
+        const quote = document.createElement("span");
+        quote.className = "cmt-quote-text";
+        quote.textContent = textTargetParts(thread.target).quote;
+        preview.appendChild(quote);
+      }
       if (isStale) {
         const tag = document.createElement("span");
         tag.className = "cmt-stale-tag";
@@ -237,10 +247,48 @@ export class CardRenderer {
     const composer = document.createElement("div");
     composer.className = "cmt-composer";
 
+    // A suggestion draft (proposal 65) gets an editable "proposed text" box
+    // above the note, prefilled with the anchored quote, plus a live word-diff.
+    // Editing it mutates the draft's payload in place (persisted on every
+    // keystroke, so a reload restores it) and re-renders the diff.
+    const isSuggestionDraft = isDraft && !!thread.suggestion;
+    if (isSuggestionDraft && isTextTarget(thread.target)) {
+      const sug = thread.suggestion!;
+      const original = textTargetParts(thread.target).quote;
+      const label = document.createElement("span");
+      label.className = "cmt-suggest-label";
+      label.textContent = "Your suggested edit";
+      const sta = document.createElement("textarea");
+      sta.className = "cmt-suggest-input";
+      sta.rows = 2;
+      sta.value = sug.proposed;
+      sta.setAttribute("aria-label", "Suggested replacement text");
+      sta.addEventListener("click", (e) => e.stopPropagation());
+      let diffBox = buildDiffPreview(original, sug.proposed);
+      // The model value + persistence update on every keystroke (state stays
+      // correct, crash-safe), but the WORD-DIFF is debounced: recomputing it
+      // synchronously per keystroke made fast typing on a large suggestion
+      // janky (jsdiff is ~O(n·d)). It refreshes ~150ms after you pause.
+      let diffTimer = 0;
+      sta.addEventListener("input", () => {
+        sug.proposed = sta.value;
+        this.sys.draftMgr.persistDrafts();
+        window.clearTimeout(diffTimer);
+        diffTimer = window.setTimeout(() => {
+          const next = buildDiffPreview(original, sug.proposed);
+          diffBox.replaceWith(next); // stale node after a re-render → harmless no-op
+          diffBox = next;
+        }, 150);
+      });
+      composer.appendChild(label);
+      composer.appendChild(sta);
+      composer.appendChild(diffBox);
+    }
+
     const ta = document.createElement("textarea");
     ta.className = "cmt-reply-input";
     ta.rows = isDraft ? 3 : 2;
-    ta.placeholder = isDraft ? "Comment…" : "Reply…";
+    ta.placeholder = isSuggestionDraft ? "Add a note (optional)…" : isDraft ? "Comment…" : "Reply…";
     // Restore any persisted in-progress body for this draft so a reload
     // (or a re-render from a poll tick) doesn't blank what the user was
     // typing. Saved threads always start with an empty reply field —
@@ -407,31 +455,36 @@ export class CardRenderer {
     const submit = document.createElement("button");
     submit.type = "button";
     submit.className = "cmt-reply-submit";
-    submit.textContent = isDraft ? "Comment" : "Reply";
+    submit.textContent = isSuggestionDraft ? "Suggest edit" : isDraft ? "Comment" : "Reply";
     const doSubmit = () => {
       if (!this.sys.store || !this.sys.identity) return;
       const body = ta.value.trim();
-      if (!body) return;
-      const reply: Reply = {
-        id: uid(),
-        body,
-        createdAt: Date.now(),
-        authorId: this.sys.identity.userId,
-        authorName: this.sys.identity.name ?? this.sys.identity.email,
-        authorEmail: this.sys.identity.email,
-        ...(this.sys.identity.picture && { authorPicture: this.sys.identity.picture }),
-      };
+      // A suggestion's note is optional (the diff IS its content); a plain
+      // comment/reply still needs text.
+      if (!body && !isSuggestionDraft) return;
+      const reply: Reply | null = body
+        ? {
+            id: uid(),
+            body,
+            createdAt: Date.now(),
+            authorId: this.sys.identity.userId,
+            authorName: this.sys.identity.name ?? this.sys.identity.email,
+            authorEmail: this.sys.identity.email,
+            ...(this.sys.identity.picture && { authorPicture: this.sys.identity.picture }),
+          }
+        : null;
       if (isDraft) {
         // Promote draft → persisted thread. Single Automerge change
         // would be tidier here, but the public store API has separate
         // ops; we accept two ops for the v1 case since it's a fresh
-        // thread no one else has touched yet.
-        this.sys.store.addThread(thread.id, thread.target, thread.createdAt);
-        this.sys.store.addReply(thread.id, reply);
+        // thread no one else has touched yet. The suggestion payload (if
+        // any) rides the addThread change and is immutable after.
+        this.sys.store.addThread(thread.id, thread.target, thread.createdAt, thread.suggestion);
+        if (reply) this.sys.store.addReply(thread.id, reply);
         this.sys.draftMgr.drafts = this.sys.draftMgr.drafts.filter((t) => t.id !== thread.id);
         this.sys.draftMgr.draftBodies.delete(thread.id);
         this.sys.draftMgr.persistDrafts();
-      } else {
+      } else if (reply) {
         this.sys.store.addReply(thread.id, reply);
         // Drop the in-progress buffer so the post-submit re-render doesn't
         // refill the reply box with the text we just sent.

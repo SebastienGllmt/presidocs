@@ -1,7 +1,7 @@
 // Pure-DOM coverage for the figure-id copy affordance. We exercise
 // installFigureIdCopies directly (not boot()), the same way headerLinks.test.ts
-// drives installHeadingLinks — the localhost + isAuthor gate that boot() applies
-// is the narrator's well-tested path, and a fetch isn't worth standing up here.
+// drives installHeadingLinks — the server-authoritative isAuthor gate that
+// boot() applies is the postVersion path, and a fetch isn't worth standing up here.
 //
 // The happy-dom import MUST come before the module under test so `document` is
 // registered globally before figureCopyId.ts evaluates.

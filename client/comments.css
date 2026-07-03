@@ -21,6 +21,16 @@
   --cmt-highlight-bg: rgba(88, 166, 255, 0.22);
   --cmt-highlight-bg-hover: rgba(88, 166, 255, 0.42);
   --cmt-highlight-border: rgba(9, 105, 218, 0.6);
+  /* Suggestion (propose-an-edit) family — green, distinct from comment blue
+     and narration violet/orange. Alpha tints so they compose on any article
+     background like the blue highlight does. */
+  --cmt-suggest-bg: rgba(20, 122, 53, 0.20);
+  --cmt-suggest-bg-hover: rgba(20, 122, 53, 0.38);
+  --cmt-suggest-border: rgba(20, 122, 53, 0.6);
+  --cmt-suggest-ins: #147a35;   /* --fig-green: proposed text */
+  --cmt-suggest-ins-bg: #e6f6ec; /* --fig-green-bg */
+  --cmt-suggest-del: #b3261e;   /* --fig-red: struck original */
+  --cmt-suggest-del-bg: #fbeded; /* --fig-red-bg */
   --cmt-stale: #b35900;
   /* Narration comments get a violet accent — distinct from the blue
      article-comment family above and clear of narration's own orange
@@ -48,6 +58,15 @@
   -webkit-box-decoration-break: clone;
 }
 .cmt-highlight:hover { background: var(--cmt-highlight-bg-hover); }
+
+/* Suggestion highlights: green tint. Overrides the blue on the same element
+   (both classes are on the span), so a proposed-edit range reads apart from a
+   plain comment at a glance. */
+.cmt-highlight--suggestion {
+  background: var(--cmt-suggest-bg);
+  border-bottom-color: var(--cmt-suggest-border);
+}
+.cmt-highlight--suggestion:hover { background: var(--cmt-suggest-bg-hover); }
 
 /* Brief flash on the article-side anchor when its card is clicked. */
 @keyframes cmt-anchor-pulse {
@@ -211,6 +230,171 @@
   background: rgba(179, 89, 0, 0.12);
   color: var(--cmt-stale);
   border-radius: 4px;
+}
+
+/* ============================================================================
+   Suggestion (propose-an-edit) — the diff preview + the draft's proposed-text
+   editor. The diff shows struck original words and green inserted words; it
+   appears both in a saved suggestion's anchor preview and live in the draft
+   composer as the reader types.
+   ============================================================================ */
+.cmt-diff {
+  flex: 1;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.cmt-diff-eq { color: var(--cmt-fg-muted); }
+.cmt-diff-del {
+  color: var(--cmt-suggest-del);
+  background: var(--cmt-suggest-del-bg);
+  text-decoration: line-through;
+}
+.cmt-diff-ins {
+  color: var(--cmt-suggest-ins);
+  background: var(--cmt-suggest-ins-bg);
+}
+.cmt-suggest-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--cmt-fg-muted);
+  margin-bottom: 4px;
+}
+.cmt-suggest-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  border: 1px solid var(--cmt-suggest-border);
+  border-radius: 6px;
+  background: var(--cmt-bg);
+  color: var(--cmt-fg);
+}
+.cmt-suggest-input:focus-visible {
+  outline: 2px solid var(--cmt-suggest-ins);
+  outline-offset: 1px;
+}
+/* In the composer the diff sits below the editor as a preview strip. */
+.cmt-composer .cmt-diff {
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  background: #fafbfc;
+  border-radius: 6px;
+}
+
+/* ============================================================================
+   In-place suggestion mode (increment 2) — the rail toggle, the "these blocks
+   are editable" hover cue while the mode is on, and the active block outline.
+   ============================================================================ */
+.cmt-suggest-toggle {
+  /* The column is pointer-events:none; each rail surface opts back in. */
+  pointer-events: auto;
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  color: var(--cmt-suggest-ins);
+  background: var(--cmt-suggest-ins-bg);
+  border: 1px solid var(--cmt-suggest-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.cmt-suggest-toggle[aria-pressed="true"] {
+  color: #fff;
+  background: var(--cmt-suggest-ins);
+}
+.cmt-suggest-toggle:focus-visible {
+  outline: 2px solid var(--cmt-suggest-ins);
+  outline-offset: 2px;
+}
+
+/* Mode on: article prose blocks read as editable on hover. */
+body.cmt-suggest-mode [data-comment-block-id][data-comment-context="article"]:hover {
+  cursor: text;
+  outline: 1px dashed var(--cmt-suggest-border);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+/* The block being edited: a solid green frame + a soft tint so it's clearly the
+   live surface. */
+.cmt-editing,
+body.cmt-suggest-mode .cmt-editing:hover {
+  outline: 2px solid var(--cmt-suggest-ins);
+  outline-offset: 3px;
+  border-radius: 3px;
+  background: var(--cmt-suggest-ins-bg);
+  cursor: text;
+}
+
+/* Suggestion mode is desktop-only (no contenteditable on mobile, ever). */
+@media (max-width: 1099px) {
+  .cmt-suggest-toggle { display: none; }
+}
+
+/* ============================================================================
+   Per-paragraph "preview suggested edits" (proposal 65 addendum). An author-only
+   gutter toggle (any build) that flips a block to a display-only applied view.
+   Positioned like paragraph-id-copy (base.css), one lane closer to the text —
+   id-copy is nudged further out there to make room.
+   ============================================================================ */
+.has-cmt-preview-toggle { position: relative; }
+.cmt-preview-toggle {
+  position: absolute;
+  top: 0.1rem;
+  right: 100%;
+  margin-right: 0.4rem;
+  display: inline-flex;
+  padding: 1px;
+  border: 0;
+  background: transparent;
+  color: var(--page-fg-muted, #57606a);
+  cursor: pointer;
+  opacity: 0.55;
+  border-radius: 4px;
+  transition: color 120ms ease, opacity 120ms ease, background 120ms ease;
+}
+.cmt-preview-toggle:hover { opacity: 1; color: var(--cmt-suggest-ins); background: var(--cmt-suggest-ins-bg); }
+.cmt-preview-toggle:focus-visible { outline: 2px solid var(--cmt-suggest-ins); outline-offset: 1px; opacity: 1; }
+.cmt-preview-toggle.is-on { opacity: 1; color: var(--cmt-suggest-ins); }
+
+/* A block showing its applied preview: a slim green rail in the LEFT GUTTER.
+   Positioned as a gutter affordance (right:100%) rather than a box-shadow, so it
+   (a) sits clear of the text instead of hugging its left edge, and (b) is inset
+   top/bottom to align with the prose LINES — the paragraph box top sits above
+   the first line's leading (same reason paragraph-id-copy uses top:0.2rem), so a
+   full-box bar read too high. Sits between the text and the preview toggle. */
+.cmt-previewing { position: relative; }
+.cmt-previewing::before {
+  content: "";
+  position: absolute;
+  right: 100%;
+  margin-right: 0.15rem;
+  top: 0.3rem;
+  bottom: 0.3rem;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--cmt-suggest-border);
+}
+/* The applied/changed text inside a preview — green tint so the author sees
+   exactly what the suggestion did. */
+.cmt-preview-ins {
+  background: var(--cmt-suggest-ins-bg);
+  color: var(--cmt-suggest-ins);
+  border-radius: 2px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+/* Author-review aid: hide the toggle where the left gutter clips (narrow). */
+@media (max-width: 1099px) {
+  .cmt-preview-toggle { display: none; }
 }
 
 /* Narration comments: a subtle violet accent + a speaker button that

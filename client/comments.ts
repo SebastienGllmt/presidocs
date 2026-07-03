@@ -68,6 +68,8 @@ import { UnresolvedNav } from "./comments/unresolvedNav.ts";
 import { CardRenderer } from "./comments/cards.ts";
 import { FigureTriggers } from "./comments/figureTriggers.ts";
 import { MobileMenu } from "./comments/mobileMenu.ts";
+import { SuggestMode } from "./comments/suggestMode.ts";
+import { SuggestionPreview } from "./comments/suggestionPreview.ts";
 
 // Build-time define (Bun.build `define` map) — `undefined` under the fast
 // `bun run dev` server, `"false"` in built/dev:edge/prod. Used only to gate
@@ -113,6 +115,12 @@ export class CommentSystem {
   readonly figures = new FigureTriggers(this);
   // Mobile button + one-menu popover + highlight-toggle. Constructed inert.
   readonly menu = new MobileMenu(this);
+  // In-place suggestion mode (desktop, feature-gated). Constructed inert; mounts
+  // its rail toggle + article click delegation in `mountColumn`.
+  readonly suggest = new SuggestMode(this);
+  // Per-paragraph "preview suggested edits" gutter toggle (author, any build).
+  // Renders its toggles from `renderAll`.
+  readonly preview = new SuggestionPreview(this);
 
   articleRoot: HTMLElement | null = null;
 
@@ -515,6 +523,11 @@ export class CommentSystem {
     header.className = "cmt-identity";
     rail.appendChild(header);
     this.identityHeader = header;
+
+    // Suggestion-mode toggle lives in the rail (desktop; hidden on mobile via
+    // CSS). Rich contenteditable is universal, so there's no feature gate —
+    // the pill flow is the *mobile* path, not a browser-support fallback.
+    this.suggest.mount(rail);
   }
 
   // Render the "Signed in as X" / "Sign in to comment" pane. Called once
@@ -603,6 +616,10 @@ export class CommentSystem {
     // focus onto the freshly built card at the end of the render.
     const activeComposer = this.captureActiveComposer();
 
+    // Preview toggles first — this may auto-revert a block whose suggestion
+    // vanished, so it must settle before the highlight pass draws that block.
+    this.preview.renderToggles();
+
     // Highlights: wipe and re-apply (only for non-stale, non-resolved
     // text threads — resolved threads must leave no visual trace).
     // DRAFTS are included: a draft's card anchors to its highlight via
@@ -673,6 +690,27 @@ export class CommentSystem {
       );
       this.staleAnchorBlocks.add(block.element);
       anchoredThreads.add(thread.id);
+    }
+
+    // Previewed blocks: their highlights are swapped out for the applied text,
+    // so (like the stale path) stamp the block itself as the anchor for every
+    // thread pointing at it — keeping those cards from falling to the top.
+    for (const blockId of this.preview.previewedBlockIds()) {
+      const block = this.index.blocksById.get(blockId);
+      if (!block) continue;
+      for (const thread of [...this.snapshot, ...this.draftMgr.drafts]) {
+        if (!isTextTarget(thread.target) || this.threadIsResolved(thread)) continue;
+        if (anchoredThreads.has(thread.id)) continue;
+        if (textTargetParts(thread.target).blocks[0]?.id !== blockId) continue;
+        const name = anchorNameForText(thread.id);
+        const existing = block.element.style.getPropertyValue("anchor-name");
+        block.element.style.setProperty(
+          "anchor-name",
+          existing && existing !== "none" ? `${existing}, ${name}` : name,
+        );
+        this.staleAnchorBlocks.add(block.element);
+        anchoredThreads.add(thread.id);
+      }
     }
 
     // Cards. Hidden saved threads are skipped entirely (their highlight
@@ -837,6 +875,13 @@ export class CommentSystem {
   // deferred run on `compositionend`) renders it.
   backgroundRender(): void {
     if (!this.store) return;
+    // Defer while a suggestion-mode edit session is live — a teardown here would
+    // split the text node under the caret. Flushed when the session ends (which
+    // re-renders). Same shape as the IME-composition guard below.
+    if (this.suggest.isEditing()) {
+      this.pendingBackgroundRender = true;
+      return;
+    }
     if (this.composing) {
       this.pendingBackgroundRender = true;
       return;
@@ -1161,9 +1206,12 @@ export class CommentSystem {
       const isFirst = i === 0;
       const isLast = i === segs.length - 1;
       const fullLen = block.element.textContent?.length ?? 0;
+      // A previewed block shows applied text at DIFFERENT offsets — don't wrap
+      // highlights there (the block is stamped as the card anchor instead).
+      if (this.preview.isPreviewing(seg.id)) continue;
       const start = isFirst ? parts.startOffset : 0;
       const end = isLast ? parts.endOffset : fullLen;
-      wrapRangeInBlock(block.element, start, end, thread.id);
+      wrapRangeInBlock(block.element, start, end, thread.id, !!thread.suggestion);
     }
   }
 

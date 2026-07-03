@@ -137,6 +137,20 @@ export class MobileMenu {
         "<span>Leave comment on selection</span>";
       compose.addEventListener("click", () => this.composeFromMenu());
       m.appendChild(compose);
+
+      // Suggest edit on the same selection (proposal 65) — a secondary entry
+      // routing through the same capture path with the suggestion payload.
+      const suggest = document.createElement("button");
+      suggest.type = "button";
+      suggest.className = "cmt-menu-item cmt-menu-item-suggest";
+      suggest.setAttribute("role", "menuitem");
+      suggest.innerHTML =
+        '<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">' +
+        '<path d="M3 17.25V21h3.75L17.8 9.94l-3.75-3.75L3 17.25zM20.7 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.58z" fill="currentColor"/></svg>' +
+        "<span>Suggest edit on selection</span>";
+      suggest.addEventListener("click", () => this.composeFromMenu(true));
+      m.appendChild(suggest);
+
       const snippet = document.createElement("span");
       snippet.className = "cmt-menu-snippet";
       snippet.textContent = `“${this.menuComposeCapture.range.toString().trim().slice(0, 80)}”`;
@@ -205,7 +219,7 @@ export class MobileMenu {
   // "Leave comment on selection" tapped. Promote the captured selection to the
   // pending range and open a draft, exactly as the desktop action bar does. The
   // entry is signed-in only (renderMenu), so `!identity` is just a guard.
-  private composeFromMenu(): void {
+  private composeFromMenu(asSuggestion = false): void {
     const cap = this.menuComposeCapture;
     if (!cap || !this.sys.identity) return;
     this.sys.selection.pendingRange = cap.range;
@@ -213,7 +227,7 @@ export class MobileMenu {
     this.sys.selection.pendingEndBlock = cap.endBlock;
     this.menuComposeCapture = null;
     this.hideMenu();
-    this.sys.draftMgr.addDraftForSelection();
+    this.sys.draftMgr.addDraftForSelection(asSuggestion);
   }
 
   // Mobile: set the thread-count badge on the button. No-op visual on desktop

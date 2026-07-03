@@ -22,13 +22,19 @@ import {
   makeTextTarget,
   SEED_BYTES_B64,
   type Reply,
+  type Suggestion,
   type Target,
 } from "../client/commentsStore.ts";
 import { loadUnresolvedThreads } from "./loadUnresolvedThreads.ts";
 
 // Mirror of the loader's CRDT-internal shape (see its header comment on
 // why this is duplicated rather than imported).
-type StoredThread = { target: Target; createdAt: number; resolvedAt?: number };
+type StoredThread = {
+  target: Target;
+  createdAt: number;
+  resolvedAt?: number;
+  suggestion?: Suggestion;
+};
 type StoredReply = Reply & { threadId: string };
 type CommentDoc = {
   threads: { [id: string]: StoredThread };
@@ -126,4 +132,37 @@ test("subset replay attributes thread and reply origins from blob stamps", async
     thread: "unknown",
     replies: { rC1: "unknown" },
   });
+});
+
+test("a note-less suggestion survives the zero-reply filter with its payload; a bare plain thread doesn't", async () => {
+  if (!isWasmInitialized()) {
+    const bytes = await Bun.file(resolveBlogPaths().automergeWasm).arrayBuffer();
+    await initializeWasm(new Uint8Array(bytes));
+  }
+  const commentsDir = await mkdtemp(join(tmpdir(), "suggestion-test-"));
+
+  const suggestion: Suggestion = {
+    proposed: "beta",
+    authorId: USER,
+    authorName: "Fixture",
+    authorEmail: "fixture@example.com",
+  };
+  let doc = Automerge.load<CommentDoc>(Uint8Array.fromBase64(SEED_BYTES_B64));
+  doc = Automerge.change(doc, (d) => {
+    // Zero replies on both: the suggestion's diff IS its content and must
+    // reach the authoring loop; the plain thread is the malformed-blob case
+    // the defensive filter exists for.
+    d.threads["tS"] = { target: target("alpha"), createdAt: 1, suggestion };
+    d.threads["tP"] = { target: target("gamma"), createdAt: 2 };
+  });
+  const bytes = Automerge.getLastLocalChange(doc)!;
+  const hash = Automerge.decodeChange(bytes).hash;
+  const dest = join(commentsDir, normalize(changeKey(POST_PATH, USER, hash)));
+  await mkdir(dirname(dest), { recursive: true });
+  await writeFile(dest, bytes);
+
+  const result = await loadUnresolvedThreads({ postPath: POST_PATH, commentsDir });
+  const ids = result.unresolved.map((e) => e.thread.id);
+  expect(ids).toEqual(["tS"]);
+  expect(result.unresolved[0]!.thread.suggestion).toEqual(suggestion);
 });

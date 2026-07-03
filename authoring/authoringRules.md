@@ -39,6 +39,21 @@ Rules for applying comments:
    does. Mention this explicitly in your final summary.
 7. Do NOT change SVG diagram content unless the comment explicitly
    asks for it — diagrams are deliberate.
+8. Suggestion (propose-an-edit) annotations: an annotation with
+   `motivation: "editing"` carries a machine-readable proposed
+   replacement — its first body is a `TextualBody` with
+   `purpose: "editing"` and `format: "text/plain"` whose `value` is the
+   replacement text (empty string = "delete the anchored range"). The
+   original text is the target's `TextQuoteSelector.exact`. Apply it
+   near-verbatim: locate `exact` as usual and swap in the proposed text.
+   Any note replies follow as ordinary `commenting` bodies — read them
+   for intent, but the `editing` body is the change itself. The proposed
+   text may contain literal `<strong>…</strong>` / `<em>…</em>` markup
+   (the reader added emphasis while suggesting) — apply it as real HTML in
+   the article, not as escaped text. If applying verbatim would break an
+   editing rule above (a `<mark>` ↔ `id` pairing, an infra tag, an SVG),
+   downgrade to PARTIAL or NOTE-ONLY exactly as for prose feedback — don't
+   apply a change that breaks the page.
 
 Your final output (after all edits) MUST be a short structured summary,
 one section per thread, in this exact form:

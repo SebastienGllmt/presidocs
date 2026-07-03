@@ -66,7 +66,10 @@ export type TextualBody = {
   id: string;
   type: "TextualBody";
   value: string;
-  format: "text/markdown";
+  format: "text/markdown" | "text/plain";
+  // Suggestion bodies (proposal 65) carry the WA `editing` purpose — the
+  // registry vocabulary for a proposed replacement. Absent on reply bodies.
+  purpose?: "editing";
   creator: Person;
   created: string;
   "x-blog:origin"?: CommentOrigin;
@@ -76,7 +79,8 @@ export type Annotation = {
   "@context": typeof ANNO_JSONLD_CONTEXT;
   id: string;
   type: "Annotation";
-  motivation: "commenting";
+  // `editing` when the thread is a suggestion (proposal 65), else `commenting`.
+  motivation: "commenting" | "editing";
   created: string;
   body: TextualBody[];
   target: Target;
@@ -148,6 +152,22 @@ function replyToBody(
   };
 }
 
+// The proposed-replacement body of a suggestion thread (proposal 65). Plain
+// text with the `editing` purpose; `creator` comes from the payload (the
+// thread carries author identity so a zero-reply suggestion still attributes).
+function suggestionToBody(opts: ExportOptions, thread: Thread): TextualBody {
+  const s = thread.suggestion!;
+  return {
+    id: `urn:blog:${opts.slug}:suggestion:${thread.id}`,
+    type: "TextualBody",
+    value: s.proposed,
+    format: "text/plain",
+    purpose: "editing",
+    creator: { type: "Person", id: s.authorId, name: s.authorName },
+    created: new Date(thread.createdAt).toISOString(),
+  };
+}
+
 /**
  * Serialize one thread to a WA `Annotation`, or `null` if it has no
  * visible (non-tombstoned) replies — an empty annotation has nothing to
@@ -159,14 +179,21 @@ export function threadToAnnotation(
   origins?: ThreadOrigins,
 ): Annotation | null {
   const replies = visibleReplies(thread);
-  if (replies.length === 0) return null;
+  // A note-less suggestion still exports — its diff (the `editing` body) is its
+  // content. Only a plain thread with no visible replies has nothing to say.
+  if (replies.length === 0 && !thread.suggestion) return null;
+  const replyBodies = replies.map((r) => replyToBody(opts, r, origins?.replies[r.id]));
   const annotation: Annotation = {
     "@context": ANNO_JSONLD_CONTEXT,
     id: annotationId(opts, thread.id),
     type: "Annotation",
-    motivation: "commenting",
+    motivation: thread.suggestion ? "editing" : "commenting",
     created: new Date(thread.createdAt).toISOString(),
-    body: replies.map((r) => replyToBody(opts, r, origins?.replies[r.id])),
+    // The proposed replacement leads as the first `editing` body; note replies
+    // follow as ordinary `commenting` bodies.
+    body: thread.suggestion
+      ? [suggestionToBody(opts, thread), ...replyBodies]
+      : replyBodies,
     target: exportTarget(opts, thread.target),
   };
   if (isResolved(thread)) {

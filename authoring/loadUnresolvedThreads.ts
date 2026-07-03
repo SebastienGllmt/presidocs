@@ -21,6 +21,7 @@ import { resolveBlogPaths } from "../shared/blogPaths.ts";
 import { SEED_BYTES_B64 } from "../client/commentsStore.ts";
 import type {
   Reply,
+  Suggestion,
   Target,
   Thread,
 } from "../client/commentsStore.ts";
@@ -42,6 +43,7 @@ type StoredThread = {
   target: Target;
   createdAt: number;
   resolvedAt?: number;
+  suggestion?: Suggestion;
 };
 
 type StoredReply = Reply & { threadId: string };
@@ -302,8 +304,10 @@ export async function loadUnresolvedThreads(
     // A thread with zero live replies has nothing to say. Self-resolve
     // already collapses to this on the client (the last reply delete
     // auto-resolves the thread), but a malformed blob could still
-    // produce one — skip it defensively.
-    const hasNothingToSay = replies.length === 0;
+    // produce one — skip it defensively. EXCEPT a suggestion: its diff
+    // (original → proposed) is its content, so a note-less suggestion
+    // still needs the author's attention (mirrors the export guard).
+    const hasNothingToSay = replies.length === 0 && t.suggestion === undefined;
 
     if (hasNothingToSay) {
       resolvedCount++;
@@ -318,6 +322,7 @@ export async function loadUnresolvedThreads(
         replies,
         createdAt: t.createdAt,
         ...(t.resolvedAt !== undefined && { resolvedAt: t.resolvedAt }),
+        ...(t.suggestion !== undefined && { suggestion: t.suggestion }),
       },
       origins: {
         thread: threadOriginById.get(id) ?? "unknown",

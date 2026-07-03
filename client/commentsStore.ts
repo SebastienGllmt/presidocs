@@ -384,6 +384,20 @@ export type Reply = {
   authorPicture?: string;
 };
 
+// A propose-an-edit payload (proposal 65). Written once in the
+// thread-creation change and immutable after — the range's original text
+// is the target's `TextQuoteSelector.exact`, so we only carry the
+// replacement here. `proposed: ""` deletes the anchored range. Author
+// fields mirror `Reply`'s: a note-less suggestion still needs an author
+// for its card and its export `creator`.
+export type Suggestion = {
+  proposed: string;
+  authorId: string;
+  authorName: string;
+  authorEmail: string;
+  authorPicture?: string;
+};
+
 export type Thread = {
   id: string;
   target: Target;
@@ -392,6 +406,7 @@ export type Thread = {
   replies: Reply[];
   createdAt: number;
   resolvedAt?: number;
+  suggestion?: Suggestion;
 };
 
 // Predicates exposed alongside the types so callers don't reach into
@@ -431,6 +446,7 @@ type StoredThread = {
   target: Target;
   createdAt: number;
   resolvedAt?: number;
+  suggestion?: Suggestion;
 };
 
 // Internal storage of a reply — extends the public `Reply` with the
@@ -671,6 +687,7 @@ export class CommentStore {
         replies,
         createdAt: t.createdAt,
         ...(t.resolvedAt !== undefined && { resolvedAt: t.resolvedAt }),
+        ...(t.suggestion !== undefined && { suggestion: t.suggestion }),
       });
     }
     // Replies not matched to any thread (e.g. the author replied to a
@@ -694,13 +711,20 @@ export class CommentStore {
 
   // ---------- Mutations ----------
 
-  addThread(threadId: string, target: Target, createdAt: number): void {
+  addThread(
+    threadId: string,
+    target: Target,
+    createdAt: number,
+    suggestion?: Suggestion,
+  ): void {
     this.mutate("add thread", (d) => {
-      // Target is structurally cloned into the doc so future change ops
-      // see a stable reference; we never mutate it afterwards.
+      // Target (and the suggestion payload) are structurally cloned into
+      // the doc so future change ops see a stable reference; we never
+      // mutate them afterwards. The suggestion is immutable-after-create.
       d.threads[threadId] = {
         target: structuredClone(target),
         createdAt,
+        ...(suggestion && { suggestion: structuredClone(suggestion) }),
       };
     });
   }

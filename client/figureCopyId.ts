@@ -18,13 +18,13 @@
 // never sees; the cost is only that the paragraph id can't be drag-selected
 // (click still copies it).
 //
-// Gated identically to the narrator's author tools, and for the same reasons:
-//   - localhost only — this is a local authoring aid, never shipped reader UI.
-//     Non-localhost visitors short-circuit before any network call.
-//   - the server-authoritative `isAuthor` flag from /post-version — never trust
-//     the DOM for authorship (the `<meta name="author-email">` tag is stripped
-//     in prod, so a client-side check would read false there anyway).
-// Either gate failing makes this a complete no-op: no labels, no DOM changes.
+// Gated on the server-authoritative `isAuthor` flag from /post-version — never
+// trust the DOM for authorship (the `<meta name="author-email">` tag is stripped
+// in prod, so a client-side check would read false there anyway). The author
+// gets these authoring aids on ANY build, not just localhost: reading a block's
+// id off a deployed post is exactly as useful as off localhost, and a
+// non-author reader triggers the fetch's isAuthor=false and gets nothing. Gate
+// failing makes this a complete no-op: no labels, no DOM changes.
 //
 // Idempotent: re-running install is a no-op (each block is tagged with
 // `data-figure-id-copy` / `data-paragraph-id-copy="installed"`).
@@ -112,12 +112,8 @@ export function installParagraphIdCopies(article: HTMLElement): void {
   }
 }
 
-// Mirror the narrator's gate exactly: localhost AND server-authoritative
-// isAuthor. Returns false (no fetch) for ordinary readers on any other host.
+// Server-authoritative isAuthor (any build). Returns false for ordinary readers.
 async function authorToolsEnabled(): Promise<boolean> {
-  const isLocal =
-    location.hostname === "localhost" || location.hostname === "127.0.0.1";
-  if (!isLocal) return false;
   const version = await fetchPostVersion(window.location.pathname);
   return version?.isAuthor === true;
 }

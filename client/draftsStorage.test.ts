@@ -41,6 +41,22 @@ test("save then load round-trips a single draft", () => {
   expect(loaded[0]!.thread.id).toBe("d1");
 });
 
+test("save then load round-trips a suggestion payload on the draft", () => {
+  // Proposal 65: a suggestion draft carries its propose-an-edit payload on the
+  // Thread; DraftsStorage serializes the whole Thread, so the payload persists
+  // across a reload for free.
+  const ds = new DraftsStorage("/posts/foo", "google:123");
+  const suggestion = {
+    proposed: "the fixed text",
+    authorId: "google:123",
+    authorName: "Ada",
+    authorEmail: "ada@example.com",
+  };
+  const thread = { ...stubThread("d1"), suggestion } as Thread;
+  ds.save([{ thread, body: "" }]);
+  expect(ds.load()[0]!.thread.suggestion).toEqual(suggestion);
+});
+
 test("save with [] removes the key (keeps storage clean)", () => {
   // Methodology calls this out as the "absent ⇒ empty" rule: saving zero
   // drafts should not leave an empty-array entry behind, so the storage

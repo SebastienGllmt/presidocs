@@ -87,8 +87,11 @@ export class DraftManager {
 
   // Triggered by the "Comment" action-bar button after a text selection.
   // Captures the selection into a WA text target, creates an empty draft, and
-  // adds a card for it in the column (auto-focused for typing).
-  addDraftForSelection() {
+  // adds a card for it in the column (auto-focused for typing). With
+  // `asSuggestion`, the draft carries a propose-an-edit payload (proposal 65)
+  // whose `proposed` text starts as the anchored quote and is edited in the
+  // composer before submit; the note reply stays optional.
+  addDraftForSelection(asSuggestion = false) {
     if (!this.sys.selection.pendingRange || !this.sys.selection.pendingStartBlock || !this.sys.selection.pendingEndBlock) {
       return;
     }
@@ -167,17 +170,33 @@ export class DraftManager {
       ...(audioRange ? { audioRange } : {}),
     });
 
+    // A suggestion needs session identity for its payload (card + export
+    // creator). The suggest affordance gates on login exactly like the
+    // comment one, so identity is present here — the guard just falls back
+    // to a plain comment if it somehow isn't.
+    const identity = this.sys.identity;
+    const suggestion = asSuggestion && identity
+      ? {
+          proposed: quote,
+          authorId: identity.userId,
+          authorName: identity.name ?? identity.email,
+          authorEmail: identity.email,
+          ...(identity.picture && { authorPicture: identity.picture }),
+        }
+      : undefined;
+
     const draft: Thread = {
       id: uid(),
       target,
       replies: [],
       createdAt: Date.now(),
+      ...(suggestion && { suggestion }),
     };
     this.drafts.push(draft);
     this.persistDrafts();
     this.sys.selection.hideActionBar();
     this.sys.renderAll();
-    this.surfaceDraft(draft.id);
+    this.surface(draft.id);
   }
 
   // Derive the audio time range [first segment start, next segment start)
@@ -214,6 +233,17 @@ export class DraftManager {
     return { startMs, endMs: Number.isFinite(endMs) ? endMs : null };
   }
 
+  // Add an already-built draft thread (used by in-place suggestion mode, which
+  // constructs the target + suggestion payload itself from the §3 diff), then
+  // surface it exactly like a selection draft. Persists first so a tab-close
+  // mid-note doesn't lose the proposal.
+  addPreparedDraft(draft: Thread) {
+    this.drafts.push(draft);
+    this.persistDrafts();
+    this.sys.renderAll();
+    this.surface(draft.id);
+  }
+
   // Triggered by clicking the "+" comment button on a figure.
   addDraftForGraphic(graphicEl: HTMLElement) {
     const id = graphicEl.dataset.commentGraphicId;
@@ -228,13 +258,13 @@ export class DraftManager {
     this.drafts.push(draft);
     this.persistDrafts();
     this.sys.renderAll();
-    this.surfaceDraft(draft.id);
+    this.surface(draft.id);
   }
 
   // After creating a draft, get it in front of the user. On desktop
   // that means scrolling its column card into view; on mobile it
   // means promoting it to the active popover.
-  private surfaceDraft(threadId: string) {
+  surface(threadId: string) {
     if (this.sys.isMobile) {
       this.sys.setActiveCard(threadId);
       return;

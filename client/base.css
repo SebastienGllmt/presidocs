@@ -1139,7 +1139,11 @@
        no text leading to clear.) */
     top: 0.2rem;
     right: 100%;
-    margin-right: 0.6rem;
+    /* Nudged out one lane (was 0.6rem) so the comments layer's per-paragraph
+       "preview suggested edits" toggle can sit closest to the text without
+       overlapping this id label. Both are absolutely positioned, so this never
+       shifts the reading measure. */
+    margin-right: 2.2rem;
     border: 0;
     background: transparent;
     padding: 2px 4px;

@@ -67,6 +67,22 @@ test("unwrap — restores the block's text and normalizes", () => {
   expect(p.textContent).toBe(original);
 });
 
+// ---- suggestion tint (proposal 65) -----------------------------------
+
+test("wrapRangeInBlock — suggestion flag adds the green tint class", () => {
+  const p = block("Hello brave world");
+  wrapRangeInBlock(p, 6, 11, "t1", true);
+  const span = p.querySelector<HTMLElement>(".cmt-highlight")!;
+  expect(span.classList.contains("cmt-highlight--suggestion")).toBe(true);
+});
+
+test("wrapRangeInBlock — a plain thread gets no suggestion tint class", () => {
+  const p = block("Hello brave world");
+  wrapRangeInBlock(p, 6, 11, "t1");
+  const span = p.querySelector<HTMLElement>(".cmt-highlight")!;
+  expect(span.classList.contains("cmt-highlight--suggestion")).toBe(false);
+});
+
 // ---- findBlockFor ----------------------------------------------------
 
 test("findBlockFor — climbs to the nearest [data-comment-block-id]", () => {

@@ -135,6 +135,36 @@ test("addThread + addReply round-trip via snapshot", async () => {
   expect(snap[0]!.createdAt).toBe(100);
 });
 
+// ---- Suggestions (proposal 65) ----------------------------------------
+
+const SUGGESTION = {
+  proposed: "Hello, world!",
+  authorId: TEST_USER_ID,
+  authorName: "Test User",
+  authorEmail: "test@example.com",
+};
+
+test("addThread carries a suggestion payload through snapshot", async () => {
+  const s = await makeStore();
+  s.addThread("t1", ANCHOR_TEXT, 100, SUGGESTION);
+  expect(s.snapshot()[0]!.suggestion).toEqual(SUGGESTION);
+});
+
+test("addThread without a suggestion leaves the field absent (plain comment)", async () => {
+  const s = await makeStore();
+  s.addThread("t1", ANCHOR_TEXT, 100);
+  const t = s.snapshot()[0]!;
+  expect(t.suggestion).toBeUndefined();
+  expect("suggestion" in t).toBe(false);
+});
+
+test("suggestion survives a reload from localStorage (seed-safe inner field)", async () => {
+  const s1 = await makeStore();
+  s1.addThread("t1", ANCHOR_TEXT, 100, SUGGESTION);
+  const s2 = await makeStore(); // same (post, user) key → reloads the persisted doc
+  expect(s2.snapshot()[0]!.suggestion).toEqual(SUGGESTION);
+});
+
 test("addReply on unknown thread is a no-op", async () => {
   const s = await makeStore();
   s.addReply("nope", reply("r1", "hi", 110));

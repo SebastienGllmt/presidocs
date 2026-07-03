@@ -138,6 +138,61 @@ test("graphic target survives the round-trip into the collection", () => {
   });
 });
 
+// ---- Suggestions (proposal 65) ----------------------------------------
+
+const SUGGESTION_THREAD: Thread = {
+  id: "s1",
+  target: makeTextTarget({
+    context: "article",
+    blocks: [{ id: "id:intro", hash: "h1" }],
+    startOffset: 0,
+    endOffset: 4,
+    quote: "helo",
+  }),
+  replies: [],
+  createdAt: 1_700_000_000_000,
+  suggestion: {
+    proposed: "hello",
+    authorId: "google:7",
+    authorName: "Ada",
+    authorEmail: "ada@example.com",
+  },
+};
+
+test("suggestion thread exports as motivation editing with a leading editing body", () => {
+  const anno = threadToAnnotation(SUGGESTION_THREAD, opts)!;
+  expect(anno.motivation).toBe("editing");
+  const first = anno.body[0]!;
+  expect(first.purpose).toBe("editing");
+  expect(first.format).toBe("text/plain");
+  expect(first.value).toBe("hello");
+  expect(first.creator).toEqual({ type: "Person", id: "google:7", name: "Ada" });
+  expect(first.id).toBe("urn:blog:hash-functions:suggestion:s1");
+  // email never leaks (payload carries it, export drops it)
+  expect(JSON.stringify(anno)).not.toContain("ada@example.com");
+});
+
+test("a note-less suggestion still exports (the §4 empty-replies guard change)", () => {
+  expect(threadToAnnotation(SUGGESTION_THREAD, opts)).not.toBeNull();
+});
+
+test("suggestion note replies follow the editing body as commenting bodies", () => {
+  const t: Thread = { ...SUGGESTION_THREAD, replies: [reply({ body: "why change this?" })] };
+  const anno = threadToAnnotation(t, opts)!;
+  expect(anno.body.length).toBe(2);
+  expect(anno.body[0]!.purpose).toBe("editing");
+  expect(anno.body[1]!.value).toBe("why change this?");
+  expect(anno.body[1]!.format).toBe("text/markdown");
+  expect("purpose" in anno.body[1]!).toBe(false);
+});
+
+test("plain (non-suggestion) thread export is byte-unchanged (regression)", () => {
+  const anno = threadToAnnotation(TEXT_THREAD, opts)!;
+  expect(anno.motivation).toBe("commenting");
+  expect(anno.body.length).toBe(1);
+  expect("purpose" in anno.body[0]!).toBe(false);
+});
+
 test("x-blog:origin rides on annotation and bodies when origins are passed", () => {
   const anno = threadToAnnotation(TEXT_THREAD, opts, {
     thread: "production",

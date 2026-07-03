@@ -47,6 +47,13 @@ export class SelectionBar {
       '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
       '<path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H8l-4 4V6a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>' +
       "<span>Comment</span></button>" +
+      // Suggest edit (proposal 65): promote the selection into a propose-an-edit
+      // draft. Same login gate as Comment (the bar only shows when signed in).
+      '<button type="button" class="cmt-action-btn cmt-action-suggest" ' +
+      'aria-label="Suggest an edit to the selected text" title="Suggest an edit to the selected text">' +
+      '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">' +
+      '<path d="M3 17.25V21h3.75L17.8 9.94l-3.75-3.75L3 17.25zM20.7 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.58z" fill="currentColor"/></svg>' +
+      "<span>Suggest edit</span></button>" +
       // Citation deep-link, shown alongside Comment from the moment the bar
       // appears (the icon mirrors the standalone button's quote-mark; see
       // citationLink.ts). The link is generated on click, not speculatively.
@@ -61,6 +68,11 @@ export class SelectionBar {
     commentBtn.addEventListener("mousedown", (e) => {
       e.preventDefault();
       this.sys.draftMgr.addDraftForSelection();
+    });
+    const suggestBtn = bar.querySelector<HTMLButtonElement>(".cmt-action-suggest")!;
+    suggestBtn.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      this.sys.draftMgr.addDraftForSelection(true);
     });
     const copyBtn = bar.querySelector<HTMLButtonElement>(".cmt-action-copylink")!;
     copyBtn.addEventListener("mousedown", (e) => {
@@ -123,12 +135,28 @@ export class SelectionBar {
     if (!startBlock || !endBlock || startBlock.context !== endBlock.context) {
       return null;
     }
+    // A previewed block shows applied text that isn't the anchor basis — you
+    // can't comment on text that doesn't (yet) exist. Toggle back to comment.
+    if (this.sys.preview.isPreviewing(startBlock.id) || this.sys.preview.isPreviewing(endBlock.id)) {
+      return null;
+    }
     const rect = range.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) return null;
     return { range: range.cloneRange(), startBlock, endBlock };
   }
 
   onSelectionChange() {
+    // In suggestion mode the reader is editing text in place, not selecting it
+    // to comment — keep the action bar out of the way. Hide the bar ELEMENT
+    // only; do NOT call hideActionBar(), which would release the
+    // `commentBarActive` flag and re-enable the standalone citation generator.
+    // That generator runs slow text-fragment generation on every selection, so
+    // double-clicking words while editing would jank hard. SuggestMode holds
+    // the flag for the whole session (see its toggle()).
+    if (this.sys.suggest.active) {
+      if (this.actionBar) this.actionBar.hidden = true;
+      return;
+    }
     const capture = this.captureSelection();
 
     // Mobile: no floating action bar — the corner button is the
